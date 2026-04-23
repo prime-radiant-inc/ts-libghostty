@@ -132,14 +132,42 @@ export class Terminal {
     );
   }
 
-  resize(_cols: number, _rows: number, _cellPx?: { width: number; height: number }): void {
+  resize(cols: number, rows: number, cellPx?: { width: number; height: number }): void {
     this.#assertOpen();
-    throw new Error("Terminal.resize not implemented yet (Task 13)");
+    if (!Number.isInteger(cols) || cols <= 0) {
+      throw new GhosttyError("cols must be a positive integer", {
+        code: "invalid_value",
+        functionName: "Terminal.resize",
+      });
+    }
+    if (!Number.isInteger(rows) || rows <= 0) {
+      throw new GhosttyError("rows must be a positive integer", {
+        code: "invalid_value",
+        functionName: "Terminal.resize",
+      });
+    }
+    if (cellPx !== undefined) {
+      this.#cellPx = { width: cellPx.width, height: cellPx.height };
+    }
+    const lib = getLib();
+    // Signature per ABI §4: (term, cols:u16, rows:u16, cell_width_px:u32,
+    // cell_height_px:u32) → GhosttyResult. cols/rows narrow to u16 at the
+    // FFI layer; cellPx widths pass as u32.
+    const result = lib.symbols.ghostty_terminal_resize(
+      this.#handle,
+      cols,
+      rows,
+      this.#cellPx.width,
+      this.#cellPx.height,
+    );
+    checkResult(result, "ghostty_terminal_resize");
   }
 
   reset(): void {
     this.#assertOpen();
-    throw new Error("Terminal.reset not implemented yet (Task 13)");
+    const lib = getLib();
+    // Returns void (ABI §4).
+    lib.symbols.ghostty_terminal_reset(this.#handle);
   }
 
   snapshot(): TerminalSnapshot {

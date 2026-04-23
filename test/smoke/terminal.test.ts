@@ -73,3 +73,24 @@ describe("Terminal.vtWrite", () => {
     expect(() => term.vtWrite(new Uint8Array([65]))).toThrow(UseAfterCloseError);
   });
 });
+
+describe("Terminal.resize", () => {
+  it("accepts new cols/rows and returns void", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    term.resize(100, 30);
+  });
+
+  it("rejects zero or negative dimensions", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    expect(() => term.resize(0, 30)).toThrow();
+    expect(() => term.resize(100, -1)).toThrow();
+  });
+});
+
+describe("Terminal.reset", () => {
+  it("returns void", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    term.vtWrite(new TextEncoder().encode("hello\r\n"));
+    term.reset();
+  });
+});
