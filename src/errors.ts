@@ -1,8 +1,11 @@
 export type GhosttyErrorCode =
+  // FFI result codes (per ABI discovery §3 / src/internal/generated.ts RESULT_CODE_MAP)
   | "ok"
   | "out_of_memory"
-  | "invalid_argument"
-  | "uninitialized"
+  | "invalid_value"
+  | "out_of_space"
+  | "no_value"
+  // Binding-only codes
   | "library_not_found"
   | "library_incompatible"
   | "unsupported_platform"

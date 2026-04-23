@@ -17,7 +17,7 @@ describe("GhosttyError hierarchy", () => {
     expect(e.functionName).toBeUndefined();
     expect(e.message).toBe("bad things");
 
-    const e2 = new GhosttyError("boom", { code: "invalid_argument", functionName: "ghostty_terminal_resize" });
+    const e2 = new GhosttyError("boom", { code: "invalid_value", functionName: "ghostty_terminal_resize" });
     expect(e2.functionName).toBe("ghostty_terminal_resize");
   });
 

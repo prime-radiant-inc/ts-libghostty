@@ -691,10 +691,12 @@ The probe is a tiny C program compiled against Ghostty's headers that emits stru
 
 The probe covers every struct the binding writes or reads in Pass 1. Per ABI discovery §5 and §7, at Pass 1 that is:
 
-- `GhosttyTerminalOptions` (for `Terminal` construction)
-- `GhosttyFormatterOptions` (for `Formatter` construction)
+- `GhosttyTerminalOptions` (for `Terminal` construction; 16 B, align 8, **not** sized)
+- `GhosttyFormatterTerminalOptions` (for `Formatter` construction; 56 B, align 8, **sized**)
+- `GhosttyFormatterTerminalExtra` (nested inside `GhosttyFormatterTerminalOptions.extra` at offset 16; 32 B, align 8, **sized**)
+- `GhosttyFormatterScreenExtra` (nested inside `GhosttyFormatterTerminalExtra.screen` at offset 16; 16 B, align 8, **sized**)
 
-Exact field lists come from ABI discovery (Task 3). Struct *names* may differ at the pin (some versions use suffixes); reconcile before writing the probe.
+Exact field lists come from ABI discovery §5 and §7. The nested `extra` / `screen` sub-structs are probed independently so `src/internal/sized-struct.ts` (Task 9) can compose them when writing the outer options buffer.
 
 Each probed field emits: name, offset, size, **kind** (`"uint"`, `"int"`, `"bool"`, `"ptr"`, `"struct"`). The kind disambiguates fields of the same size at marshal time — e.g., a 1-byte `bool` vs. a 1-byte `uint8_t`. Each struct emits an **`isSized`** flag: true if the first field is literally `size_t size`, false otherwise. The TS-side struct writer (Task 9) auto-fills the `size` field when `isSized` is true.
 
@@ -757,54 +759,94 @@ static void end_struct(void) {
 /* ===== Probe each struct ===== */
 
 static void probe_terminal_options(void) {
-  /* FIELD LIST is authored from ABI discovery §5. Update per the pinned header.
-   * `isSized` detection: if the first field at offset 0 is literally `size_t size`,
-   * pass 1 as the fourth argument below. */
-  const int is_sized = (offsetof(GhosttyTerminalOptions, size) == 0 &&
-                        sizeof(((GhosttyTerminalOptions*)0)->size) == sizeof(size_t));
+  /* FIELD LIST is authored from ABI discovery §5. At the pin this struct has
+   * no `size` field — the first field is `cols:u16 @ 0`. Hardcode is_sized=0. */
+  const int is_sized_options = 0;
   emit_struct("GhosttyTerminalOptions",
               sizeof(GhosttyTerminalOptions),
               _Alignof(GhosttyTerminalOptions),
-              is_sized);
+              is_sized_options);
   first_field = 1;
-  /* If is_sized, emit the size field first. */
-  if (is_sized) EMIT_UINT(GhosttyTerminalOptions, size);
-  EMIT_UINT(GhosttyTerminalOptions, cols);
-  EMIT_UINT(GhosttyTerminalOptions, rows);
-  EMIT_UINT(GhosttyTerminalOptions, max_scrollback);
-  /* If ABI discovery §5 shows apc_max_bytes / apc_max_bytes_kitty at the pin,
-   * uncomment these lines and the constructor in Task 11 will wire them.
-   * EMIT_UINT(GhosttyTerminalOptions, apc_max_bytes);
-   * EMIT_UINT(GhosttyTerminalOptions, apc_max_bytes_kitty); */
+  EMIT_UINT(GhosttyTerminalOptions, cols);           /* u16 @ 0 */
+  EMIT_UINT(GhosttyTerminalOptions, rows);           /* u16 @ 2 */
+  EMIT_UINT(GhosttyTerminalOptions, max_scrollback); /* u64 @ 8 (4 bytes pad @ 4-7) */
+  /* NOTE: apc_max_bytes and apc_max_bytes_kitty are NOT fields on this struct.
+   * They are set post-construction via ghostty_terminal_set(term,
+   * GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, &limit) and ..._APC_MAX_BYTES_KITTY.
+   * Pass 1 does not expose APC tuning — see Task 21 README APC footnote. */
   end_struct();
 }
 
-static void probe_formatter_options(void) {
-  /* FIELD LIST is authored from ABI discovery §7. */
-  const int is_sized = (offsetof(GhosttyFormatterOptions, size) == 0 &&
-                        sizeof(((GhosttyFormatterOptions*)0)->size) == sizeof(size_t));
-  emit_struct("GhosttyFormatterOptions",
-              sizeof(GhosttyFormatterOptions),
-              _Alignof(GhosttyFormatterOptions),
+static void probe_formatter_terminal_options(void) {
+  /* FIELD LIST is authored from ABI discovery §7. Sized struct (first field
+   * is `size_t size`), 56 B, align 8. */
+  const int is_sized = (offsetof(GhosttyFormatterTerminalOptions, size) == 0 &&
+                        sizeof(((GhosttyFormatterTerminalOptions*)0)->size) == sizeof(size_t));
+  emit_struct("GhosttyFormatterTerminalOptions",
+              sizeof(GhosttyFormatterTerminalOptions),
+              _Alignof(GhosttyFormatterTerminalOptions),
               is_sized);
   first_field = 1;
-  if (is_sized) EMIT_UINT(GhosttyFormatterOptions, size);
-  /* Executor: enumerate fields from the pinned header per ABI discovery §7.
-   * For each bool-typed flag use EMIT_BOOL; for enum-typed format-tag fields
-   * use EMIT_UINT. */
+  EMIT_UINT(GhosttyFormatterTerminalOptions, size);       /* size_t @ 0 */
+  EMIT_UINT(GhosttyFormatterTerminalOptions, emit);       /* u32 enum @ 8 (GhosttyFormatterFormat) */
+  EMIT_BOOL(GhosttyFormatterTerminalOptions, unwrap);     /* bool @ 12 */
+  EMIT_BOOL(GhosttyFormatterTerminalOptions, trim);       /* bool @ 13 (2 bytes pad @ 14-15) */
+  EMIT_STRUCT(GhosttyFormatterTerminalOptions, extra);    /* struct(32) @ 16 */
+  EMIT_PTR(GhosttyFormatterTerminalOptions, selection);   /* const GhosttySelection* @ 48 */
+  end_struct();
+}
+
+static void probe_formatter_terminal_extra(void) {
+  /* Nested inside GhosttyFormatterTerminalOptions.extra. 32 B, align 8, sized. */
+  const int is_sized = (offsetof(GhosttyFormatterTerminalExtra, size) == 0 &&
+                        sizeof(((GhosttyFormatterTerminalExtra*)0)->size) == sizeof(size_t));
+  emit_struct("GhosttyFormatterTerminalExtra",
+              sizeof(GhosttyFormatterTerminalExtra),
+              _Alignof(GhosttyFormatterTerminalExtra),
+              is_sized);
+  first_field = 1;
+  EMIT_UINT(GhosttyFormatterTerminalExtra, size);               /* size_t @ 0 */
+  EMIT_BOOL(GhosttyFormatterTerminalExtra, palette);            /* bool @ 8 */
+  EMIT_BOOL(GhosttyFormatterTerminalExtra, modes);              /* bool @ 9 */
+  EMIT_BOOL(GhosttyFormatterTerminalExtra, scrolling_region);   /* bool @ 10 */
+  EMIT_BOOL(GhosttyFormatterTerminalExtra, tabstops);           /* bool @ 11 (no underscore) */
+  EMIT_BOOL(GhosttyFormatterTerminalExtra, pwd);                /* bool @ 12 */
+  EMIT_BOOL(GhosttyFormatterTerminalExtra, keyboard);           /* bool @ 13 (2 bytes pad @ 14-15) */
+  EMIT_STRUCT(GhosttyFormatterTerminalExtra, screen);           /* struct(16) @ 16 */
+  end_struct();
+}
+
+static void probe_formatter_screen_extra(void) {
+  /* Nested inside GhosttyFormatterTerminalExtra.screen. 16 B, align 8, sized. */
+  const int is_sized = (offsetof(GhosttyFormatterScreenExtra, size) == 0 &&
+                        sizeof(((GhosttyFormatterScreenExtra*)0)->size) == sizeof(size_t));
+  emit_struct("GhosttyFormatterScreenExtra",
+              sizeof(GhosttyFormatterScreenExtra),
+              _Alignof(GhosttyFormatterScreenExtra),
+              is_sized);
+  first_field = 1;
+  EMIT_UINT(GhosttyFormatterScreenExtra, size);            /* size_t @ 0 */
+  EMIT_BOOL(GhosttyFormatterScreenExtra, cursor);          /* bool @ 8 */
+  EMIT_BOOL(GhosttyFormatterScreenExtra, style);           /* bool @ 9 */
+  EMIT_BOOL(GhosttyFormatterScreenExtra, hyperlink);       /* bool @ 10 */
+  EMIT_BOOL(GhosttyFormatterScreenExtra, protection);      /* bool @ 11 */
+  EMIT_BOOL(GhosttyFormatterScreenExtra, kitty_keyboard);  /* bool @ 12 */
+  EMIT_BOOL(GhosttyFormatterScreenExtra, charsets);        /* bool @ 13 */
   end_struct();
 }
 
 int main(void) {
   printf("{\n  \"structs\": [\n");
   probe_terminal_options();
-  probe_formatter_options();
+  probe_formatter_terminal_options();
+  probe_formatter_terminal_extra();
+  probe_formatter_screen_extra();
   printf("\n  ]\n}\n");
   return 0;
 }
 ```
 
-**Note for executor:** `isSized` detection via `offsetof(S, size)` compiles only when the struct has a `size` member. If the struct at the pin does *not* have a `size` member, replace the guard with `const int is_sized = 0;`. ABI discovery §5 / §7 tells you which case applies.
+**Note for executor:** `isSized` detection via `offsetof(S, size)` compiles only when the struct has a `size` member. `GhosttyTerminalOptions` at this pin has no `size` field (first field is `cols:u16 @ 0`), so we hardcode `is_sized_options = 0`. The three formatter structs (`GhosttyFormatterTerminalOptions`, `GhosttyFormatterTerminalExtra`, `GhosttyFormatterScreenExtra`) all start with `size_t size`, so the `offsetof` detection is valid for them. ABI discovery §5 / §7 tells you which case applies if fields change upstream.
 
 - [ ] **Step 2: Run the probe**
 
@@ -819,7 +861,7 @@ Expected: `.tmp/layout.json` exists and contains a JSON object with a `structs` 
 bun -e 'console.log(JSON.parse(await Bun.file(".tmp/layout.json").text()))'
 ```
 
-Expected: prints the parsed object with two struct entries.
+Expected: prints the parsed object with four struct entries (`GhosttyTerminalOptions`, `GhosttyFormatterTerminalOptions`, `GhosttyFormatterTerminalExtra`, `GhosttyFormatterScreenExtra`).
 
 - [ ] **Step 3: Commit**
 
@@ -842,11 +884,11 @@ The generator parses Ghostty headers for enum values and a *declared* symbol lis
 - `structLayouts` — from probe JSON: size, align, per-field offset+size+kind, and an `isSized` flag.
 - Per-enum `...Values` maps (e.g., `GhosttyResultValues`, `ModeTagValues`).
 - `resultCodeByValue` — reverse map from `GhosttyResult` numeric value to TypeScript error-code string.
-- `modeNames` — `readonly string[]` of the TS-facing names (e.g., `"bracketed_paste"`), derived from `ModeTag` by stripping the upstream prefix (recorded in ABI discovery §8) and lowercasing.
+- `modeNames` — `readonly string[]` of the TS-facing names (e.g., `"bracketed_paste"`), derived from the 41 `#define GHOSTTY_MODE_<NAME>` macros in `vendor/ghostty/include/ghostty/vt/modes.h` by stripping the upstream prefix (recorded in ABI discovery §8) and lowercasing. Names beginning with a digit are prefixed with an underscore (e.g. `GHOSTTY_MODE_132_COLUMN` → `_132_column`).
 - `ModeName` type alias — `typeof modeNames[number]` — giving consumers a real string-literal union.
-- `modeTagByName` — `Record<ModeName, number>` for runtime lookup.
-- `terminalGetKeyByName` — if the ABI discovery §9 enumerates the get-key enum, the generator emits a map from snapshot-field name to numeric key.
-- `formatterTagByName` — if the ABI discovery §10 indicates a tag enum exists, mapped by format name ("plain"/"vt"/"html").
+- `modeTagByName` — `Record<ModeName, number>` for runtime lookup. **Values are packed `uint16_t`s** computed as `value | (ansi ? 1<<15 : 0)` per ABI discovery §8, NOT raw enum indices.
+- `terminalDataByName` — mapped from the `GhosttyTerminalData` enum (ABI discovery §9); snapshot-field name → numeric key.
+- `formatterFormatByName` — mapped from the `GhosttyFormatterFormat` enum (ABI discovery §10), keyed by format name (`"plain"`/`"vt"`/`"html"`) to u32 enum values `0`/`1`/`2`.
 
 The runtime binding (`src/ffi.ts`) exports a separate `requiredSymbols` constant — the exact list of symbols `dlopen()` declares. The ABI smoke test (Task 18) asserts `requiredSymbols ⊆ declaredHeaderSymbols`. These two lists are never conflated.
 
@@ -972,31 +1014,61 @@ function parseDeclaredSymbols(src: string): string[] {
   return [...out].sort();
 }
 
-// --- Prefix-aware mode-name generation -------------------------------------
-// The upstream ModeTag prefix is recorded in docs/abi/2026-04-22-abi-discovery.md §8.
-// Update this constant if upstream changes the prefix.
+// --- Mode-define parser ----------------------------------------------------
+// Modes are NOT an enum at this pin. They are 41 `#define GHOSTTY_MODE_<NAME>
+// (ghostty_mode_new(<value>, <ansi>))` macros declared in vt/modes.h. The
+// MODE_TAG_PREFIX constant below is consumed by parseModeDefines() (not by an
+// enum lookup). See docs/abi/2026-04-22-abi-discovery.md §8.
 const MODE_TAG_PREFIX = "GHOSTTY_MODE_";
+const MODES_HEADER_PATH = join(HEADER_DIR, "vt/modes.h");
 
-function derivedModeNames(modeTagEntries: Array<{ name: string; value: number }>) {
-  return modeTagEntries
-    .filter((e) => e.name.startsWith(MODE_TAG_PREFIX))
-    .map((e) => ({
-      tsName: e.name.slice(MODE_TAG_PREFIX.length).toLowerCase(),
-      cName: e.name,
-      value: e.value,
-    }))
-    .sort((a, b) => a.tsName.localeCompare(b.tsName));
+// Names that begin with a digit (e.g. `132_column`) are not valid TS
+// identifiers; we prefix them with `_` to make them usable as object keys and
+// type-literal union members. One-line convention documented here.
+function sanitizeTsModeName(raw: string): string {
+  return /^[0-9]/.test(raw) ? `_${raw}` : raw;
+}
+
+interface ModeDefineEntry {
+  tsName: string;  // TS-facing name, e.g. "bracketed_paste" or "_132_column"
+  cName: string;   // original C macro name, e.g. "GHOSTTY_MODE_BRACKETED_PASTE"
+  value: number;   // packed u16: `rawValue | (ansi ? 1<<15 : 0)`
+  ansi: boolean;   // true for ANSI modes (bit 15 set), false for DEC private
+}
+
+async function parseModeDefines(): Promise<ModeDefineEntry[]> {
+  const src = await readFile(MODES_HEADER_PATH, "utf8");
+  const re =
+    /#define\s+(GHOSTTY_MODE_\w+)\s+\(\s*ghostty_mode_new\(\s*(\d+)\s*,\s*(true|false)\s*\)\s*\)/g;
+  const out: ModeDefineEntry[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src)) !== null) {
+    const cName = m[1] as string;
+    const rawValue = Number.parseInt(m[2] as string, 10);
+    const ansi = m[3] === "true";
+    const packed = (rawValue & 0x7fff) | (ansi ? 1 << 15 : 0);
+    const stripped = cName.slice(MODE_TAG_PREFIX.length).toLowerCase();
+    out.push({
+      tsName: sanitizeTsModeName(stripped),
+      cName,
+      value: packed,
+      ansi,
+    });
+  }
+  return out.sort((a, b) => a.tsName.localeCompare(b.tsName));
 }
 
 // --- GhosttyResult → TS error code mapping ---------------------------------
 // Hand-authored central table: each GhosttyResult C name maps to the TS
 // GhosttyErrorCode string union. Names not in this table fall back to "unknown"
-// and a warning is printed during generation.
+// and a warning is printed during generation. Authoritative names/values from
+// ABI discovery §3 (vt/types.h lines 74-86).
 const RESULT_CODE_MAP: Record<string, string> = {
-  GHOSTTY_RESULT_OK: "ok",
-  GHOSTTY_RESULT_OUT_OF_MEMORY: "out_of_memory",
-  GHOSTTY_RESULT_INVALID_ARGUMENT: "invalid_argument",
-  GHOSTTY_RESULT_UNINITIALIZED: "uninitialized",
+  GHOSTTY_SUCCESS: "ok",
+  GHOSTTY_OUT_OF_MEMORY: "out_of_memory",
+  GHOSTTY_INVALID_VALUE: "invalid_value",
+  GHOSTTY_OUT_OF_SPACE: "out_of_space",
+  GHOSTTY_NO_VALUE: "no_value",
 };
 
 // --- Main ------------------------------------------------------------------
@@ -1016,10 +1088,11 @@ async function main() {
     throw new Error(`package.json ghostty.commit must be a 40-char SHA, got "${pinned}"`);
   }
 
-  const modeTagEntries = enums.get("ModeTag") ?? enums.get("GhosttyModeTag") ?? [];
-  const modeInfo = derivedModeNames(modeTagEntries);
+  // Modes are not an enum at this pin — they are `#define` macros parsed
+  // directly from vt/modes.h. See ABI discovery §8.
+  const modeInfo = await parseModeDefines();
   if (modeInfo.length === 0) {
-    console.warn("WARNING: no ModeTag entries found — ModeName union will be empty");
+    console.warn("WARNING: no GHOSTTY_MODE_<NAME> defines found — ModeName union will be empty");
   }
 
   const resultEntries = enums.get("GhosttyResult") ?? [];
@@ -1040,6 +1113,13 @@ async function main() {
   out.push(`// Pinned Ghostty commit: ${pinned}`);
   out.push("");
   out.push(`export const pinnedCommit = ${JSON.stringify(pinned)} as const;`);
+  out.push("");
+
+  // Expected library version checked at load time against ghostty_build_info.
+  // Captured from package.json (ghostty.libraryVersion). At the pin this is
+  // "0.1.0-dev". See ABI discovery §2.
+  const expectedLibraryVersion = pkgJson.ghostty?.libraryVersion ?? "0.1.0-dev";
+  out.push(`export const EXPECTED_LIBRARY_VERSION = ${JSON.stringify(expectedLibraryVersion)} as const;`);
   out.push("");
 
   out.push("// DIAGNOSTIC: every ghostty_* function declared in a pinned header.");
@@ -1081,7 +1161,8 @@ async function main() {
   out.push("};");
   out.push("");
 
-  out.push("// ModeTag → TS-facing name mapping.");
+  out.push("// Mode tags — parsed from #define GHOSTTY_MODE_<NAME> macros in vt/modes.h.");
+  out.push("// Values are packed uint16: `rawValue | (ansi ? 1<<15 : 0)`. See ABI discovery §8.");
   out.push("export const modeNames = [");
   for (const m of modeInfo) out.push(`  ${JSON.stringify(m.tsName)},`);
   out.push("] as const;");
@@ -1091,19 +1172,17 @@ async function main() {
   out.push("};");
   out.push("");
 
-  // Formatter tag mapping (only if ABI discovery §10 says upstream uses a tag).
-  // If the enum does not exist at the pin, emit an empty map — the formatter
-  // constructor reads `docs/abi/` and either uses this map or selects format
-  // via a field in GhosttyFormatterOptions.
-  const formatterTag = enums.get("GhosttyFormatterTag") ?? [];
-  out.push("export const formatterTagByName: Record<\"plain\" | \"vt\" | \"html\", number | null> = {");
-  const ft = (human: string, cName: string) => {
-    const hit = formatterTag.find((e) => e.name === cName);
+  // Formatter format enum (GhosttyFormatterFormat at this pin; see ABI §10).
+  // The three constants have the `_FORMAT_` infix — GHOSTTY_FORMATTER_FORMAT_PLAIN/_VT/_HTML.
+  const formatterFormat = enums.get("GhosttyFormatterFormat") ?? [];
+  out.push("export const formatterFormatByName: Record<\"plain\" | \"vt\" | \"html\", number | null> = {");
+  const ff = (cName: string) => {
+    const hit = formatterFormat.find((e) => e.name === cName);
     return hit ? `${hit.value}` : "null";
   };
-  out.push(`  "plain": ${ft("plain", "GHOSTTY_FORMATTER_PLAIN")},`);
-  out.push(`  "vt":    ${ft("vt",    "GHOSTTY_FORMATTER_VT")},`);
-  out.push(`  "html":  ${ft("html",  "GHOSTTY_FORMATTER_HTML")},`);
+  out.push(`  "plain": ${ff("GHOSTTY_FORMATTER_FORMAT_PLAIN")},`);
+  out.push(`  "vt":    ${ff("GHOSTTY_FORMATTER_FORMAT_VT")},`);
+  out.push(`  "html":  ${ff("GHOSTTY_FORMATTER_FORMAT_HTML")},`);
   out.push("};");
   out.push("");
 
@@ -1116,7 +1195,7 @@ async function main() {
 await main();
 ```
 
-**Executor note:** The `RESULT_CODE_MAP` and the `MODE_TAG_PREFIX` constant must be reconciled with the ABI discovery doc. If the prefix is not `GHOSTTY_MODE_`, update the constant. If the discovery finds new `GHOSTTY_RESULT_*` entries not in `RESULT_CODE_MAP`, add them (and corresponding `GhosttyErrorCode` values in Task 6).
+**Executor note:** `RESULT_CODE_MAP` mirrors ABI discovery §3. The 5 FFI result codes are `GHOSTTY_SUCCESS=0`, `GHOSTTY_OUT_OF_MEMORY=-1`, `GHOSTTY_INVALID_VALUE=-2`, `GHOSTTY_OUT_OF_SPACE=-3`, `GHOSTTY_NO_VALUE=-4` — negative signed values. If the discovery doc ever gains new entries, add them here and in Task 6's `GhosttyErrorCode` union. `MODE_TAG_PREFIX` is consumed only by `parseModeDefines()` above (not by any enum lookup) and stays `GHOSTTY_MODE_` per the pinned `vt/modes.h`.
 
 - [ ] **Step 2: Run the generator**
 
@@ -1138,11 +1217,11 @@ If any `WARNING` lines appear, reconcile them with ABI discovery before proceedi
 
 ```bash
 head -60 src/internal/generated.ts
-grep -c 'ghostty_terminal_new\|ghostty_terminal_free\|ghostty_formatter_new\|ghostty_formatter_format' src/internal/generated.ts
+grep -c 'ghostty_terminal_new\|ghostty_terminal_free\|ghostty_formatter_terminal_new\|ghostty_formatter_format_alloc' src/internal/generated.ts
 # Expected: 4 (each symbol appears exactly once in declaredHeaderSymbols)
 
 bun -e 'const g = await import("./src/internal/generated.ts"); console.log({commit: g.pinnedCommit, modes: g.modeNames.length, resultCodes: Object.keys(g.resultCodeByValue).length});'
-# Expected: commit is your pinned SHA; modes > 0; resultCodes > 0.
+# Expected: commit is your pinned SHA; modes === 41; resultCodes === 5.
 ```
 
 If anything is missing, the generator or ABI discovery is wrong — fix before proceeding.
@@ -1188,7 +1267,7 @@ describe("GhosttyError hierarchy", () => {
     expect(e.functionName).toBeUndefined();
     expect(e.message).toBe("bad things");
 
-    const e2 = new GhosttyError("boom", { code: "invalid_argument", functionName: "ghostty_terminal_resize" });
+    const e2 = new GhosttyError("boom", { code: "invalid_value", functionName: "ghostty_terminal_resize" });
     expect(e2.functionName).toBe("ghostty_terminal_resize");
   });
 
@@ -1246,10 +1325,13 @@ Contents:
 
 ```typescript
 export type GhosttyErrorCode =
+  // FFI result codes (per ABI discovery §3 / src/internal/generated.ts RESULT_CODE_MAP)
   | "ok"
   | "out_of_memory"
-  | "invalid_argument"
-  | "uninitialized"
+  | "invalid_value"
+  | "out_of_space"
+  | "no_value"
+  // Binding-only codes
   | "library_not_found"
   | "library_incompatible"
   | "unsupported_platform"
@@ -1675,13 +1757,17 @@ Expected: module not found.
 Contents:
 
 ```typescript
-import { dlopen, FFIType } from "bun:ffi";
+import { dlopen, FFIType, ptr, toArrayBuffer } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LibraryCompatibilityError, LibraryNotFoundError } from "./errors";
 import { resolveLibraryPath } from "./internal/path";
-import { declaredHeaderSymbols, pinnedCommit } from "./internal/generated";
+import {
+  declaredHeaderSymbols,
+  EXPECTED_LIBRARY_VERSION,
+  pinnedCommit,
+} from "./internal/generated";
 
 // ---- Symbol declarations ---------------------------------------------------
 // Every symbol the binding dlopens is declared here with its bun:ffi signature.
@@ -1693,57 +1779,83 @@ import { declaredHeaderSymbols, pinnedCommit } from "./internal/generated";
 // table, and the probe in Task 4 together — not independently.
 
 const SYMBOLS = {
+  // GhosttyTerminalOptions (16 B) is passed by value. bun:ffi has no struct-
+  // by-value, so on darwin-arm64 we split it into two u64s per AAPCS64 register
+  // rules. Returns GhosttyResult (signed i32). See ABI discovery §4 + §12
+  // Surprise 5.
   ghostty_terminal_new: {
-    args: [FFIType.ptr, FFIType.ptr],   // (allocator_or_null, &options_struct) → GhosttyTerminal*
-    returns: FFIType.ptr,
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u64],  // (alloc, &out, opts_lo, opts_hi)
+    returns: FFIType.i32,
   },
   ghostty_terminal_free: {
     args: [FFIType.ptr],
     returns: FFIType.void,
   },
+  // Returns void (documented to never fail — ABI §4).
   ghostty_terminal_vt_write: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64],   // (term, bytes, len)
-    returns: FFIType.u32,                            // GhosttyResult
+    returns: FFIType.void,
   },
+  // Returns void.
   ghostty_terminal_reset: {
     args: [FFIType.ptr],
-    returns: FFIType.u32,
+    returns: FFIType.void,
   },
+  // 5 args: (term, cols:u16, rows:u16, cell_width_px:u32, cell_height_px:u32).
   ghostty_terminal_resize: {
-    args: [FFIType.ptr, FFIType.u32, FFIType.u32],   // (term, cols, rows)
-    returns: FFIType.u32,
+    args: [FFIType.ptr, FFIType.u16, FFIType.u16, FFIType.u32, FFIType.u32],
+    returns: FFIType.i32,
   },
-  ghostty_terminal_get_multi: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64],  // (term, keys[], values[], count)
-    returns: FFIType.u32,
-  },
+  // bool is an out-param (ptr), not the return. Returns GhosttyResult.
   ghostty_terminal_mode_get: {
-    args: [FFIType.ptr, FFIType.u32],                // (term, mode_tag)
-    returns: FFIType.bool,
+    args: [FFIType.ptr, FFIType.u16, FFIType.ptr],   // (term, mode_tag, &out_bool)
+    returns: FFIType.i32,
   },
   ghostty_terminal_mode_set: {
-    args: [FFIType.ptr, FFIType.u32, FFIType.bool],  // (term, mode_tag, value)
-    returns: FFIType.u32,
+    args: [FFIType.ptr, FFIType.u16, FFIType.bool],  // (term, mode_tag, value)
+    returns: FFIType.i32,
   },
-  ghostty_formatter_new: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],   // (allocator, &options, &out)
-    returns: FFIType.u32,
+  // (term, count, keys_ptr, values_ptr_array, out_written_ptr)
+  ghostty_terminal_get_multi: {
+    args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+  // GhosttyFormatterTerminalOptions (56 B) is passed via hidden pointer on
+  // arm64 AAPCS64 (structs > 16 B are passed indirectly). We declare it as
+  // FFIType.ptr and pass a pointer to the options bytes.
+  ghostty_formatter_terminal_new: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (alloc, &out_fmt, term, &options)
+    returns: FFIType.i32,
   },
   ghostty_formatter_free: {
     args: [FFIType.ptr],
     returns: FFIType.void,
   },
-  ghostty_formatter_format: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (fmt, term, &buf, &len)
-    returns: FFIType.u32,
+  ghostty_formatter_format_alloc: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (fmt, alloc, &out_ptr, &out_len)
+    returns: FFIType.i32,
   },
   ghostty_alloc: {
     args: [FFIType.ptr, FFIType.u64],
     returns: FFIType.ptr,
   },
+  // ghostty_free requires length — NOT a libc-style free. See ABI §11.
   ghostty_free: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64],   // (allocator_or_null, ptr, len)
     returns: FFIType.void,
+  },
+  // Build identity. data is a GhosttyBuildInfo enum (c_int); out is typed per
+  // the enum value (we use VERSION_STRING=5 → GhosttyString*). ABI §2.
+  ghostty_build_info: {
+    args: [FFIType.i32, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+  // Runtime struct-layout introspection — returns a null-terminated JSON
+  // string describing every C-API struct's layout. Used by Task 18's ABI
+  // smoke test to cross-check `structLayouts`. ABI §2 / §12 Surprise 15.
+  ghostty_type_json: {
+    args: [],
+    returns: FFIType.cstring,
   },
 } as const;
 
@@ -1859,15 +1971,52 @@ export function getLib(): DlopenResult {
     );
   }
 
-  // Build-identity check. Wired here if ABI discovery §2 says upstream exposes
-  // `ghostty_build_info_*` or equivalent. If NOT exposed, `loadedIdentity`
-  // remains null and we document the weaker guarantee in the README (Task 21).
+  // Build-identity check. ABI discovery §2 confirms `ghostty_build_info(data,
+  // out)` is available at this pin and returns a semver string (e.g.
+  // "0.1.0-dev") via `GHOSTTY_BUILD_INFO_VERSION_STRING=5`. This is NOT a git
+  // commit SHA — upstream does not expose one — so this is a weaker check
+  // than cryptographic commit verification. The Task 21 README narrows the
+  // compatibility claim accordingly.
   //
-  // Executor: if build_info IS available at the pin, expand the SYMBOLS table
-  // with the build_info getters, add them to requiredSymbols, and populate
-  // loadedIdentity below. The current stub leaves it null — a valid outcome
-  // when upstream doesn't expose identity yet.
-  loadedIdentity = null;
+  // The pinned expected value is captured in generated.ts as
+  // EXPECTED_LIBRARY_VERSION; mismatch → LibraryCompatibilityError.
+  //
+  //   GhosttyString layout (ABI §2/§9): { uint8_t *ptr @ 0; size_t len @ 8 }
+  //   Total 16 bytes. The ptr aliases into library-owned static storage;
+  //   we decode as UTF-8 and copy into a JS string.
+  const GHOSTTY_BUILD_INFO_VERSION_STRING = 5;
+  const stringOut = new ArrayBuffer(16);
+  const infoResult = (opened.symbols.ghostty_build_info as any)(
+    GHOSTTY_BUILD_INFO_VERSION_STRING,
+    ptr(new Uint8Array(stringOut)),
+  );
+  if (infoResult !== 0) {
+    opened.close();
+    throw new LibraryCompatibilityError(
+      `ghostty_build_info(VERSION_STRING) failed with code ${infoResult}`,
+      { details: `build_info result ${infoResult}`, expectedCommit: pinnedCommit },
+    );
+  }
+  const sView = new DataView(stringOut);
+  const sPtr = Number(sView.getBigUint64(0, true));
+  const sLen = Number(sView.getBigUint64(8, true));
+  if (sPtr === 0 || sLen === 0) {
+    loadedIdentity = "";
+  } else {
+    const bytes = new Uint8Array(toArrayBuffer(sPtr, 0, sLen));
+    loadedIdentity = new TextDecoder("utf-8").decode(bytes);
+  }
+
+  if (loadedIdentity !== EXPECTED_LIBRARY_VERSION) {
+    opened.close();
+    throw new LibraryCompatibilityError(
+      `libghostty-vt version "${loadedIdentity}" does not match expected "${EXPECTED_LIBRARY_VERSION}"`,
+      {
+        details: `version mismatch: got "${loadedIdentity}", expected "${EXPECTED_LIBRARY_VERSION}"`,
+        expectedCommit: pinnedCommit,
+      },
+    );
+  }
 
   loaded = opened;
   loadedPath = path;
@@ -2338,7 +2487,7 @@ Expected: module not found.
 Contents:
 
 ```typescript
-import type { Pointer } from "bun:ffi";
+import { ptr, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
 import { GhosttyError, UseAfterCloseError } from "./errors";
 import { resultCodeByValue, structLayouts } from "./internal/generated";
@@ -2370,13 +2519,13 @@ export class Terminal {
   constructor(opts: TerminalOptions) {
     if (!Number.isInteger(opts.cols) || opts.cols <= 0) {
       throw new GhosttyError("cols must be a positive integer", {
-        code: "invalid_argument",
+        code: "invalid_value",
         functionName: "Terminal.constructor",
       });
     }
     if (!Number.isInteger(opts.rows) || opts.rows <= 0) {
       throw new GhosttyError("rows must be a positive integer", {
-        code: "invalid_argument",
+        code: "invalid_value",
         functionName: "Terminal.constructor",
       });
     }
@@ -2395,32 +2544,43 @@ export class Terminal {
       );
     }
 
-    // Only include fields that actually exist in the probed layout. Missing
-    // fields are ignored silently by writeStruct.
+    // APC tuning (apc_max_bytes / apc_max_bytes_kitty) is NOT a field on
+    // GhosttyTerminalOptions at this pin — it is set post-construction via
+    // ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, ...).
+    // Pass 1 does not expose APC tuning (deferred to Pass 2+); the library
+    // uses its upstream defaults. See Task 21 README APC footnote.
     const fields: Record<string, number | bigint | boolean> = {
       cols: opts.cols,
       rows: opts.rows,
-      max_scrollback: opts.maxScrollback ?? 1000,
+      max_scrollback: BigInt(opts.maxScrollback ?? 1000),  // size_t
     };
-    if (layout.fields["apc_max_bytes"])
-      fields["apc_max_bytes"] = opts.apcMaxBytes ?? (1 << 20);          // 1 MiB
-    if (layout.fields["apc_max_bytes_kitty"])
-      fields["apc_max_bytes_kitty"] = opts.apcMaxBytesKitty ?? 0;       // disabled
 
     const optBytes = writeStruct(layout, fields);
 
-    // ghostty_terminal_new(...) signature per ABI discovery §4. The call
-    // shape below is (allocator=null, &options) → GhosttyTerminal*. If the
-    // actual signature is different (e.g. `(allocator, &options, &out)`),
-    // update here and in src/ffi.ts SYMBOLS together.
-    const handle = lib.symbols.ghostty_terminal_new(null, optBytes);
-    if (!handle) {
-      throw new GhosttyError("ghostty_terminal_new returned null", {
+    // ghostty_terminal_new passes GhosttyTerminalOptions BY VALUE. bun:ffi has
+    // no struct-by-value, so on darwin-arm64 (AAPCS64) we split the 16-byte
+    // options struct into two u64 register-sized args. The output handle is
+    // written back through the 2nd arg (pointer-to-pointer). Return value is
+    // GhosttyResult (signed i32). See ABI discovery §4 + §12 Surprise 5.
+    const u64s = new BigUint64Array(optBytes.buffer, optBytes.byteOffset, 2);
+    const outSlot = new BigUint64Array(1);
+
+    const result = lib.symbols.ghostty_terminal_new(
+      null,
+      ptr(outSlot),
+      u64s[0]!,
+      u64s[1]!,
+    );
+    checkResult(result, "ghostty_terminal_new");
+
+    const handleBig = outSlot[0]!;
+    if (handleBig === 0n) {
+      throw new GhosttyError("ghostty_terminal_new returned OK but out pointer is null", {
         code: "out_of_memory",
         functionName: "ghostty_terminal_new",
       });
     }
-    this.#handle = handle;
+    this.#handle = Number(handleBig) as Pointer;
   }
 
   /** @internal — for use by other classes in the package (e.g. Formatter). */
@@ -2555,13 +2715,7 @@ Expected: new tests fail with "not implemented yet".
 
 - [ ] **Step 3: Implement**
 
-At the top of `src/terminal.ts`, augment the `bun:ffi` import to include `ptr`:
-
-```typescript
-import { ptr, type Pointer } from "bun:ffi";
-```
-
-(If `type Pointer` is already imported, extend the single import line rather than adding a new one.)
+`ptr` is already imported in Task 11 — no import change needed here.
 
 Replace the `vtWrite` stub in `src/terminal.ts`:
 
@@ -2570,13 +2724,14 @@ Replace the `vtWrite` stub in `src/terminal.ts`:
     this.#assertOpen();
     if (bytes.length === 0) return;
     const lib = getLib();
-    // Pass zero-copy into ghostty_terminal_vt_write(term, bytes, len).
-    const result = lib.symbols.ghostty_terminal_vt_write(
+    // ghostty_terminal_vt_write returns void (documented to never fail — ABI §4).
+    // Zero-copy: ptr(bytes) aliases the Uint8Array's backing buffer for the
+    // duration of the call.
+    lib.symbols.ghostty_terminal_vt_write(
       this.#handle,
       ptr(bytes),
       BigInt(bytes.length),
     );
-    checkResult(result, "ghostty_terminal_vt_write");
   }
 ```
 
@@ -2646,13 +2801,13 @@ Replace stubs in `src/terminal.ts`:
     this.#assertOpen();
     if (!Number.isInteger(cols) || cols <= 0) {
       throw new GhosttyError("cols must be a positive integer", {
-        code: "invalid_argument",
+        code: "invalid_value",
         functionName: "Terminal.resize",
       });
     }
     if (!Number.isInteger(rows) || rows <= 0) {
       throw new GhosttyError("rows must be a positive integer", {
-        code: "invalid_argument",
+        code: "invalid_value",
         functionName: "Terminal.resize",
       });
     }
@@ -2660,15 +2815,24 @@ Replace stubs in `src/terminal.ts`:
       this.#cellPx = { width: cellPx.width, height: cellPx.height };
     }
     const lib = getLib();
-    const result = lib.symbols.ghostty_terminal_resize(this.#handle, cols, rows);
+    // Signature per ABI §4: (term, cols:u16, rows:u16, cell_width_px:u32,
+    // cell_height_px:u32) → GhosttyResult. cols/rows narrow to u16 at the
+    // FFI layer; cellPx widths pass as u32.
+    const result = lib.symbols.ghostty_terminal_resize(
+      this.#handle,
+      cols,
+      rows,
+      this.#cellPx.width,
+      this.#cellPx.height,
+    );
     checkResult(result, "ghostty_terminal_resize");
   }
 
   reset(): void {
     this.#assertOpen();
     const lib = getLib();
-    const result = lib.symbols.ghostty_terminal_reset(this.#handle);
-    checkResult(result, "ghostty_terminal_reset");
+    // Returns void (ABI §4).
+    lib.symbols.ghostty_terminal_reset(this.#handle);
   }
 ```
 
@@ -2756,35 +2920,48 @@ Expected: new tests fail with "not implemented yet".
 
 - [ ] **Step 3: Implement**
 
-The implementation uses `ghostty_terminal_get_multi`, which takes an array of keys and an array of output slots. Keys are values from the `GhosttyTerminalGetKey` enum (generated; names verified at pin time).
+The implementation uses `ghostty_terminal_get_multi`. Its `values` parameter is `void**` — an array of N caller-allocated output pointers, each pointing to a slot sized for its specific key's output type (ABI discovery §4 get_multi details + §9 per-key output types). This is NOT a flat byte buffer; each key has its own typed slot.
 
 Add a helper at the top of `src/terminal.ts` after imports:
 
 ```typescript
-// Map of snapshot field name → GhosttyTerminalGetKey enum NAME. Values come
-// from GhosttyTerminalGetKeyValues at runtime; names are verified against the
-// generated file. If a key is missing from the generated enum, the helper
-// will throw a clear error rather than silently returning zero.
-import { GhosttyTerminalGetKeyValues } from "./internal/generated";
+// Map of snapshot field name → GhosttyTerminalData enum NAME + output slot
+// kind. Values come from GhosttyTerminalDataValues at runtime; names are
+// verified against the generated file. Each slot kind matches the per-key
+// output type in ABI §9. If a key is missing from the generated enum, the
+// helper throws a clear error rather than silently returning zero.
+import { GhosttyTerminalDataValues } from "./internal/generated";
 
-const SNAPSHOT_KEYS: Array<{ name: string; key: keyof typeof GhosttyTerminalGetKeyValues; size: "u32" | "bool" | "string" }> = [
-  { name: "cols", key: "GHOSTTY_TERMINAL_GET_COLS" as const, size: "u32" },
-  { name: "rows", key: "GHOSTTY_TERMINAL_GET_ROWS" as const, size: "u32" },
-  { name: "cursorX", key: "GHOSTTY_TERMINAL_GET_CURSOR_X" as const, size: "u32" },
-  { name: "cursorY", key: "GHOSTTY_TERMINAL_GET_CURSOR_Y" as const, size: "u32" },
-  { name: "cursorVisible", key: "GHOSTTY_TERMINAL_GET_CURSOR_VISIBLE" as const, size: "bool" },
-  { name: "activeScreen", key: "GHOSTTY_TERMINAL_GET_ACTIVE_SCREEN" as const, size: "u32" },
-  { name: "scrollbackRows", key: "GHOSTTY_TERMINAL_GET_SCROLLBACK_ROWS" as const, size: "u32" },
-  { name: "title", key: "GHOSTTY_TERMINAL_GET_TITLE" as const, size: "string" },
-  { name: "pwd", key: "GHOSTTY_TERMINAL_GET_PWD" as const, size: "string" },
-  // Pixel dims and mouse tracking and cursor style added as enum entries are
-  // confirmed present at the pin; see executor note below.
+type SlotKind = "u16" | "bool" | "i32" | "size_t" | "string";
+
+const SNAPSHOT_KEYS: Array<{ name: string; key: keyof typeof GhosttyTerminalDataValues; kind: SlotKind }> = [
+  { name: "cols",           key: "GHOSTTY_TERMINAL_DATA_COLS"             as const, kind: "u16" },
+  { name: "rows",           key: "GHOSTTY_TERMINAL_DATA_ROWS"             as const, kind: "u16" },
+  { name: "cursorX",        key: "GHOSTTY_TERMINAL_DATA_CURSOR_X"         as const, kind: "u16" },
+  { name: "cursorY",        key: "GHOSTTY_TERMINAL_DATA_CURSOR_Y"         as const, kind: "u16" },
+  { name: "cursorVisible",  key: "GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE"   as const, kind: "bool" },
+  { name: "activeScreen",   key: "GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN"    as const, kind: "i32" },
+  { name: "scrollbackRows", key: "GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS"  as const, kind: "size_t" },
+  { name: "title",          key: "GHOSTTY_TERMINAL_DATA_TITLE"            as const, kind: "string" },
+  { name: "pwd",            key: "GHOSTTY_TERMINAL_DATA_PWD"              as const, kind: "string" },
+  // CURSOR_STYLE, MOUSE_TRACKING, WIDTH_PX/HEIGHT_PX, color data, and Kitty
+  // fields are Pass 2+. See ABI §9 for the full enum.
 ];
+
+function slotByteSize(kind: SlotKind): number {
+  switch (kind) {
+    case "u16":    return 2;
+    case "bool":   return 1;
+    case "i32":    return 4;
+    case "size_t": return 8;
+    case "string": return 16;  // GhosttyString: {uint8_t* ptr@0, size_t len@8}
+  }
+}
 ```
 
-**Executor note:** replace the `GHOSTTY_TERMINAL_GET_*` names above with the exact names recorded in `docs/abi/2026-04-22-abi-discovery.md` §9. Any name missing from `GhosttyTerminalGetKeyValues` causes a compile error — consult the ABI discovery doc's "NOT AT PIN" column to know which snapshot fields to mark `undefined` instead of looking up.
+**Executor note:** The names above are verified against ABI discovery §9. Every key in `SNAPSHOT_KEYS` must be present in `GhosttyTerminalDataValues` (from `src/internal/generated.ts`); if a key is missing at a future pin, the runtime helper throws. Additional keys (CURSOR_STYLE 72 B, SCROLLBAR 24 B, COLOR_* 3 B, etc.) are deferred to Pass 2+.
 
-At the top of `src/terminal.ts`, augment the `bun:ffi` import to include `ptr` and `toArrayBuffer` (these are also used by `vtWrite` and `Formatter`):
+At the top of `src/terminal.ts`, augment the `bun:ffi` import to include `toArrayBuffer` (`ptr` is already imported in Task 11):
 
 ```typescript
 import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
@@ -2797,70 +2974,81 @@ Replace the `snapshot()` stub:
     this.#assertOpen();
     const lib = getLib();
 
-    // Build keys[] and values[] arrays.
-    // keys[]: u32 array, length = SNAPSHOT_KEYS.length
-    // values[]: opaque ptr array where each slot holds either:
-    //   - a u32 for size: "u32" | "bool"
-    //   - a (char *, size_t) pair for size: "string"
-    //
-    // The concrete ABI of ghostty_terminal_get_multi and its value struct is
-    // recorded in docs/abi/2026-04-22-abi-discovery.md §4 ("ghostty_terminal
-    // _get_multi details"). If the pin uses a different shape — e.g. a
-    // GhosttyTerminalGetValue union array rather than a flat slot buffer —
-    // the Task 3 hard-stop required this snippet to be rewritten before
-    // execution reached this task.
-
     const n = SNAPSHOT_KEYS.length;
-    const keysBuf = new Uint32Array(n);
+
+    // Build the keys array (i32 each — GhosttyTerminalData is c_int-backed).
+    const keysBuf = new Int32Array(n);
+    // Allocate one typed slot per key. We keep the slot ArrayBuffers alive
+    // via the `slots` array so the pointers we capture in `ptrArray` remain
+    // valid for the duration of the FFI call.
+    const slots: ArrayBuffer[] = new Array(n);
+    const ptrArray = new BigUint64Array(n);
+
     for (let i = 0; i < n; i++) {
       const entry = SNAPSHOT_KEYS[i];
       if (!entry) continue;
-      const v = GhosttyTerminalGetKeyValues[entry.key];
+      const v = GhosttyTerminalDataValues[entry.key];
       if (v === undefined) {
-        throw new GhosttyError(`GhosttyTerminalGetKey.${entry.key} is missing at the pinned Ghostty commit`, {
+        throw new GhosttyError(`GhosttyTerminalData.${entry.key} is missing at the pinned Ghostty commit`, {
           code: "unknown",
           functionName: "Terminal.snapshot",
         });
       }
       keysBuf[i] = v;
+      const slot = new ArrayBuffer(slotByteSize(entry.kind));
+      slots[i] = slot;
+      ptrArray[i] = BigInt(ptr(new Uint8Array(slot)));
     }
 
-    // Allocate a values buffer large enough for the widest entry type.
-    // SLOT_SIZE is taken from ABI discovery §4. If the pinned value struct
-    // is larger (e.g. pointer + length + type tag + padding), update here
-    // and the field-reading loop below accordingly.
-    const SLOT_SIZE = 16;
-    const valuesBuf = new Uint8Array(n * SLOT_SIZE);
-
+    const outWritten = new BigUint64Array(1);
     const result = lib.symbols.ghostty_terminal_get_multi(
       this.#handle,
-      ptr(keysBuf),
-      ptr(valuesBuf),
       BigInt(n),
+      ptr(keysBuf),
+      ptr(ptrArray),
+      ptr(outWritten),
     );
     checkResult(result, "ghostty_terminal_get_multi");
 
-    const view = new DataView(valuesBuf.buffer);
-    // Build the snapshot by reading each slot per its declared type.
+    // Decode each slot per its kind. String values (TITLE, PWD) are borrowed
+    // — the ptr aliases into terminal-owned memory valid only until the next
+    // mutating call. We copy them into JS strings immediately (ABI §4/§9).
     const raw: Record<string, number | boolean | string | undefined> = {};
     for (let i = 0; i < n; i++) {
       const entry = SNAPSHOT_KEYS[i];
       if (!entry) continue;
-      const off = i * SLOT_SIZE;
-      if (entry.size === "u32")    raw[entry.name] = view.getUint32(off, true);
-      else if (entry.size === "bool") raw[entry.name] = view.getUint8(off) !== 0;
-      else if (entry.size === "string") {
-        // {char *ptr, size_t len} — little-endian 64-bit both fields.
-        const strPtr = view.getBigUint64(off, true);
-        const strLen = Number(view.getBigUint64(off + 8, true));
-        if (strPtr === 0n || strLen === 0) raw[entry.name] = undefined;
-        else {
-          // Copy immediately — libghostty may invalidate the string memory
-          // on the next mutating call (vt_write, resize, reset).
-          const view = new Uint8Array(toArrayBuffer(Number(strPtr), 0, strLen));
-          const copy = new Uint8Array(strLen);
-          copy.set(view);
-          raw[entry.name] = new TextDecoder("utf-8").decode(copy);
+      const slot = slots[i];
+      if (!slot) continue;
+      const view = new DataView(slot);
+      switch (entry.kind) {
+        case "u16":
+          raw[entry.name] = view.getUint16(0, true);
+          break;
+        case "bool":
+          raw[entry.name] = view.getUint8(0) !== 0;
+          break;
+        case "i32":
+          raw[entry.name] = view.getInt32(0, true);
+          break;
+        case "size_t":
+          raw[entry.name] = Number(view.getBigUint64(0, true));
+          break;
+        case "string": {
+          const strPtr = view.getBigUint64(0, true);
+          const strLen = Number(view.getBigUint64(8, true));
+          if (strPtr === 0n || strLen === 0) {
+            raw[entry.name] = undefined;
+          } else {
+            // Copy immediately — borrowed pointer, invalidated by the next
+            // mutating terminal call.
+            const borrowed = new Uint8Array(
+              toArrayBuffer(Number(strPtr), 0, strLen),
+            );
+            const copy = new Uint8Array(strLen);
+            copy.set(borrowed);
+            raw[entry.name] = new TextDecoder("utf-8").decode(copy);
+          }
+          break;
         }
       }
     }
@@ -2880,18 +3068,18 @@ Replace the `snapshot()` stub:
         x: raw.cursorX as number,
         y: raw.cursorY as number,
         visible: raw.cursorVisible as boolean,
-        style: "block",  // Wired through in a later pass once GET_CURSOR_STYLE is confirmed present.
+        style: "block",  // CURSOR_STYLE returns a 72 B GhosttyStyle struct; Pass 2+.
       },
       activeScreen,
       title: raw.title as string | undefined,
       pwd: raw.pwd as string | undefined,
       scrollbackRows: raw.scrollbackRows as number,
-      mouseTracking: "none",  // Wired through once GET_MOUSE_TRACKING is confirmed present.
+      mouseTracking: "none",  // MOUSE_TRACKING returns a bool; richer reporting is Pass 2+.
     };
   }
 ```
 
-**Executor note:** `ghostty_terminal_get_multi`'s ABI is authoritatively recorded in `docs/abi/2026-04-22-abi-discovery.md` §4. Task 3's hard-stop required that any deviation from the shape sketched above (flat u32-key array + 16-byte slot values) be reconciled with this snippet before Task 14 began. If you are reading this text and have not performed that reconciliation, stop here and complete Task 3 Step 5 first.
+**Executor note:** `ghostty_terminal_get_multi`'s ABI is authoritatively recorded in `docs/abi/2026-04-22-abi-discovery.md` §4 and §9. The `values` parameter is `void**` — one pointer per key, each pointing to a typed slot sized per ABI §9. Do NOT replace this with a single flat byte buffer; that was the plan's original (incorrect) design.
 
 - [ ] **Step 4: Run — verify pass**
 
@@ -2962,7 +3150,7 @@ function modeTagFromName(name: ModeName): number {
   const v = (modeTagByName as Record<string, number | undefined>)[name];
   if (v === undefined) {
     throw new GhosttyError(`unknown ModeName: ${name}`, {
-      code: "invalid_argument",
+      code: "invalid_value",
       functionName: "Terminal.mode",
     });
   }
@@ -2970,16 +3158,23 @@ function modeTagFromName(name: ModeName): number {
 }
 ```
 
-`modeTagByName` is generated from the pinned header (Task 5). There is no string-prefix guessing — the map is the source of truth.
+`modeTagByName` is generated from the pinned header (Task 5). Values are **packed `uint16_t`s** (`value | (ansi ? 1<<15 : 0)`, per ABI §8), NOT enum indices. There is no string-prefix guessing — the map is the source of truth.
 
-Replace the `mode` and `setMode` stubs:
+Replace the `mode` and `setMode` stubs. Per ABI §4, `ghostty_terminal_mode_get` writes the boolean value into an out-param and returns a `GhosttyResult`:
 
 ```typescript
   mode(name: ModeName): boolean {
     this.#assertOpen();
     const tag = modeTagFromName(name);
     const lib = getLib();
-    return lib.symbols.ghostty_terminal_mode_get(this.#handle, tag);
+    const outBool = new Uint8Array(1);
+    const result = lib.symbols.ghostty_terminal_mode_get(
+      this.#handle,
+      tag,
+      ptr(outBool),
+    );
+    checkResult(result, "ghostty_terminal_mode_get");
+    return outBool[0] !== 0;
   }
 
   setMode(name: ModeName, value: boolean): void {
@@ -3095,93 +3290,45 @@ import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
 import { checkResult } from "./terminal";
 import { GhosttyError, UseAfterCloseError } from "./errors";
-import { formatterTagByName, structLayouts } from "./internal/generated";
+import { formatterFormatByName, structLayouts } from "./internal/generated";
 import { writeStruct } from "./internal/sized-struct";
 import { Terminal } from "./terminal";
 import type { FormatterOptions } from "./types";
 
-function formatTag(format: "plain" | "vt" | "html"): number {
-  const v = formatterTagByName[format];
+function formatEnum(format: "plain" | "vt" | "html"): number {
+  const v = formatterFormatByName[format];
   if (v === null || v === undefined) {
     throw new GhosttyError(
-      `No Ghostty formatter tag for "${format}" at pinned commit. ` +
-      `If upstream selects format via a field in GhosttyFormatterOptions, ` +
-      `update Formatter.constructor to set that field instead of calling a tag-typed constructor.`,
+      `No GhosttyFormatterFormat value for "${format}" at the pinned Ghostty commit.`,
       { code: "unknown", functionName: "Formatter.constructor" },
     );
   }
   return v;
 }
 
+// API note (Matt decision 3b): we keep the public API as
+// `new Formatter(opts)` + `fmt.format(term)` / `fmt.formatString(term)`.
+// Internally each call constructs a native formatter via
+// ghostty_formatter_terminal_new (bound to a specific Terminal), invokes
+// ghostty_formatter_format_alloc, copies the output into JS-owned memory,
+// then frees the buffer and the formatter. The slight per-call native alloc
+// cost buys us a simpler JS API that doesn't force users to thread a
+// Terminal through the constructor. Formatter instances hold no native
+// resources between calls; `close()` just flips a closed flag so subsequent
+// calls throw UseAfterCloseError (mirroring Terminal's lifecycle contract).
 export class Formatter {
-  #handle: Pointer | null = null;
-  #tag: number;
+  #opts: FormatterOptions;
+  #closed = false;
 
   constructor(opts: FormatterOptions) {
-    const lib = getLib();
-    this.#tag = formatTag(opts.format);
-
-    const layout = structLayouts["GhosttyFormatterOptions"];
-    if (!layout) {
-      throw new GhosttyError(
-        "generated.ts missing GhosttyFormatterOptions layout — rerun gen-bindings",
-        { code: "unknown", functionName: "Formatter.constructor" },
-      );
-    }
-
-    // Only set fields the probe actually captured. Field names come from ABI
-    // discovery §7 — they may not all match the spec's TS option names.
-    const fields: Record<string, number | bigint | boolean> = {};
-    const set = (cField: string, val: boolean) => {
-      if (layout.fields[cField]) fields[cField] = val;
-    };
-    set("palette", opts.palette ?? false);
-    set("modes", opts.modes ?? false);
-    set("scrolling_region", opts.scrollingRegion ?? false);
-    set("tab_stops", opts.tabStops ?? false);
-    set("pwd", opts.pwd ?? false);
-    set("keyboard", opts.keyboard ?? false);
-    set("cursor", opts.cursor ?? false);
-    set("style", opts.style ?? false);
-    set("hyperlink", opts.hyperlink ?? false);
-    set("protection", opts.protection ?? false);
-    set("charsets", opts.charsets ?? false);
-
-    // If upstream selects format via a field, set it.
-    if (layout.fields["format"]) fields["format"] = this.#tag;
-
-    const optBytes = writeStruct(layout, fields);
-
-    // ghostty_formatter_new signature per ABI discovery §6.
-    // Two common shapes — the executor must pick whichever the pin uses and
-    // update src/ffi.ts SYMBOLS to match:
-    //   (a) GhosttyResult ghostty_formatter_new(GhosttyAllocator* alloc,
-    //                                           const GhosttyFormatterOptions* opts,
-    //                                           GhosttyFormatter** out);
-    //   (b) GhosttyResult ghostty_formatter_new(GhosttyFormatterTag tag,
-    //                                           const GhosttyFormatterOptions* opts,
-    //                                           GhosttyFormatter** out);
-    // The code below assumes (a). For (b), replace `null` with `this.#tag`
-    // and remove the `format` field write above.
-    const outSlot = new BigUint64Array(1);
-    const result = lib.symbols.ghostty_formatter_new(null, optBytes, ptr(outSlot));
-    checkResult(result, "ghostty_formatter_new");
-
-    const handle = outSlot[0];
-    if (handle === 0n) {
-      throw new GhosttyError("ghostty_formatter_new returned OK but out pointer is null", {
-        code: "unknown",
-        functionName: "ghostty_formatter_new",
-      });
-    }
-    this.#handle = handle as Pointer;
+    this.#opts = opts;
+    // Validate format enum eagerly so construction errors surface here, not
+    // on first format() call.
+    formatEnum(opts.format);
   }
 
   close(): void {
-    if (this.#handle === null) return;
-    const lib = getLib();
-    lib.symbols.ghostty_formatter_free(this.#handle);
-    this.#handle = null;
+    this.#closed = true;
   }
 
   [Symbol.dispose](): void {
@@ -3192,31 +3339,92 @@ export class Formatter {
     this.#assertOpen();
     const lib = getLib();
 
-    const outBufSlot = new BigUint64Array(1);
-    const outLenSlot = new BigUint64Array(1);
+    // Build GhosttyFormatterTerminalOptions (56 B, sized). The nested `extra`
+    // sub-struct (32 B @ offset 16) itself contains a nested `screen`
+    // sub-struct (16 B @ offset 16). All three layers are sized; writeStruct
+    // auto-fills each `size` field. ABI §7 for authoritative field offsets.
+    const outerLayout  = structLayouts["GhosttyFormatterTerminalOptions"];
+    const extraLayout  = structLayouts["GhosttyFormatterTerminalExtra"];
+    const screenLayout = structLayouts["GhosttyFormatterScreenExtra"];
+    if (!outerLayout || !extraLayout || !screenLayout) {
+      throw new GhosttyError(
+        "generated.ts missing formatter options layouts — rerun gen-bindings",
+        { code: "unknown", functionName: "Formatter.format" },
+      );
+    }
 
-    const result = lib.symbols.ghostty_formatter_format(
-      this.#handle,
+    const screenBytes = writeStruct(screenLayout, {
+      cursor:         this.#opts.cursor         ?? false,
+      style:          this.#opts.style          ?? false,
+      hyperlink:      this.#opts.hyperlink      ?? false,
+      protection:     this.#opts.protection     ?? false,
+      kitty_keyboard: this.#opts.kittyKeyboard  ?? false,
+      charsets:       this.#opts.charsets       ?? false,
+    });
+
+    const extraBytes = writeStruct(extraLayout, {
+      palette:          this.#opts.palette         ?? false,
+      modes:            this.#opts.modes           ?? false,
+      scrolling_region: this.#opts.scrollingRegion ?? false,
+      tabstops:         this.#opts.tabstops        ?? false,   // no underscore in the field name
+      pwd:              this.#opts.pwd             ?? false,
+      keyboard:         this.#opts.keyboard        ?? false,
+      screen:           screenBytes,
+    });
+
+    const optsBytes = writeStruct(outerLayout, {
+      emit:      formatEnum(this.#opts.format),
+      unwrap:    this.#opts.unwrap ?? false,
+      trim:      this.#opts.trim   ?? false,
+      extra:     extraBytes,
+      selection: 0n,  // null ptr — Pass 1 does not expose selection
+    });
+
+    // ghostty_formatter_terminal_new(alloc, &out_fmt, term, &opts_bytes).
+    // 56 B options pass via hidden pointer on arm64 AAPCS64. ABI §6.
+    const outFmt = new BigUint64Array(1);
+    const r1 = lib.symbols.ghostty_formatter_terminal_new(
+      null,
+      ptr(outFmt),
       term._handle,
-      ptr(outBufSlot),
-      ptr(outLenSlot),
+      ptr(optsBytes),
     );
-    checkResult(result, "ghostty_formatter_format");
+    checkResult(r1, "ghostty_formatter_terminal_new");
+    const fmtHandle = Number(outFmt[0]!) as Pointer;
+    if (!fmtHandle) {
+      throw new GhosttyError(
+        "ghostty_formatter_terminal_new returned OK but out pointer is null",
+        { code: "unknown", functionName: "ghostty_formatter_terminal_new" },
+      );
+    }
 
-    const bufPtr = outBufSlot[0];
-    const len = Number(outLenSlot[0]);
-    if (bufPtr === 0n || len === 0) return new Uint8Array(0);
-
-    // Copy bytes immediately, then free the native buffer — in a try/finally
-    // so that an exception thrown while copying cannot leak native memory.
-    // ABI discovery §6 confirms whether ghostty_free is the correct free
-    // function and what its argument shape is; update if different.
     try {
-      const copy = new Uint8Array(len);
-      copy.set(new Uint8Array(toArrayBuffer(Number(bufPtr), 0, len)));
-      return copy;
+      const outPtr = new BigUint64Array(1);
+      const outLen = new BigUint64Array(1);
+      const r2 = lib.symbols.ghostty_formatter_format_alloc(
+        fmtHandle,
+        null,
+        ptr(outPtr),
+        ptr(outLen),
+      );
+      checkResult(r2, "ghostty_formatter_format_alloc");
+
+      const bufPtr = outPtr[0]!;
+      const len = Number(outLen[0]!);
+      if (bufPtr === 0n || len === 0) return new Uint8Array(0);
+
+      // Copy bytes immediately, then free the native buffer in finally so
+      // an exception while copying cannot leak native memory. ghostty_free
+      // requires the length (not a libc free — ABI §11).
+      try {
+        const copy = new Uint8Array(len);
+        copy.set(new Uint8Array(toArrayBuffer(Number(bufPtr), 0, len)));
+        return copy;
+      } finally {
+        lib.symbols.ghostty_free(null, Number(bufPtr), BigInt(len));
+      }
     } finally {
-      lib.symbols.ghostty_free(null, Number(bufPtr), BigInt(len));
+      lib.symbols.ghostty_formatter_free(fmtHandle);
     }
   }
 
@@ -3225,7 +3433,7 @@ export class Formatter {
   }
 
   #assertOpen(): void {
-    if (this.#handle === null) {
+    if (this.#closed) {
       throw new UseAfterCloseError("Formatter has been closed", {
         handleType: "Formatter",
       });
@@ -3234,7 +3442,7 @@ export class Formatter {
 }
 ```
 
-**Executor note:** the `ghostty_formatter_new` signature is a known ABI-discovery decision (see §6). If the actual upstream signature does not match option (a) or (b) above, add a third branch to this implementation together with an update to `src/ffi.ts` SYMBOLS. Do not guess — the discovery doc is authoritative.
+**Executor note:** the formatter constructor signature is unambiguous at this pin (ABI §6): `ghostty_formatter_terminal_new(alloc, &out, term, opts)` with options passed by value. On arm64 AAPCS64 the 56 B options are passed indirectly via a hidden pointer, which we match with `FFIType.ptr` and `ptr(optsBytes)` — no shim needed. `GhosttyFormatterTerminalOptions` is sized (first field `size_t size`); the nested `extra` (32 B) and `screen` (16 B) sub-structs are also sized. `writeStruct` fills each `size` field from the layout.
 
 - [ ] **Step 4: Run — verify pass**
 
@@ -3449,8 +3657,10 @@ describe("ABI smoke", () => {
   it("structLayouts contains the structs the binding constructs", () => {
     expect(structLayouts["GhosttyTerminalOptions"]).toBeDefined();
     expect(structLayouts["GhosttyTerminalOptions"]!.size).toBeGreaterThan(0);
-    expect(structLayouts["GhosttyFormatterOptions"]).toBeDefined();
-    expect(structLayouts["GhosttyFormatterOptions"]!.size).toBeGreaterThan(0);
+    expect(structLayouts["GhosttyFormatterTerminalOptions"]).toBeDefined();
+    expect(structLayouts["GhosttyFormatterTerminalOptions"]!.size).toBeGreaterThan(0);
+    expect(structLayouts["GhosttyFormatterTerminalExtra"]).toBeDefined();
+    expect(structLayouts["GhosttyFormatterScreenExtra"]).toBeDefined();
   });
 
   it("library loads and every required symbol resolves to a callable", () => {
@@ -3484,6 +3694,43 @@ describe("ABI smoke", () => {
       }
     }
   }, 60_000);
+
+  it("ghostty_type_json() agrees with checked-in structLayouts (ABI §12 bonus check)", () => {
+    // Runtime cross-check: libghostty exposes ghostty_type_json() which
+    // returns a JSON string describing every C-API struct's layout. For
+    // each struct we construct (GhosttyTerminalOptions and the formatter
+    // options triple), assert size/align and each field's offset/size
+    // agree. This catches any drift that sneaks past the compile-time
+    // probe (e.g. the dylib shipping with a different layout than the
+    // headers imply — which should never happen but has historically
+    // caught real bugs in other FFI bindings).
+    const lib = getLib();
+    const jsonPtr = (lib.symbols as any).ghostty_type_json();
+    // bun:ffi returns cstring as a JS string directly.
+    const parsed: Record<string, { size: number; align: number; fields: Array<{ name: string; offset: number; size: number }> }> =
+      JSON.parse(typeof jsonPtr === "string" ? jsonPtr : String(jsonPtr));
+
+    const namesToCheck = [
+      "GhosttyTerminalOptions",
+      "GhosttyFormatterTerminalOptions",
+      "GhosttyFormatterTerminalExtra",
+      "GhosttyFormatterScreenExtra",
+    ];
+    for (const name of namesToCheck) {
+      const runtime = parsed[name];
+      const checked = structLayouts[name];
+      expect(runtime, `ghostty_type_json is missing ${name}`).toBeDefined();
+      expect(checked, `structLayouts is missing ${name}`).toBeDefined();
+      expect(checked!.size).toBe(runtime!.size);
+      expect(checked!.align).toBe(runtime!.align);
+      for (const f of runtime!.fields) {
+        const cf = checked!.fields[f.name];
+        expect(cf, `${name}.${f.name} missing from checked-in layout`).toBeDefined();
+        expect(cf!.offset).toBe(f.offset);
+        expect(cf!.size).toBe(f.size);
+      }
+    }
+  });
 });
 ```
 
@@ -3801,7 +4048,9 @@ Contents:
 bun add ts-libghostty
 ```
 
-**Platforms (Pass 1):** `darwin-arm64`. Other platforms are on the roadmap; see the design spec in the [source repository](https://github.com/REPLACE_WITH_REPO_URL) under `docs/superpowers/specs/`.
+**Platforms (Pass 1):** `darwin-arm64` only. The current FFI layer relies on AAPCS64 register-split rules for passing Ghostty's by-value struct arguments without a C shim. Other platforms (Linux x64, darwin-x64, Windows) are on the roadmap — adding them will likely require a small C shim to bridge the struct-by-value boundary. See the design spec in the [source repository](https://github.com/REPLACE_WITH_REPO_URL) under `docs/superpowers/specs/`.
+
+**APC tuning (Pass 1):** this release does not expose `apc_max_bytes` / `apc_max_bytes_kitty` tuning. The terminal uses upstream libghostty-vt defaults. Pass 2+ will add post-construction setters — `Terminal.setApcMaxBytes(n)` and `Terminal.setApcMaxBytesKitty(n)` — wrapping `ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, ...)` if user demand surfaces.
 
 ## Minimal example
 
@@ -3854,7 +4103,7 @@ import { setLibraryPath } from "ts-libghostty";
 setLibraryPath("/path/to/libghostty-vt.dylib");
 ```
 
-**The loaded library's ABI must match the pinned Ghostty commit.** At Pass 1 the binding detects ABI mismatches through two channels only: (1) any required symbol missing from the loaded library triggers a `LibraryCompatibilityError`; (2) the build-native pipeline refuses to produce a release when the re-run probe output differs from the checked-in layouts. If upstream exposes a build-identity/commit getter in a future pass, the binding will additionally compare it against `pinnedCommit` at load time. Until then, override libraries are best-effort — a library built from a compatible commit that happens to resolve all required symbols can still disagree on enum values or callback shapes, with undefined runtime behavior.
+**The loaded library's ABI must be compatible with the pinned Ghostty commit.** Pass 1 verifies compatibility through three channels: (1) every required FFI symbol must resolve at load time or `LibraryCompatibilityError` is thrown; (2) the checked-in struct layouts (`src/internal/generated.ts`) must match the probe output for the pinned headers, and the ABI smoke test additionally cross-checks them against `ghostty_type_json()` at runtime; (3) `ghostty_build_info(GHOSTTY_BUILD_INFO_VERSION_STRING)` must return the expected semver string (e.g. `0.1.0-dev`) — mismatch raises `LibraryCompatibilityError`. Note that `ghostty_build_info` returns **semver, not a git commit SHA** at this pin; we cannot cryptographically verify the dylib was built from our pinned commit via the C API alone. If upstream later exposes a commit SHA via `ghostty_build_info` or similar, this guarantee narrows accordingly. Until then, override libraries are best-effort — a library built from a compatible commit that happens to resolve all required symbols and match the expected semver can still disagree on enum values or callback shapes, with undefined runtime behavior.
 ```
 
 - [ ] **Step 4: Commit**
@@ -3986,7 +4235,7 @@ Walked the type surface across tasks:
 - `TerminalOptions` / `TerminalSnapshot` / `FormatterOptions` — defined once in Task 10, imported by Tasks 11, 13, 14, 16, 21.
 - `GhosttyErrorCode` — defined in Task 6, used in Task 11 (`checkResult`) and Task 16.
 - `requiredSymbols` / `declaredHeaderSymbols` — distinct lists per §4 of Codex review; Task 8 exports `requiredSymbols`; Task 5 emits `declaredHeaderSymbols`; Task 18 asserts the subset relationship.
-- `structLayouts["GhosttyTerminalOptions"]` / `["GhosttyFormatterOptions"]` — same key strings used in Tasks 11, 16, 18.
+- `structLayouts["GhosttyTerminalOptions"]` / `["GhosttyFormatterTerminalOptions"]` / `["GhosttyFormatterTerminalExtra"]` / `["GhosttyFormatterScreenExtra"]` — same key strings used in Tasks 11, 16, 18.
 - All `.ts` source imports use `.js` suffix (NodeNext resolution); tests import the runtime modules via `.js` too.
 
 No inconsistencies found.
