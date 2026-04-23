@@ -53,6 +53,21 @@ Codex reviewed Pass 1 and surfaced three contract bugs. All three landed before 
 
 ---
 
+## Pass 2 notes
+
+### Pass 2 start-state (2026-04-23, Cazaril)
+
+Pass 2 starts from commit `b5c7922` on `main` (Hilbert's Pass-1-fix commit, the parent of HEAD before Pass 2). Baseline captured at Task 1:
+
+- `bun run typecheck` — clean
+- `bun test test/smoke` — **78 pass / 0 fail / 333 expect() calls across 8 files** (the Pass-2 target after all callback tests lands is ~107)
+- `bun run verify:generated` — green; `generated.ts` matches the pin
+- Tree clean; 11 commits ahead of `origin/main` (the unpushed `v0.1.0` range)
+
+All four preflight greps pass. Pass 2 is unblocked.
+
+---
+
 ## Known plan/code drift (low priority — does not block publish)
 
 These are small inconsistencies between the plan's snippets and the actually-committed code. They don't affect runtime behavior; a future Bob re-regenerating files from the plan would hit them. Optional cleanup for a quiet afternoon.
