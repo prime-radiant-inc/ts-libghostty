@@ -39,7 +39,7 @@
     "verify:generated": "bun run build:probe && bun run build:bindings && git diff --exit-code src/internal/generated.ts"
   },
   "ghostty": {
-    "commit": "332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28"
+    "commit": "e88c6c099152dd6d2d7e517516e1f3c183c152f7"
   },
   "devDependencies": {
     "@types/bun": "latest",

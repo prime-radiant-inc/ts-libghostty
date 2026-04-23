@@ -62,11 +62,11 @@ case "$ZIG_VSN" in
 esac
 echo "using zig $ZIG_VSN at $ZIG"
 
-# Build libghostty-vt. The build target name on Ghostty 1.3.x is `lib-vt`
-# (verified via `zig build --help`). If a future pin renames it (e.g. back to
-# `libghostty-vt`), update here. The plan flagged this as a known drift point.
+# Build libghostty-vt. Ghostty's build interface on main (post-v1.3.1) replaced
+# the `lib-vt` step with `-Demit-lib-vt=true` option on the default `install`
+# step. Check `zig build --help | grep lib-vt` if this stops working.
 cd vendor/ghostty
-"$ZIG" build lib-vt -Doptimize=ReleaseFast
+"$ZIG" build install -Demit-lib-vt=true -Doptimize=ReleaseFast
 cd "$ROOT"
 
 # Locate the output and copy to prebuilds/.
