@@ -138,3 +138,21 @@ describe("Terminal.snapshot", () => {
     expect(term.snapshot().activeScreen).toBe("alternate");
   });
 });
+
+describe("Terminal.mode / setMode", () => {
+  it("setMode + mode round-trip for bracketed_paste", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    // The exact ModeName string is determined by the pinned header.
+    // ModeTag.GHOSTTY_MODE_BRACKETED_PASTE likely maps to name "bracketed_paste".
+    term.setMode("bracketed_paste", true);
+    expect(term.mode("bracketed_paste")).toBe(true);
+    term.setMode("bracketed_paste", false);
+    expect(term.mode("bracketed_paste")).toBe(false);
+  });
+
+  it("throws on unknown ModeName", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    expect(() => term.mode("not_a_real_mode" as never)).toThrow();
+    expect(() => term.setMode("not_a_real_mode" as never, true)).toThrow();
+  });
+});

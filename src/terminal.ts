@@ -3,6 +3,7 @@ import { getLib } from "./ffi";
 import { GhosttyError, UseAfterCloseError } from "./errors";
 import {
   GhosttyTerminalDataValues,
+  modeTagByName,
   resultCodeByValue,
   structLayouts,
 } from "./internal/generated";
@@ -25,6 +26,23 @@ export function checkResult(result: number, functionName: string): void {
     `${functionName} returned non-OK GhosttyResult (code ${result}, mapped to "${code ?? "unknown"}")`,
     { code: (code ?? "unknown") as GhosttyError["code"], functionName },
   );
+}
+
+/**
+ * Resolve a ModeName string to its packed u16 tag. Throws a typed
+ * GhosttyError with code "invalid_value" when the name is not present in
+ * the generated lookup (e.g. test passes a mistyped name, or the pinned
+ * header no longer exposes that mode).
+ */
+function modeTagFromName(name: ModeName): number {
+  const v = (modeTagByName as Record<string, number | undefined>)[name];
+  if (v === undefined) {
+    throw new GhosttyError(`unknown ModeName: ${name}`, {
+      code: "invalid_value",
+      functionName: "Terminal.mode",
+    });
+  }
+  return v;
 }
 
 // ---- snapshot() helpers ----------------------------------------------------
@@ -319,14 +337,26 @@ export class Terminal {
     return snap;
   }
 
-  mode(_name: ModeName): boolean {
+  mode(name: ModeName): boolean {
     this.#assertOpen();
-    throw new Error("Terminal.mode not implemented yet (Task 15)");
+    const tag = modeTagFromName(name);
+    const lib = getLib();
+    const outBool = new Uint8Array(1);
+    const result = lib.symbols.ghostty_terminal_mode_get(
+      this.#handle,
+      tag,
+      ptr(outBool),
+    );
+    checkResult(result, "ghostty_terminal_mode_get");
+    return outBool[0] !== 0;
   }
 
-  setMode(_name: ModeName, _value: boolean): void {
+  setMode(name: ModeName, value: boolean): void {
     this.#assertOpen();
-    throw new Error("Terminal.setMode not implemented yet (Task 15)");
+    const tag = modeTagFromName(name);
+    const lib = getLib();
+    const result = lib.symbols.ghostty_terminal_mode_set(this.#handle, tag, value);
+    checkResult(result, "ghostty_terminal_mode_set");
   }
 
   #assertOpen(): void {
