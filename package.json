@@ -36,7 +36,8 @@
     "test:smoke": "bun test test/smoke",
     "test:tarball": "bash scripts/run-tarball-smoke.sh",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "verify:generated": "bun run build:probe && bun run build:bindings && git diff --exit-code src/internal/generated.ts"
+    "verify:generated": "bun run build:probe && bun run build:bindings && git diff --exit-code src/internal/generated.ts",
+    "fixtures:update": "bun -e 'import(\"./test/helpers/fixture-harness.ts\").then(async m => { const names = await m.listFixtures(\"test/fixtures\"); for (const n of names) { const r = await m.runFixture(\"test/fixtures\", n, { update: true }); console.log(\"updated\", r.name); } })'"
   },
   "ghostty": {
     "commit": "e88c6c099152dd6d2d7e517516e1f3c183c152f7"
