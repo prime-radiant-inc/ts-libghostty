@@ -40,15 +40,18 @@ Not currently in CI. See design memo §"CI wiring: deferred".
 
 ## What it covers (v0)
 
-- Plain-format formatter output (cell content + position + trim behavior)
-- 14 corpus files: 4 handcrafted smoke cases + 10 named seeds curated from
-  Ghostty's own libghostty-vt fuzz corpus (`vendor/ghostty/test/fuzz-libghostty/corpus/parser-initial/`)
-- Fixed 80×24 terminal geometry on both sides
+- All three formatter formats — `plain`, `vt`, and `html` — run against each
+  corpus file. `plain` catches cell-content and position divergence; `vt`
+  catches control-sequence emission divergence; `html` catches attribute
+  (color, bold, underline, hyperlink) divergence.
+- 14 corpus files × 3 formats = 42 per-file comparisons.
+- Corpus: 4 handcrafted smoke cases + 10 named seeds curated from Ghostty's
+  own libghostty-vt fuzz corpus
+  (`vendor/ghostty/test/fuzz-libghostty/corpus/parser-initial/`).
+- Fixed 80×24 terminal geometry on both sides.
 
 ## What it does not cover (yet)
 
-- Attribute divergence: colors, bold, underline, hyperlinks. (`vt` and `html`
-  formatters are stretch goals; see design memo §3.)
 - Per-fixture geometry overrides
 - Full fuzz corpus runs (parser-cmin: 616 files; stream-cmin: 3271 files)
 - esctest / vttest integration

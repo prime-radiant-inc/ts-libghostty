@@ -68,23 +68,26 @@ async function listCorpus(): Promise<string[]> {
     .map((e) => path.join(CORPUS_DIR, e));
 }
 
-function runOracle(inputPath: string): Buffer {
+type Format = "plain" | "vt" | "html";
+const FORMATS: readonly Format[] = ["plain", "vt", "html"];
+
+function runOracle(inputPath: string, format: Format): Buffer {
   const r = spawnSync(
     ORACLE_BIN,
-    ["--cols", String(COLS), "--rows", String(ROWS), "--format", "plain", inputPath],
+    ["--cols", String(COLS), "--rows", String(ROWS), "--format", format, inputPath],
     { encoding: "buffer" },
   );
   if (r.status !== 0) {
     const stderr = r.stderr?.toString() ?? "";
-    throw new Error(`oracle exit=${r.status} on ${inputPath}: ${stderr}`);
+    throw new Error(`oracle exit=${r.status} on ${inputPath} (${format}): ${stderr}`);
   }
   return r.stdout as Buffer;
 }
 
-function runBinding(input: Uint8Array): Uint8Array {
+function runBinding(input: Uint8Array, format: Format): Uint8Array {
   using term = new Terminal({ cols: COLS, rows: ROWS, maxScrollback: 0 });
   term.vtWrite(input);
-  using fmt = new Formatter({ format: "plain", trim: true });
+  using fmt = new Formatter({ format, trim: true });
   return fmt.format(term);
 }
 
@@ -123,28 +126,34 @@ async function main() {
   }
 
   let passed = 0;
-  const failures: { name: string; oracle: Buffer; binding: Uint8Array; diff: string }[] = [];
+  let total = 0;
+  const failures: { name: string; format: Format; oracle: Buffer; binding: Uint8Array; diff: string }[] = [];
 
   for (const file of corpus) {
     const name = path.basename(file);
     const input = await readFile(file);
-    const oracle = runOracle(file);
-    const binding = runBinding(new Uint8Array(input.buffer, input.byteOffset, input.byteLength));
-    if (bytesEqual(oracle, binding)) {
-      console.log(`  pass  ${name} (${oracle.length} bytes)`);
-      passed++;
-    } else {
-      console.log(`  FAIL  ${name} (oracle=${oracle.length}B binding=${binding.length}B)`);
-      failures.push({ name, oracle, binding, diff: unifiedDiff(oracle, binding) });
+    const bytes = new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+    for (const format of FORMATS) {
+      total++;
+      const oracle = runOracle(file, format);
+      const binding = runBinding(bytes, format);
+      const label = `${name} [${format}]`;
+      if (bytesEqual(oracle, binding)) {
+        console.log(`  pass  ${label} (${oracle.length} bytes)`);
+        passed++;
+      } else {
+        console.log(`  FAIL  ${label} (oracle=${oracle.length}B binding=${binding.length}B)`);
+        failures.push({ name, format, oracle, binding, diff: unifiedDiff(oracle, binding) });
+      }
     }
   }
 
   console.log();
-  console.log(`${passed}/${corpus.length} pass`);
+  console.log(`${passed}/${total} pass`);
   if (failures.length > 0) {
     console.log();
     for (const f of failures) {
-      console.log(`---- ${f.name} ----`);
+      console.log(`---- ${f.name} [${f.format}] ----`);
       console.log(`oracle:  ${formatBytes(f.oracle)}`);
       console.log(`binding: ${formatBytes(f.binding)}`);
       if (f.diff) {
