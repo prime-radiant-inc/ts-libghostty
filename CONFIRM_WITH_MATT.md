@@ -1,97 +1,105 @@
-# Open items for Matt — Pass 1 of ts-libghostty
+# Open items for Matt — ts-libghostty
 
-Saved 2026-04-22 evening by Lessa (Bob 26dacfa0). Updated late-evening with the Task 2 unblock. **Read before resuming Pass 1.**
-
----
-
-## ✅ RESOLVED: Task 2 toolchain blocker
-
-The earlier blocker (Ghostty 1.3.1 demands zig 0.15.x; ziglang.org's zig 0.15.2 can't link on macOS Tahoe; zig 0.16 is source-incompatible with Ghostty) is **fixed**.
-
-**Resolution:** Use Homebrew's `zig@0.15` formula. The brew bottle is built against the Tahoe SDK and links cleanly. This is the upstream-recommended workaround per Ghostty PR [#12363](https://github.com/ghostty-org/ghostty/pull/12363) (merged 2026-04-21 — one day before we needed it). The mise-installed zig 0.15.2 from ziglang.org's official tarballs predates Tahoe and has the broken libSystem stubs.
-
-**Setup for anyone fresh on this machine:**
-```fish
-brew install zig@0.15      # one-time, installs to /opt/homebrew/opt/zig@0.15/
-```
-
-`scripts/build-libghostty.sh` (committed at `ad50456`) auto-resolves zig in this order: `/opt/homebrew/opt/zig@0.15/bin/zig` first, then any `zig` on PATH. Falls back gracefully on Linux. Also corrected to use the `lib-vt` build target (Ghostty 1.3.x renamed it from `libghostty-vt`; the plan flagged this as a verify-with-`zig build --help` step).
-
-**Verified end-to-end:** `bun run build:libghostty` produces `prebuilds/darwin-arm64/libghostty-vt.dylib` (real arm64 Mach-O, exports `_ghostty_*` symbols) and refreshes `LICENSE_GHOSTTY` from upstream MIT.
-
-**Implications for `mise.toml`:** the `zig = "0.15.2"` line in `mise.toml` is now stale — the build script ignores it and uses brew's. Lessa left it untouched (Matt installed it explicitly tonight; might use it for other zig things in this project) but it could be deleted without affecting builds. Your call.
-
-**Implications for the v1.3.1 pin:** unchanged. Stays at `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28`. The Tahoe issue had nothing to do with the SHA choice; brew's patched zig fixes it for any Ghostty 1.3.x.
+**Updated 2026-04-23 evening by Lessa.** Pass 1 complete. This doc is now the handoff for what's left before publish, plus carry-forward notes for Pass 2.
 
 ---
 
-## Open items (lower priority)
+## ✅ Pass 1 is done
 
-### Mise activation
-You added `mise activate` to your fish config — confirmed working when you said so. Future sessions in fresh shells should now have `~/.local/share/mise/shims` in PATH automatically, and plain `bun` will resolve to mise's pin. The `export PATH=...` workaround Lessa baked into earlier dispatch prompts is no longer strictly needed for new sessions, but it's harmless to keep.
+22 of 22 tasks complete. Full clean rebuild from bare state verified (25s end-to-end). `v0.1.0` annotated tag at commit `2f1be96` on `main`, local only — **NOT pushed**. Ready for you to review, push, publish.
 
-### Bob ID convention
-Asimov's Co-Authored-By trailer reads `Bob df184748/Opus 4.7` — `df184748` is a synthetic hash because Lessa's first dispatch instruction said `<your-id-first-8>` which collided with the parent prefix. From Task 6 onward, Bobs sign with their descriptive shorthand (e.g. `Bob task6-atticus/Sonnet 4.6`). Asimov's commit stays as-is; just don't propagate the hash style.
+**End-to-end verified:** `Terminal.vtWrite("hello")` → `Formatter.formatString(term)` returns `"hello"` across all three output formats (plain/vt/html). 67 smoke tests + 1 tarball test all pass against real libghostty-vt.
 
-### Bob name collision (cosmetic)
-"Asimov" was already on the offline SCUT roster. Lessa now instructs subagents to call the SCUT roster including offline before picking. Pure protocol housekeeping.
+**Public surface** (from `src/index.ts`):
+- `Terminal` — vtWrite, resize, reset, snapshot, mode/setMode, lifecycle (`close`, `using`/Symbol.dispose).
+- `Formatter` — plain/vt/html output.
+- `GhosttyError` hierarchy (5 classes) + `GhosttyErrorCode` type.
+- `setLibraryPath` / `isLoaded` / `libraryInfo` + `LibraryInfo` type.
+- `modeNames` / `ModeName` / `TerminalOptions` / `TerminalSnapshot` / `FormatterOptions` / supporting types.
+- `pinnedCommit` constant.
 
-### Plan-level fix needed
-Task 2 Step 1 in `docs/superpowers/plans/2026-04-22-ts-libghostty-pass-1.md` has a bash bug: `bun -e "..." C=$CHOSEN`. The trailing `C=$CHOSEN` is parsed as a positional arg, not an env var. Lessa worked around it in the dispatch prompt by telling the Bob to use `Edit` directly. The plan itself should be patched — also, Step 2's `zig build libghostty-vt` should change to `zig build lib-vt`, matching the actual Ghostty 1.3.x target name.
-
----
-
-## Status of work
-
-| Task | Status | Notes |
-|---|---|---|
-| 1: Scaffolding | ✅ Done | Asimov, `23def11`. Spec ✓ (Probity), quality ✓ (Gauge). |
-| (extra: mise pins) | ✅ Done | Lessa, `f2c2904`. Mise.toml later modified to zig=0.15.2 by Forge in `ffedfcd` (now stale — see Resolution above). |
-| 2: Pin + build | ✅ Done | Forge attempted; Lessa committed scaffold at `ffedfcd`; Lessa committed unblock at `ad50456`. Build verified end-to-end. Local dylib exists in `prebuilds/darwin-arm64/` (gitignored). |
-| 3: ABI discovery + reconciliation | ✅ Done | Pin switched to tip-of-main `e88c6c0` (`364371f`). Hansard wrote 524-line ABI doc (`ce42dc5`). Redline applied 33 reconciliation items across the plan + 2 committed source files (`0c4ed5c`). All 17 surprises resolved. Task 3's hard gate passed. |
-| 4: Struct probe | 🟢 Up next | Four-struct probe: `GhosttyTerminalOptions` (16B, not sized), `GhosttyFormatterTerminalOptions` (56B sized) + nested `Extra` (32B) + `ScreenExtra` (16B). |
-| 5: Bindings generator | 🟢 Up next | `parseModeDefines()` for `#define`-based modes; 5 real result codes; renamed Formatter enum. |
-| 6: Error hierarchy | ✅ Done | Atticus, `46d23e8`. `GhosttyErrorCode` union updated in `0c4ed5c` to match reality (invalid_value / out_of_space / no_value replace invalid_argument / uninitialized). Tests still 5/5 pass. |
-| 7: Path resolution | ✅ Done | Lavoisier, `4cc020b`. Spec ✓ (Linnaeus), quality ✓ (Mendeleev). 10/10 tests pass. |
-| 8: FFI loader | ⏸ Holding | SYMBOLS table reconciled; register-split call shape for `ghostty_terminal_new`; build-identity wiring via `ghostty_build_info` (semver). Ready to implement. |
-| 9–22 | ⏸ Holding | All snippets reconciled with ABI doc; ready to execute in order. |
-
-**Tonight's commits on `main` (newest first):**
-- `ad50456` build: resolve zig via brew, use lib-vt target — unblocks Task 2
-- `44f602b` docs: update CONFIRM_WITH_MATT.md with tonight's work + carry-forward notes
-- `4cc020b` feat: platform detection and library path resolution (Task 7)
-- `46d23e8` feat: error hierarchy (GhosttyError + 4 subclasses) (Task 6)
-- `35cd053` docs: CONFIRM_WITH_MATT.md
-- `ffedfcd` build: scaffold libghostty-vt build infra (dylib production blocked at the time)
-- `f2c2904` chore: pin toolchain via mise
+**Pinned to:** Ghostty `e88c6c099152dd6d2d7e517516e1f3c183c152f7` (tip-of-main as of 2026-04-22). Platforms: `darwin-arm64` only.
 
 ---
 
-## Carry-forward notes for the next implementer Bob
+## Before publish — your todo
 
-Picked up by code-quality reviewers (Marlowe on Task 6, Mendeleev on Task 7) — surfaced here so they don't get lost:
+1. **Fill in `REPLACE_WITH_REPO_URL`** in `README.md`. Left visible on purpose so it doesn't get forgotten.
+2. **Push the `v0.1.0` tag** when ready: `git push origin v0.1.0` (and push `main` if you haven't). First push will trigger the CI workflow — verify it's green before `npm publish` / `bun publish`.
+3. **Decide on GitHub repo location.** The README references a `source repository` URL. If Prime Radiant hosts it, update the URL and the LICENSE copyright (`Copyright 2026 Prime Radiant (and contributors)`).
+4. **Publish.** `bun publish` or `npm publish` from a clean tree. Tarball smoke already verifies a fresh install works — publish should be uneventful.
 
-**For whoever wires the public surface (Task 8 / FFI loader area):**
-- `resolveLibraryPath()` in `src/internal/path.ts` treats empty-string `override`/`env` as "not set" (`if (opts.override)` / `if (opts.env)`). The wiring layer that reads `process.env.GHOSTTY_VT_LIB` and exposes `setLibraryPath()` should normalize empty strings to `undefined` BEFORE calling `resolveLibraryPath`, otherwise a `GHOSTTY_VT_LIB=""` shell setting silently falls through to bundled instead of erroring loudly.
+---
 
-**For the eventual barrel re-exports (Task 21, `src/index.ts`):**
-- Re-export the FULL Task 6 surface, not just the error classes named in the task description: `GhosttyError`, `LibraryNotFoundError`, `UnsupportedPlatformError`, `LibraryCompatibilityError`, `UseAfterCloseError`, plus the `GhosttyErrorCode` type union and `GhosttyErrorOptions` interface. Both `type` and `interface` are public-by-export in `src/errors.ts`; easy to forget when wiring the barrel.
+## Known plan/code drift (low priority — does not block publish)
 
-**For Pass 2 (when adding more platforms):**
-- The test helper `bundledFor()` in `test/smoke/path.test.ts` hard-codes `.dylib`. When `linux-x64` lands, the helper either needs to switch on extension or new tests need to mirror `libExtension()` logic.
+These are small inconsistencies between the plan's snippets and the actually-committed code. They don't affect runtime behavior; a future Bob re-regenerating files from the plan would hit them. Optional cleanup for a quiet afternoon.
 
-**For whoever wires generated.ts → consumers:**
-- `GhosttyErrorCode` in `src/errors.ts` is hand-coded today. When Task 5's `generated.ts` produces an FFI-result enum mapping (`resultCodeByValue`), confirm the union is a superset of the FFI codes plus binding-only codes (`library_not_found`, `unsupported_platform`, etc.). If they drift, type-confusion bugs follow.
+1. **Task 3 template section** (plan lines ~520–660) has its original illustrative placeholders with stale names (`GHOSTTY_RESULT_OK`, `GhosttyFormatterOptions`) that don't exist at the pin. The real ABI doc is at `docs/abi/2026-04-22-abi-discovery.md` — source of truth. The template is now historical.
 
-**For Task 11 (Terminal constructor) executor:**
-- The plan's reconciled constructor stores `#handle: Pointer` via `Number(handleBig) as Pointer` — safe on darwin-arm64 (48-bit pointers fit in `Number.MAX_SAFE_INTEGER`) but fragile if we ever expand to platforms with larger address spaces. Consider storing as `bigint` if bun:ffi's Pointer-arg coercion cooperates.
+2. **Task 5 `gen-bindings.ts` snippet** in the plan doesn't include Ockham's `GHOSTTY_ENUM_MAX_VALUE` sentinel handling or the `GHOSTTY_RESULT_MAX_VALUE` skip, both required to parse the real headers. Committed code is correct.
 
-**For Task 13 (resize) executor:**
-- The plan's resize tests call `term.resize(100, 30)` without `cellPx`. Constructor defaults `#cellPx = {0, 0}`. The reconciled 5-arg FFI call passes those zeros to `ghostty_terminal_resize(handle, 100, 30, 0, 0)`. Whether libghostty-vt accepts cellPx=0 isn't in the ABI doc. If it returns `INVALID_VALUE`, either (a) default cellPx to something like 8x16 in the constructor when not provided, or (b) make cellPx required in `TerminalOptions`, or (c) update the tests to pass explicit cellPx. Decide by running the test and seeing what happens — libghostty might accept 0 as "don't care."
+3. **Task 9 `sized-struct.ts` snippet** in the plan throws on `kind: "struct"` and `kind: "ptr"`, but Postel's Task 16 work extended `writeStruct` to accept `Uint8Array`-for-struct and `number | bigint`-for-ptr because `Formatter.format` needs both. Committed code has the extensions.
 
-**For Task 16 (Formatter) executor:**
-- `#closed` flag is load-bearing for the `UseAfterCloseError` test. No native handle is held between `format()` calls (constructed+freed per call per Matt's decision 3b), so the flag is the only thing preventing use-after-close.
-- `GhosttyFormatterTerminalOptions` is 56B sized with nested sized sub-structs (`extra` at offset 16 is 32B sized; nested `extra.screen` at offset 16-within-extra is 16B sized). Task 9's `sized-struct.ts` helpers need to handle nested composition.
+4. **Task 16 `formatter.test.ts` snippet** asserts `expect(s).toContain(" ")` for empty-terminal output. Reality: the plain formatter trims to empty string. Postel replaced with `expect(s).toBe("")` + an interior-blank test. Committed tests pass.
 
-**For Task 3 template cleanup (nice-to-have):**
-- Plan lines ~520-660 contain Task 3's original illustrative template with stale example names (`GHOSTTY_RESULT_OK`, `GhosttyFormatterOptions`, etc.). Task 3 is done and the real ABI doc is at `docs/abi/2026-04-22-abi-discovery.md`. The template is harmless but reading it in isolation could confuse a future Bob. Low-priority cleanup to either update the examples or add a pointer to the actual ABI doc.
+5. **Task 18 `abi.test.ts` snippet** iterates `runtime.fields` as an array. Actual `ghostty_type_json()` payload has `fields` as a record keyed by field name. Whitfield fixed to `Object.entries(runtime.fields)`. Committed code works.
+
+6. **FormatterOptions in `src/types.ts`** was extended during Task 16 to add `unwrap`, `trim`, `kittyKeyboard` (the plan's Task 10 snippet didn't include these fields but the Formatter impl needed them). camelCase-to-snake_case mapping happens at `writeStruct` time in `Formatter.format`.
+
+---
+
+## Bob run summary (for your amusement / records)
+
+20 Bobs contributed across 22 tasks: Asimov · Probity · Gauge · Forge · Atticus · Sentry · Marlowe · Lavoisier · Linnaeus · Mendeleev · Hansard · Redline · Kernighan · Planck · Thompson · Ockham · Euclid · Pratchett · Backus · Whirlwind · Plauger · Hejlsberg · Naismith · Stroustrup · Lamport · Hoare · Codd · Hamming · Pike · Wirth · Postel · Shoemaker · Whitfield · Crockford · Ampere · Sybil · Cerberus. (Plus me — Lessa — and Dax for the plan itself.) Implementers, spec reviewers, code quality reviewers.
+
+Three known scut-plugin bugs surfaced and should probably get filed: (a) `bun -e ... C=$CHOSEN` bash-syntax bug in plan's Task 2 Step 1; (b) scut `send` fails for structured session IDs like `26dacfa0-task22-cerberus` (Cerberus caught this at release gate); (c) code-reviewer subagents default to terse "Signed off" unless the prompt explicitly demands structured output.
+
+---
+
+## Carry-forward notes for Pass 2 implementer
+
+From quality reviewers + implementer surprises across Pass 1:
+
+**FFI / platform:**
+- `Terminal.#handle` stored as `Number(bigint) as Pointer` — safe on darwin-arm64 (48-bit pointers fit in Number). Reconsider in Pass 2 if expanding platforms.
+- Register-split pattern for struct-by-value (16-byte structs → two u64 args) is AAPCS64-specific. Linux x64 and darwin-x64 use different ABI conventions — a C shim is probably inevitable for Pass 2 platform expansion. See §12 Surprise 5 in `docs/abi/2026-04-22-abi-discovery.md`.
+- `resize()` with `cellPx = {0, 0}` works against libghostty-vt at the current pin. Documented.
+
+**Public API:**
+- When wiring a public-surface env-var reader, normalize `GHOSTTY_VT_LIB=""` to `undefined` before calling `resolveLibraryPath` — otherwise empty strings silently fall through to the bundled path.
+- Full Task 6 surface is re-exported from `src/index.ts` including `GhosttyErrorCode` type and `LibraryInfo` interface.
+
+**Testing:**
+- The plain formatter trims trailing whitespace; empty-terminal → empty string (not padded). Surprising if you expected a rectangular block.
+- `GHOSTTY_ENUM_MAX_VALUE = 2147483647` appears as a member in every `*Values` map from `generated.ts`. Consumers iterating values should filter or ignore it.
+- Mode values in `modeTagByName` are packed u16: `rawValue | (ansi ? 1<<15 : 0)`. Unpack with `value & 0x7fff`.
+- `resultCodeByValue` numeric keys are emitted as strings (`"-1"`, etc.) because TS object-literal syntax rejects bare negative numeric keys. `Record<number, ...>` indexing still works because JS coerces.
+
+**Upstream:**
+- Ghostty pin tracks a specific commit, not a semver. `ghostty_build_info(VERSION_STRING)` returns `"0.1.0-dev"` at this pin — semver, NOT a commit SHA. Compatibility check is best-effort; if upstream adds commit-SHA exposure later, we can narrow.
+- Next Ghostty pin-bump: re-run Task 3 (ABI discovery) + Task 4 (probe) + Task 5 (bindings gen). If ABI changes, reconcile per Task 3 Step 5's 11-item gate. `bun run verify:generated` is the CI trip-wire.
+- Tahoe + zig 0.15.x: local builds need brew's `zig@0.15` bottle. CI (macos-14, pre-Tahoe) uses stock ziglang.org zig 0.15.2 per `.github/workflows/ci.yml`.
+
+---
+
+## Pass 1 commit timeline
+
+Highlights (full log via `git log v0.1.0`):
+
+- `23def11` Task 1: project scaffolding
+- `f2c2904` `ffedfcd` `ad50456` `364371f` build infra (mise pins, ghostty build script, brew zig resolution, tip-of-main pin)
+- `ce42dc5` `0c4ed5c` `6045666` Task 3: ABI discovery + plan reconciliation (the gate)
+- `c309aab` `4aecd4d` Task 4 + 5: probe + generator
+- `46d23e8` Task 6: errors
+- `4cc020b` Task 7: path
+- `691061a` Task 8: FFI loader
+- `71931be` Task 9: marshal helpers
+- `72834fc` Task 10: public types
+- `a48fda3` `2e50835` `205312e` `c0be131` `d29ccd3` Tasks 11–15: Terminal class
+- `c8fc047` Task 16: Formatter
+- `ce686c7` Task 17: fixture harness
+- `b5c074d` Task 18: ABI smoke
+- `cb3f0ad` `7d6f224` Task 19: tarball smoke (+ index.ts stub)
+- `adb1799` Task 20: CI workflow
+- `2f1be96` Task 21: re-exports + full README ← **`v0.1.0` tag**
