@@ -1,0 +1,5 @@
+Line 1: Hello World!
+Line 2: [1mBold[0m and [4mUnder[0m
+Line 3: placeholder
+[3;1H[2KLine 3: Overwritten!
+[5;10HPlaced at (5,10)[1;72HRIGHT->
