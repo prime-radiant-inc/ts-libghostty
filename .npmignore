@@ -1,0 +1,7 @@
+vendor/
+test/
+scripts/
+docs/
+.github/
+*.log
+.DS_Store

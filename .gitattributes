@@ -1,0 +1,4 @@
+prebuilds/** binary
+*.dylib binary
+*.so binary
+*.dll binary

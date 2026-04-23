@@ -1,0 +1,48 @@
+{
+  "name": "ts-libghostty",
+  "version": "0.1.0",
+  "description": "TypeScript binding over libghostty-vt. Unofficial community binding.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "src/",
+    "dist/",
+    "prebuilds/",
+    "LICENSE",
+    "LICENSE_GHOSTTY",
+    "README.md"
+  ],
+  "engines": {
+    "bun": ">=1.3.13"
+  },
+  "scripts": {
+    "build:libghostty": "bash scripts/build-libghostty.sh",
+    "build:probe": "mkdir -p .tmp && cc -O2 -I vendor/ghostty/include -o .tmp/probe-layout scripts/probe-layout.c && .tmp/probe-layout > .tmp/layout.json",
+    "build:bindings": "bun scripts/gen-bindings.ts",
+    "build:native": "bun run build:libghostty && bun run build:probe && bun run build:bindings",
+    "build:js": "bun build ./src/index.ts --outdir dist --target bun --format esm",
+    "build:types": "tsc -p tsconfig.json",
+    "build:ts": "bun run build:js && bun run build:types",
+    "build": "bun run build:native && bun run build:ts",
+    "test": "bun test test/smoke test/tarball/smoke.test.ts",
+    "test:smoke": "bun test test/smoke",
+    "test:tarball": "bash scripts/run-tarball-smoke.sh",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "verify:generated": "bun run build:probe && bun run build:bindings && git diff --exit-code src/internal/generated.ts"
+  },
+  "ghostty": {
+    "commit": "REPLACE_WITH_PINNED_COMMIT_IN_TASK_2"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.4.0"
+  }
+}
