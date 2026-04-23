@@ -91,13 +91,44 @@ Going forward Lessa is using the descriptive shorthand from the SCUT ID — so a
 
 | Task | Status | Notes |
 |---|---|---|
-| 1: Scaffolding | ✅ Done | Asimov, commit `23def11`. Spec ✓ (Probity), quality ✓ (Gauge — terse). |
-| (extra: mise pins) | ✅ Done | Lessa, commit `f2c2904`. (Mise.toml now modified to zig=0.15.2 in working tree.) |
-| 2: Pin + build | 🚧 Blocked | Forge attempted, blocker described above. Build infra to be committed by Lessa as a separate "scaffold-but-blocked" commit. |
-| 3: ABI discovery | ⏸ Holding | Could run on v1.3.1 headers we have cloned, but high-touch (11-item reconciliation gate). Holding until Matt confirms pin. |
-| 4–5: probe + bindings gen | ⏸ Holding | Need pin + headers. |
-| **6: Error hierarchy** | 🟢 Up next | Pure TS, no Ghostty dep. SHA-independent. Lessa to dispatch tonight. |
-| **7: Path resolution** | 🟢 Up next | Pure TS, depends only on platform string mapping. SHA-independent. Lessa to dispatch tonight. |
-| 8–22 | ⏸ Holding | All depend on the dylib + bindings. |
+| 1: Scaffolding | ✅ Done | Asimov, `23def11`. Spec ✓ (Probity), quality ✓ (Gauge). |
+| (extra: mise pins) | ✅ Done | Lessa, `f2c2904`. (Mise.toml later modified to zig=0.15.2 in `ffedfcd`.) |
+| 2: Pin + build infra | 🟡 Partial | Forge attempted; blocker described above. Lessa committed the script + pin + LICENSE_GHOSTTY at `ffedfcd` ("scaffolded but dylib unbuilt"). Decision doc at `35cd053`. |
+| 3: ABI discovery | ⏸ Holding | Could run on v1.3.1 headers cloned in vendor/, but high-touch (11-item reconciliation gate) and may need redo if Matt switches pin. |
+| 4–5: probe + bindings gen | ⏸ Holding | Need pin confirmed + working build. |
+| 6: Error hierarchy | ✅ Done | Atticus, `46d23e8`. Spec ✓ (Sentry), quality ✓ (Marlowe). 5/5 tests pass. |
+| 7: Path resolution | ✅ Done | Lavoisier, `4cc020b`. Spec ✓ (Linnaeus), quality ✓ (Mendeleev). 10/10 tests pass. |
+| 8: FFI loader | ⏸ Holding | Needs `requiredSymbols` from Task 5's `generated.ts`. |
+| 9: marshal helpers | ⏸ Holding | Needs sized-struct shapes from Task 5. |
+| 10: Public types | ⏸ Holding | Imports `modeNames`/`ModeName` from `./internal/generated` (Task 5 output). NOT SHA-independent despite being pure TS. |
+| 11–22 | ⏸ Holding | All depend on generated bindings + dylib. |
 
-Tonight Lessa is landing Tasks 6 and 7 (genuinely SHA-independent), then signing off. This advances real Pass 1 work without making any decisions that get invalidated by Matt's pick on the toolchain.
+**Tonight's commits on `main` (newest first):**
+- `4cc020b` feat: platform detection and library path resolution (Task 7)
+- `46d23e8` feat: error hierarchy (GhosttyError + 4 subclasses) (Task 6)
+- `35cd053` docs: CONFIRM_WITH_MATT.md
+- `ffedfcd` build: scaffold libghostty-vt build infra (dylib production blocked)
+- `f2c2904` chore: pin toolchain via mise
+- `23def11` chore: project scaffolding for ts-libghostty (Task 1)
+
+---
+
+## Carry-forward notes for the next implementer Bob
+
+Picked up by code-quality reviewers (Marlowe on Task 6, Mendeleev on Task 7) — surfaces here so they don't get lost:
+
+**For whoever wires the public surface (Task 8 / FFI loader area):**
+- `resolveLibraryPath()` in `src/internal/path.ts` treats empty-string `override`/`env` as "not set" (`if (opts.override)` / `if (opts.env)`). The wiring layer that reads `process.env.GHOSTTY_VT_LIB` and exposes `setLibraryPath()` should normalize empty strings to `undefined` BEFORE calling `resolveLibraryPath`, otherwise a `GHOSTTY_VT_LIB=""` shell setting silently falls through to bundled instead of erroring loudly.
+
+**For the eventual barrel re-exports (Task 21, `src/index.ts`):**
+- Re-export the FULL Task 6 surface, not just the error classes named in the task description: `GhosttyError`, `LibraryNotFoundError`, `UnsupportedPlatformError`, `LibraryCompatibilityError`, `UseAfterCloseError`, plus the `GhosttyErrorCode` type union and `GhosttyErrorOptions` interface. Both `type` and `interface` are public-by-export in `src/errors.ts`; easy to forget when wiring the barrel.
+
+**For Pass 2 (when adding more platforms):**
+- The test helper `bundledFor()` in `test/smoke/path.test.ts` hard-codes `.dylib`. When `linux-x64` lands, the helper either needs to switch on extension or new tests need to mirror `libExtension()` logic.
+
+**For whoever wires generated.ts → consumers:**
+- `GhosttyErrorCode` in `src/errors.ts` is hand-coded today. When Task 5's `generated.ts` produces an FFI-result enum mapping (`resultCodeByValue`), confirm the union is a superset of the FFI codes plus binding-only codes (`library_not_found`, `unsupported_platform`, etc.). If they drift, type-confusion bugs follow.
+
+**Convention reminder for future subagent dispatches:**
+- Use the descriptive shorthand of the SCUT session ID for Co-Authored-By trailers (e.g. `Bob task6-atticus/Sonnet 4.6`), NOT a synthetic hash. Asimov's `df184748` was a one-off workaround for an ambiguous instruction; Asimov's commit is fine as-is, just don't propagate the hash style.
+- Tell dispatched Bobs to roster-check both online AND offline before picking a name — "Asimov" was already on the offline roster but Asimov filtered to online-only.
