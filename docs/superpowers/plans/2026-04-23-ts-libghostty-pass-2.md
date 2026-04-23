@@ -60,7 +60,7 @@ typedef void (*GhosttyTerminalWritePtyFn)(GhosttyTerminal terminal, void* userda
 - Callbacks **must not** re-enter `vt_write` on the same terminal (undefined behavior).
 - Callbacks "must be very careful to not block for too long or perform expensive operations."
 - For `write_pty`: "The data is only valid for the duration of the call; callers must copy it if it needs to persist." → **trampoline copies before invoking user fn.**
-- For `title_changed`: "The new title can be queried from the terminal after the callback returns." → **trampoline queries current title via `ghostty_terminal_get(TITLE)` at invocation, copies to JS string, delivers to user.** The ambiguity in "after the callback returns" is probed during Task 4 implementation; fallback is a deferred queue (see Open Questions below).
+- For `title_changed`: "The new title can be queried from the terminal after the callback returns." → **trampoline queries current title via `ghostty_terminal_get(TITLE)` at invocation, copies to JS string, delivers to user.** The ambiguity in "after the callback returns" is probed in Task 2 (and again in Task 9). **There is no equivalent fallback** — a queue-and-drain pattern would silently deliver only the final title for every queued event, which is worse than no callback. If the synchronous read returns stale, Pass 2 halts and escalates per Open Question #1.
 - `USERDATA` is not used — pass `NULL`. JS closures carry per-Terminal state.
 
 ---
@@ -128,13 +128,15 @@ The C header forbids only `vt_write` re-entry on the same terminal (header lines
 
 **Runtime enforcement via `#inCallback` flag.** Each trampoline wraps the user call in `try { #inCallback = true; userFn(...); } finally { #inCallback = false; }`. Mutating public methods call a new `#assertNotInCallback(methodName)` helper first; violation throws `GhosttyError` with code `"invalid_value"` and a message that names the method and tells the user to defer via `queueMicrotask`. The guard is a single boolean read — cost is negligible vs. the value of catching real user bugs at the point of the bug.
 
+**Throw propagation.** The guard throws inside the user callback. If the user doesn't catch it, it propagates to the trampoline's outer `try/catch` — where it is logged via `console.error` and swallowed like any other uncaught callback exception. `vtWrite` returns normally. This means a re-entry bug looks to the caller like a silent ignore unless they read their logs — which is fine: the throw reaches user code synchronously at the point of the bug, so the user *can* catch it if they want a hard failure. Task 11's re-entry smoke tests assert both sides of this.
+
 Callbacks throwing are handled by the trampoline's outer `try/catch` (the user's throw escapes the inner `try/finally` via `finally`'s non-swallowing semantics, reaches the outer `try/catch`, is logged, and is swallowed — `#inCallback` is cleared in both paths).
 
 ---
 
 ## Open questions — probed during implementation
 
-Each of these has a default path and a fallback. Task owners should probe, not guess, and update the plan + ABI doc if reality diverges.
+Each of these has a default path and, where a real fallback exists, an explicit one. Task owners should probe, not guess, and update the plan + ABI doc if reality diverges. Note Open Question #1 has **no equivalent fallback** — if the default fails, Pass 2 halts and escalates rather than silently compromising semantics.
 
 1. **Title query timing.** Does `ghostty_terminal_get(TITLE)` inside the `title_changed` trampoline return the new title, or the pre-change one? The header's "can be queried from the terminal after the callback returns" is ambiguous. **Default:** query synchronously inside the trampoline; test (Task 9) that the observed title matches the OSC payload that triggered the callback, and that sequential title changes within one `vtWrite` are delivered individually with their per-change titles.
 
@@ -152,30 +154,39 @@ Each of these has a default path and a fallback. Task owners should probe, not g
 
 ## File delta from Pass 1
 
-Files touched:
+Files touched (complete list — cross-check during Task 12):
 
 ```
 src/
-  ffi.ts              # add ghostty_terminal_set + ghostty_terminal_get to SYMBOLS
-  terminal.ts         # callback fields, trampolines, set/detach wiring in ctor + close
-  types.ts            # re-add (correctly) onWritePty/onBell/onTitleChanged to TerminalOptions
+  ffi.ts                             # Task 3 — add ghostty_terminal_set + _get to SYMBOLS
+  terminal.ts                        # Tasks 5, 6 — fields, trampolines, #inCallback guard,
+                                     #   #readTitle(), #assertNotInCallback(),
+                                     #   ctor registration, close() teardown
+  types.ts                           # Task 7 — re-add onWritePty/onBell/onTitleChanged
+                                     #   to TerminalOptions with full constraint JSDoc
   internal/
-    callbacks.ts      # NEW — private helpers: makeWritePtyCallback, makeBellCallback,
-                      #       makeTitleCallback. One file, three factory fns, each
-                      #       returning { jsCallback, optionValue }.
-                      #       Keeps terminal.ts from ballooning.
+    callbacks.ts                     # Task 4 NEW — three trampoline factories
 
 test/smoke/
-  callbacks.test.ts   # NEW — one file covering all three effects + error paths
+  callbacks.test.ts                  # Tasks 8–11 NEW — 29 tests: bell, title, write_pty,
+                                     #   errors, re-entry guard
+  callback-factories.test.ts         # Task 4 NEW — bare-factory unit shapes
+  terminal.test.ts                   # Task 6 — one new idempotency test appended
 
-README.md             # add "Effect callbacks" section with minimal example
-CLAUDE.md             # add entry for callback-trampoline copy-before-invoke semantics
-CONFIRM_WITH_MATT.md  # Pass 2 status block + any surfaced plan/code drift
+scripts/
+  probe-callbacks.ts                 # Task 2 NEW — JSCallback + set compat probe
+                                     #   (committed; reusable diagnostic)
+
+package.json                         # Task 12 — version bump 0.1.0 → 0.2.0
+README.md                            # Task 12 — "Effect callbacks" section
+CLAUDE.md                            # Task 12 — gotcha #10 on copy-before-invoke
+CONFIRM_WITH_MATT.md                 # Tasks 1, 2, 9, 12 — start-state, probe findings,
+                                     #   Open Q #1 resolution, Pass-2-done block
 ```
 
 No changes to: `errors.ts` (no new error classes; existing `GhosttyError` covers `_set` failures and the new `#assertNotInCallback` throws); `formatter.ts` (orthogonal); `internal/generated.ts` (regenerated but the option enum is already there); `internal/path.ts` / `internal/sized-struct.ts` / `internal/marshal.ts`.
 
-No changes to existing generator/build scripts (`build-libghostty.sh`, `probe-layout.c`, `gen-bindings.ts`, `run-tarball-smoke.sh`). Task 2 adds one new diagnostic script, `scripts/probe-callbacks.ts`; `bun run verify:generated` continues to assert the existing `generated.ts` matches the pin.
+No changes to existing generator/build scripts (`build-libghostty.sh`, `probe-layout.c`, `gen-bindings.ts`, `run-tarball-smoke.sh`). `bun run verify:generated` continues to assert the existing `generated.ts` matches the pin.
 
 ---
 
@@ -696,7 +707,9 @@ export function makeBellCallback(userFn: () => void): TrampolineResult {
  *
  * The header's wording "can be queried from the terminal after the callback
  * returns" is ambiguous; Task 9 smoke-tests the default (query synchronously
- * from inside the trampoline) and falls back to a deferred queue if needed.
+ * from inside the trampoline). If that fails, Pass 2 halts and escalates —
+ * there is no equivalent post-vtWrite queue fallback (it would deliver only
+ * the final title for every queued event).
  *
  * User exceptions (including from `readTitle`) are logged via console.error
  * and swallowed.
@@ -1401,8 +1414,8 @@ describe("Terminal effect callbacks — onTitleChanged", () => {
     term.vtWrite(oscTitle("hello"));
     // Probes Open Question #1: the trampoline queries title via
     // ghostty_terminal_get(TITLE) inside the callback. If this test fails
-    // with an empty string or the pre-change title, fall back to the deferred-
-    // queue pattern documented in the plan header (Open Question #1).
+    // with an empty string or the pre-change title, see Step 3 — the
+    // resolution is HALT AND ESCALATE; there is no equivalent fallback.
     expect(titles).toEqual(["hello"]);
   });
 
@@ -1474,9 +1487,8 @@ describe("Terminal effect callbacks — onTitleChanged", () => {
 bun test test/smoke/callbacks.test.ts
 # Expected: 4 of 5 new tests pass; the "empty title" test accepts either
 # outcome. If "fires on OSC 0 ... with the new title" FAILS — titles array
-# is empty, or contains "" instead of "hello" — Open Question #1 requires
-# the fallback: queue events inside the trampoline and drain them at the end
-# of vtWrite(). See Step 3 below.
+# is empty, or contains "" instead of "hello" — see Step 3 below. There is
+# no equivalent queue fallback; the resolution path is HALT AND ESCALATE.
 ```
 
 - [ ] **Step 3: (conditional) If the synchronous title read returns stale, HALT AND ESCALATE.**
@@ -1503,7 +1515,8 @@ test(callbacks): smoke tests for onTitleChanged
 
 Pass 2 Task 9 — five tests covering OSC 0, OSC 2, streams of title
 changes, empty-title edge case, and Unicode titles. Resolves Open
-Question #1: [synchronous query works | queue fallback implemented].
+Question #1: [synchronous query works | halt-and-escalated; see
+CONFIRM_WITH_MATT.md].
 ```
 
 **Expected outcome of Task 9:** 5 new tests, all passing (4 assert specific titles; 1 is tolerant of libghostty's empty-title handling). Open Question #1 has a documented answer.
@@ -1540,28 +1553,58 @@ describe("Terminal effect callbacks — onWritePty", () => {
     expect(first[0]).toBe(0x1b); // ESC
   });
 
-  it("delivers a JS-owned Uint8Array — mutation does not affect libghostty", () => {
+  it("delivers a retainable Uint8Array — bytes survive later vtWrite calls", () => {
+    // This is the real ownership assertion: after the callback returns, the
+    // retained reference MUST still hold the original bytes even if libghostty
+    // processes more input (and potentially reuses any internal scratch
+    // buffer the WRITE_PTY trampoline sourced from). If copy-before-invoke
+    // held, the retained array is a fresh JS allocation and cannot be
+    // clobbered by anything libghostty does later.
     const responses: Uint8Array[] = [];
     using term = new Terminal({
       cols: 10, rows: 3,
       onWritePty: (bytes) => { responses.push(bytes); },
     });
     term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63])); // DA1
-    const r = responses[0]!;
-    const original = new Uint8Array(r);
-    // Mutate the received buffer — must not affect subsequent VT processing.
-    r.fill(0xff);
-    // Drive another DA1. The next response should look like the first
-    // (libghostty's reply text for DA1 is stable), not be corrupted.
+    expect(responses.length).toBeGreaterThan(0);
+    const retained = responses[0]!;
+    const snapshot = Array.from(retained); // independent copy of the bytes
+
+    // Drive unrelated non-response-producing input. Anything libghostty might
+    // do during this call must NOT mutate our retained reference.
+    term.vtWrite(new TextEncoder().encode("ABCDEFG"));
+    // Drive another DA1 (response-producing). Same guarantee.
     term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63]));
-    expect(responses.length).toBe(2);
-    const r2 = responses[1]!;
-    expect(r2[0]).toBe(0x1b);
-    // The first response's stored copy (before mutation) should still match
-    // the second — confirming the trampoline's copy-before-invoke.
-    expect(Array.from(r2.slice(0, original.length))).toEqual(
-      Array.from(original.slice(0, r2.length)),
-    );
+
+    // The retained reference still equals the bytes we received originally.
+    expect(Array.from(retained)).toEqual(snapshot);
+  });
+
+  it("user mutation of the received Uint8Array does not affect libghostty's next reply", () => {
+    // Complementary direction: we mutate the user-visible copy, then re-issue
+    // the same query. libghostty must produce a fresh, correct reply — proving
+    // it was never looking at our buffer in the first place.
+    const responses: Uint8Array[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onWritePty: (bytes) => { responses.push(bytes); },
+    });
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63])); // DA1 #1
+    expect(responses.length).toBeGreaterThan(0);
+    const r1 = responses[0]!;
+    const lenBefore = responses.length;
+    r1.fill(0xff); // Scribble over the received copy.
+
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63])); // DA1 #2
+    const fresh = responses.slice(lenBefore);
+    // We don't assume exactly one callback per query (libghostty may split).
+    // We only assert (a) we got at least one new response, (b) none of the
+    // new responses are our scribbled 0xff pattern — each looks like a real
+    // VT reply (starts with ESC).
+    expect(fresh.length).toBeGreaterThan(0);
+    for (const r of fresh) {
+      expect(r[0]).toBe(0x1b);
+    }
   });
 
   it("does not fire on plain printable input", () => {
@@ -1596,7 +1639,7 @@ describe("Terminal effect callbacks — onWritePty", () => {
 
 ```bash
 bun test test/smoke/callbacks.test.ts
-# Expected: 4 new tests pass, plus the 9 existing ones. Total 13 passing
+# Expected: 5 new tests pass, plus the 9 existing ones. Total 14 passing
 # tests in this file.
 ```
 
@@ -1605,12 +1648,13 @@ bun test test/smoke/callbacks.test.ts
 ```
 test(callbacks): smoke tests for onWritePty
 
-Pass 2 Task 10 — four tests covering DA1 response invocation, ownership
-(mutating the received Uint8Array does not affect libghostty's next call),
-non-triggering printable input, and DSR cursor-position reply.
+Pass 2 Task 10 — five tests: DA1 response invocation, retainable
+Uint8Array (bytes survive later vtWrite), user mutation doesn't affect
+libghostty's next reply, non-triggering printable input, and DSR
+cursor-position reply.
 ```
 
-**Expected outcome of Task 10:** 4 new tests, all passing. The copy-before-invoke guarantee from spec §5.4 is verified empirically.
+**Expected outcome of Task 10:** 5 new tests, all passing. The copy-before-invoke guarantee from spec §5.4 is verified from both directions (we can retain bytes safely; our mutations don't feed back into libghostty).
 
 ---
 
@@ -1873,7 +1917,7 @@ describe("Terminal effect callbacks — re-entry guard", () => {
 ```bash
 bun test test/smoke/callbacks.test.ts
 # Expected: 15 new tests pass (6 error-path + 9 re-entry-guard), plus the
-# prior 13. Total 28 passing tests.
+# prior 14 (4 bell + 5 title + 5 write_pty). Total 29 passing tests.
 ```
 
 - [ ] **Step 3: Commit.**
@@ -1934,7 +1978,10 @@ using term = new Terminal({
   this and throws a typed `GhosttyError` with code `"invalid_value"` naming
   the forbidden method — defer with `queueMicrotask` or `setTimeout` to
   perform the mutation after `vtWrite()` returns. Read-only methods
-  (`snapshot`, `mode`) are explicitly allowed.
+  (`snapshot`, `mode`) are explicitly allowed. If your callback doesn't
+  catch this throw, it's logged via `console.error` and swallowed like any
+  other uncaught callback exception, and `vtWrite` returns normally. Catch
+  it in your callback if you want a hard failure instead.
 - Callbacks MUST NOT throw. Exceptions are caught at the FFI boundary and
   logged via `console.error`; they cannot cross the C frame.
 - Callbacks SHOULD NOT block. The call is synchronous inside `vtWrite()`.
@@ -2097,7 +2144,18 @@ Codex returned 6 findings. All applied. Tracking log:
 
 **Net delta from first draft:** ~250 lines added. Bigger Task 2 probe (~110 lines), new #inCallback guard pattern in Tasks 5/6 (~40 lines), 9 new re-entry-guard smoke tests in Task 11 (~100 lines), tightened framing throughout.
 
-### Self-review TODOs before Codex pass 2 (author: Murderbot)
+### Codex review pass 2 — 2026-04-23 reconciliation (Murderbot)
+
+Codex returned 4 nits. All applied:
+
+1. **Stale title-fallback language remained in snippets.** The halt-and-escalate rewrite in pass 1 missed five sites where the older "queue fallback" language was still present (plan header §"The C-API picture"; callbacks.ts JSDoc in Task 4; test comment in Task 9 Step 1; bash output in Task 9 Step 2; Task 9 Step 4 commit template). All rewritten to point at halt-and-escalate and explicitly note no equivalent queue fallback exists. Also reworded the Open Questions intro (§"Open questions") to stop promising a fallback for every Q.
+2. **onWritePty ownership test overclaimed.** The single "mutation doesn't affect libghostty" test didn't prove the *first* response was retainable — mutating r1 and checking r2 only probes the reverse direction. Replaced with two tests: (a) retain r1, do later vtWrite calls, assert r1's bytes still equal the post-receipt snapshot — real retention assertion; (b) mutate r1, issue another query, assert the new response(s) are fresh VT replies (not 0xff-corrupted). Also dropped the `responses.length === 2` assumption, which assumed one callback per query without the probe confirming it.
+3. **Re-entry guard propagation was underdocumented.** README and plan-header language said "throws GhosttyError" without clarifying that the throw lands inside the user callback first. If uncaught by user code, it reaches the trampoline's outer try/catch and is logged+swallowed (vtWrite returns normally). Added that clarification in both places.
+4. **"Files touched" block was incomplete.** Missing: `scripts/probe-callbacks.ts`, `test/smoke/callback-factories.test.ts`, `test/smoke/terminal.test.ts` (modified for idempotency test in Task 6), `package.json` (version bump). Rewrote the block with task-number annotations so implementation Bobs can cross-reference during Task 12's final gate.
+
+**Net delta from pass 1 reconciliation:** ~90 additional lines of changes; plan grew 2110 → 2157 lines. No structural changes — the plan is execution-ready modulo the Pass-1-fix preflight.
+
+### Self-review TODOs before Codex pass 3 (author: Murderbot)
 
 1. Re-read spec §5.4 paragraph-for-paragraph against each task's snippet after the reconciliation — confirm no claim is made that the spec doesn't authorize.
 2. Verify every cited line number in the header and ABI doc still resolves after the Pass-1-fix commits land.
