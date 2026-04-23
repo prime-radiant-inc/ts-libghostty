@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "ts-libghostty",
+      "name": "ts-libghostty-vt",
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.4.0",

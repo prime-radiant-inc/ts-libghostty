@@ -3,7 +3,7 @@
 // later passes.
 
 // ModeName is the generated string-literal union (see src/internal/generated.ts).
-// Re-exported here so consumers can import it alongside other types from "ts-libghostty".
+// Re-exported here so consumers can import it alongside other types from "ts-libghostty-vt".
 export { modeNames, type ModeName } from "./internal/generated";
 
 export type RGB = readonly [r: number, g: number, b: number];

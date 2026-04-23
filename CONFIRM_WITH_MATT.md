@@ -24,10 +24,12 @@
 
 ## Before publish — your todo
 
-1. **Fill in `REPLACE_WITH_REPO_URL`** in `README.md`. Left visible on purpose so it doesn't get forgotten.
-2. **Push the `v0.1.0` tag** when ready: `git push origin v0.1.0` (and push `main` if you haven't). First push will trigger the CI workflow — verify it's green before `npm publish` / `bun publish`.
-3. **Decide on GitHub repo location.** The README references a `source repository` URL. If Prime Radiant hosts it, update the URL and the LICENSE copyright (`Copyright 2026 Prime Radiant (and contributors)`).
-4. **Publish.** `bun publish` or `npm publish` from a clean tree. Tarball smoke already verifies a fresh install works — publish should be uneventful.
+1. ~~Fill in `REPLACE_WITH_REPO_URL`~~ — done; README points to `github.com/prime-radiant-inc/ts-libghostty-vt`.
+2. ~~Decide on GitHub repo location~~ — done; `prime-radiant-inc/ts-libghostty-vt` on GitHub.
+3. ~~Rename package to match `libghostty-vt` naming~~ — done; npm package name is `ts-libghostty-vt` (was `ts-libghostty`). `v0.1.0` retagged on the rename commit.
+4. **Push the `v0.1.0` tag**: `git push origin v0.1.0`. First push will trigger the CI workflow — verify green before publish.
+5. **Update LICENSE copyright** if needed — currently reads `Copyright 2026 Prime Radiant (and contributors)`, which matches the `prime-radiant-inc` GitHub org. Change if you prefer different attribution.
+6. **Publish.** `bun publish` or `npm publish` from a clean tree. The name `ts-libghostty-vt` is unclaimed on npm as of rename time.
 
 ---
 

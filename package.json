@@ -1,5 +1,5 @@
 {
-  "name": "ts-libghostty",
+  "name": "ts-libghostty-vt",
   "version": "0.1.0",
   "description": "TypeScript binding over libghostty-vt. Unofficial community binding.",
   "license": "Apache-2.0",
