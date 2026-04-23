@@ -1,0 +1,10 @@
+[?1006;1000h[?1002h[?1049h[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H<gz9ryb7gr_v2k900000gn/T/tmp.60uOz8QerA/sample.py"<_v2k900000gn/T/tmp.60uOz8QerA/sample.py" 10L, 265B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c[27m[23m[29m[m[H[2J[1;1H[96m#!/usr/bin/env python3[m
+[95m"""A small colored-syntax sample."""[m
+
+[93mdef[m [1m[96mgreet[m(name: [1m[96mstr[m) -> [1m[96mstr[m:
+    [96m# comment line with "string in comment" and a number 42[m
+    [93mreturn[m [95mf"Hello, [m[38;5;224m{[mname[38;5;224m}[m[95m!"[m
+
+[93mif[m __name__ == [95m"__main__"[m:
+    [93mfor[m i [93min[m [1m[96mrange[m([95m3[m):[10;9H[1m[96mprint[m(greet([95mf"world [m[38;5;224m{[mi[38;5;224m}[m[95m"[m))
+[94m~                                                                               [12;1H~                                                                               [13;1H~                                                                               [14;1H~                                                                               [15;1H~                                                                               [16;1H~                                                                               [17;1H~                                                                               [18;1H~                                                                               [19;1H~                                                                               [20;1H~                                                                               [21;1H~                                                                               [22;1H~                                                                               [23;1H~                                                                               [m[24;63H1,1[11CAll[1;1H[?25h[?4m[?25l[24;63H[K[24;1H:redraw[62C1,1[11CAll[1;1H[?25h

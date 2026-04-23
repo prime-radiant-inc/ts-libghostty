@@ -1,0 +1,44 @@
+Processes: 1002 total, 2 running, 1000 sleeping, 5523 threads 
+2026/04/23 15:45:46
+Load Avg: 2.02, 2.11, 1.89 
+CPU usage: 2.35% user, 5.48% sys, 92.16% idle 
+SharedLibs: 1552M resident, 257M data, 557M linkedit.
+MemRegions: 460453 total, 17G resident, 860M private, 15G shared.
+PhysMem: 62G used (4069M wired, 2326M compressor), 1014M unused.
+VM: 709T vsize, 6144M framework vsize, 0(0) swapins, 0(0) swapouts.
+Networks: packets: 28809704/28G in, 16977602/15G out.
+Disks: 16057664/522G read, 13321758/266G written.
+
+PID    COMMAND          %CPU TIME     #TH #WQ #PORTS MEM   PURG CMPRS PGRP  PPID STATE    BOOSTS     %CPU_ME %CPU_OTHRS UID FAULTS COW MSGSENT MSGRECV SYSBSD SYSMACH CSW    PAGEINS IDLEW POWER INSTRS CYCLES JETPRI USER #MREGS RPRVT VPRVT VSIZE KPRVT KSHRD
+99747  com.apple.WebKit 0.0  00:41.38 6   1   80     384M  0B   0B    99747 1    sleeping  0[30998]  0.00000 0.00000    501 156201 215 282771  264976  529528 1938410 281077 5       439   0.0   0      0      40     mw   N/A    N/A   N/A   N/A   N/A   N/A  
+99553  com.apple.WebKit 0.0  00:11.09 4   2   66     131M  0B   0B    99553 1    sleeping  0[5920]   0.00000 0.00000    501 39522  227 57990   48200   129379 427123  71874  10      289   0.0   0      0      40     mw   N/A    N/A   N/A   N/A   N/A   N/A  
+97993  storekitagent    0.0  00:00.45 2   1   84     7312K 0B   3152K 97993 1    sleeping *0[17]     0.00000 0.00000    501 2750   160 619     367     18823  1937    7528   174     9     0.0   0      0      0      mw   N/A    N/A   N/A   N/A   N/A   N/A  
+97295  LocalAuthenticat 0.0  00:02.41 3   1   236    18M   0B   6480K 97295 1    sleeping  0[5025]   0.00000 0.00000    501 16399  426 45533   16553   83242  120814  48913  28      46    0.0   0      0      0      mw   N/A    N/A   N/A   N/A   N/A   N/A  
+97293  com.apple.WebKit 0.0  00:06.42 5   2/1 71     55M   0B   4832K 97293 1    sleeping *129[6780] 0.00000 0.00000    501 26716  225 33504   26976   103569 337835  61626  6       252   0.0   0      0      40     mw   N/A    N/A   N/A   N/A   N/A   N/A  
+97286  icloudmailagent  0.0  00:00.45 2   1   50     4576K 0B   1808K 97286 1    sleeping *0[18]     0.00000 0.00000    501 4497   135 538     346     18163  7739    8245   39      8     0.0   0      0      0      mw   N/A    N/A   N/A   N/A   N/A   N/A  
+97284  ShareMail        0.0  00:01.88 3   1   168    8017K 0B   2064K 97284 1    sleeping  0[5002]   0.00000 0.00000    501 11257  188 36366   14423   72814  103281  40642  44      41    0.0   0      0      0      mw   N/A    N/A   N/A   N/A   N/A   N/A  
+97283  printtool        0.0  00:01.57 3   1   165    7905K 0B   1472K 97283 1    sleeping *0[2613]   0.00000 0.00000    501 10832  163 22114   10253   169786 58735   44982  9       12    0.0   0      0      40     mw   N/A    N/A   N/A   N/A   N/A   N/A  
+96345  MTLCompilerServi 0.0  00:00.09 2   1   34     12M   0B   11M   96345 1    sleeping *0[36]     0.00000 0.00000    501 1730   118 229     135     1627   461     129    5       0     0.0   0      0      0      mw   N/A    N/A   N/A   N/A   N/A   N/A  
+96327  VTDecoderXPCServ 0.0  00:00.05 2   1   67     4321K 0B   2256K 96327 1    sleeping *0[11]     0.00000 0.00000    501 2662   118 1903    1080    2536   3133    650    3       0     0.0   0      0      0      mw   N/A    N/A   N/A   N/A   N/A   N/A  
+Processes: 1002 total, 2 running, 1000 sleeping, 5493 threads 
+2026/04/23 15:45:47
+Load Avg: 2.02, 2.11, 1.89 
+CPU usage: 3.56% user, 1.91% sys, 94.51% idle 
+SharedLibs: 1552M resident, 257M data, 557M linkedit.
+MemRegions: 0 total, 0B resident, 860M private, 15G shared.
+PhysMem: 62G used (3801M wired, 2326M compressor), 1082M unused.
+VM: 709T vsize, 6144M framework vsize, 0(0) swapins, 0(0) swapouts.
+Networks: packets: 28809747/28G in, 16977618/15G out.
+Disks: 16057664/522G read, 13321761/266G written.
+
+PID    COMMAND          %CPU TIME     #TH    #WQ #PORTS MEM    PURG   CMPRS PGRP  PPID  STATE    BOOSTS       %CPU_ME %CPU_OTHRS UID FAULTS     COW   MSGSENT    MSGRECV    SYSBSD     SYSMACH     CSW        PAGEINS IDLEW    POWER INSTRS    CYCLES    JETPRI USER          #MREGS RPRVT VPRVT VSIZE KPRVT KSHRD
+595    WindowServer     14.8 09:34:39 30     7   6859-  1247M- 982M   135M  595   1     sleeping *0[1]        0.73434 1.62493    88  28159158+  59764 250867912+ 377140592+ 697485702+ 1220706477+ 199671074+ 4338    319787+  14.9  431927975 286282138 170    _windowserver N/A    N/A   N/A   N/A   N/A   N/A  
+10105  2.1.118          11.6 02:53.41 47     1   111    245M+  0B     0B    10105 2057  sleeping *0[5]        0.00000 0.00000    501 50509+     138   149480+    79006+     2277423+   8459982+    1167882+   83      1382     11.6  754322588 384697249 180    mw            N/A    N/A   N/A   N/A   N/A   N/A  
+1447   ghostty          9.1  02:05:13 29     5   886    1055M- 4864K+ 28M   1447  1     sleeping *0[50594]    2.68097 0.09324    501 11702878+  4351  173706600+ 24311016+  54932169+  244483776+  45984438+  1150    77501+   9.1   779172136 358425326 100    mw            N/A    N/A   N/A   N/A   N/A   N/A  
+16493  2.1.118          8.3  00:11.74 47     1   111+   239M+  0B     0B    16493 16306 sleeping *0[3]        0.00000 0.00000    501 36889+     139   13350+     6908+      188949+    862854+     94471+     79      203      8.3   487385585 276222446 180    mw            N/A    N/A   N/A   N/A   N/A   N/A  
+17380  top              7.5  00:00.46 1/1    0   27+    8064K+ 0B     0B    17380 17379 running  *0[1]        0.05380 0.00000    0   3256+      253   1020842+   510415+    10274+     527551+     49+        1       0        7.5   587758157 367313951 180    root          N/A    N/A   N/A   N/A   N/A   N/A  
+0      kernel_task      5.3  07:07:29 930/18 0   0      2694M  0B     0B    0     0     running   0[0]        0.00000 0.00000    0   1343903+   15    533077472+ 408231734+ 0          0           2147483647 0       1330243+ 0.0   110093163 104938996 0      root          N/A    N/A   N/A   N/A   N/A   N/A  
+333    2.1.118          4.7  03:16.21 46     1   110    293M   0B     0B    333   62519 sleeping *0[10]       0.00000 0.00000    501 54915      139   177677+    94214+     2600074+   9477660+    1343517+   78      1678     4.7   296912069 156998453 180    mw            N/A    N/A   N/A   N/A   N/A   N/A  
+89689  com.apple.WebKit 2.5  14:48.76 12     2   82     587M   0B     4992K 89689 1     sleeping  0[229314+]  0.00000 0.00000    501 1212300+   235   1549175+   1637046+   5859010+   16636026+   2894318+   13      4624     2.5   81965510  47695362  40     mw            N/A    N/A   N/A   N/A   N/A   N/A  
+38415  com.apple.WebKit 2.2  03:47:15 8      1   79     566M   0B     38M   38415 1     sleeping  0[1638758+] 0.00000 0.00000    501 177633882+ 236   10642911+  7043653+   67266315+  168354159+  20402357+  14      10137    2.2   71874951  48410609  40     mw            N/A    N/A   N/A   N/A   N/A   N/A  
+79997  OrbStack Helper  1.2  64:44.76 112    1   336    2201M+ 0B     394M  79997 1     sleeping *0[2]        0.00000 0.00000    501 33698683+  121   49282      150265+    25279138+  62312939+   61400585+  4789    259744+  1.3   14664288  24095019  180    mw            N/A    N/A   N/A   N/A   N/A   N/A  

@@ -1,0 +1,10 @@
+
+The default interactive shell is now zsh.
+To update your account to use zsh, please run `chsh -s /bin/zsh`.
+For more details, please visit https://support.apple.com/kb/HT208050.
+[?1034h[1;34muser@host[0m:[1;36m~/work[0m$ echo hello world
+hello world
+[1;34muser@host[0m:[1;36m~/work[0m$ printf "\033[1;31mred\033[0m \033[32mgreen\033[0m\n"
+[1;31mred[0m [32mgreen[0m
+[1;34muser@host[0m:[1;36m~/work[0m$ exit
+exit

@@ -1,0 +1,72 @@
+[?1049h[22;0;0t[?1h=[H[2J[?12l[?25h[?1000l[?1002l[?1003l[?1006l[?1005l[?2004h[?2031h[?996n(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[c[>c[>q]10;?\]11;?\[5;11H[?25l[H[K
+The default interactive shell is now zsh.[K
+To update your account to use zsh, please run `chsh -s /bin/zsh`.[K
+For more details, please visit https://support.apple.com/kb/HT208050.[K
+bash-3.2$ [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[s] 0:zsh*                                          "perihelion" 15:45 23-Apr-26(B[m[?12l[?25h[5;11H[18t[14t(B[m[?12l[?25h[?1006l[?1000l[?1002l[?1003l[1;1H[1;24r[?25l[1;1H[K
+The default interactive shell is now zsh.[K
+To update your account to use zsh, please run `chsh -s /bin/zsh`.[K
+For more details, please visit https://support.apple.com/kb/HT208050.[K
+bash-3.2$ [K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[s] 0:zsh*                                          "perihelion" 15:45 23-Apr-26(B[m[?12l[?25h[5;11H[?25l[12;1H─────────────────────────────────────────[32m───────────────────────────────────────(B[m[1;1H[K
+The default interactive shell is now zsh.[K
+To update your account to use zsh, please run `chsh -s /bin/zsh`.[K
+For more details, please visit https://support.apple.com/kb/HT208050.[K
+bash-3.2$ [K
+[K
+[K
+[K
+[K
+[K
+[K[2B[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K
+[K[30m[42m
+[s] 0:zsh*                                          "perihelion" 15:45 23-Apr-26(B[m[?12l[?25h[13;1H[5dbash-3.2$ [K[13;1H                                                                                [13;1H[13;23r[1;1H[14;23r[10S[13;1H[Kmw@perihelion differential-testing % [K[1;24r[13;38Hecho pane one; read
+pane one
+[?25l[3A[32m─────────────────────────────────────────[39m───────────────────────────────────────(B[m[?12l[?25h[5;11H[?25l[12;1H[32m─────────────────────────────────────────[39m───────────────────────────────────────(B[m[30m[42m[24;1H[s] 0:bash*                                         "perihelion" 15:45 23-Apr-26(B[m[?12l[?25h[5;11Hecho pane two
+pane two
+bash-3.2$ 

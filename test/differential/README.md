@@ -44,10 +44,16 @@ Not currently in CI. See design memo §"CI wiring: deferred".
   corpus file. `plain` catches cell-content and position divergence; `vt`
   catches control-sequence emission divergence; `html` catches attribute
   (color, bold, underline, hyperlink) divergence.
-- 14 corpus files × 3 formats = 42 per-file comparisons.
-- Corpus: 4 handcrafted smoke cases + 10 named seeds curated from Ghostty's
-  own libghostty-vt fuzz corpus
-  (`vendor/ghostty/test/fuzz-libghostty/corpus/parser-initial/`).
+- 20 corpus files × 3 formats = 60 per-file comparisons.
+- Corpus:
+  - **`0X-*`** — handcrafted smoke cases (empty, hello, scroll, cursor ops)
+  - **`1X-*`** — named seeds curated from Ghostty's own libghostty-vt fuzz
+    corpus (`vendor/ghostty/test/fuzz-libghostty/corpus/parser-initial/`)
+  - **`2X-*`** — real-application captures recorded under a PTY
+    (bash prompt, vim plain edit, vim with syntax highlighting, less,
+    tmux splits, top). Captured by `scripts/capture-real-app-fixtures.sh`,
+    which uses `scripts/capture-fixture.py` (Python `pty` module) to
+    drive each program with scripted input and record every byte it emits.
 - Fixed 80×24 terminal geometry on both sides.
 
 ## What it does not cover (yet)
@@ -66,12 +72,35 @@ prefix sorts it into a category:
 
 - `0X-*` — handcrafted smoke cases
 - `1X-*` — curated from `parser-initial`
-- (future) `2X-*` — handcrafted attribute-coverage cases for vt/html
+- `2X-*` — real-application PTY captures (regenerate via
+  `bash scripts/capture-real-app-fixtures.sh`)
 - (future) `3X-*` — curated from `parser-cmin` / `stream-cmin`
 
 Re-run the harness; new fixture should pass on day one. If it doesn't, you
 either found a binding bug or wrote a fixture that depends on geometry the
 harness doesn't yet support — investigate before normalizing.
+
+### Regenerating real-app captures
+
+The `2X-*` fixtures are not byte-reproducible across re-runs (output depends
+on tool version, process list, time). Regenerate them when:
+
+- a tool's output format changes materially (e.g., new vim version)
+- the Ghostty pin bumps and you want fresh examples for the new VT interpreter
+- you want different content (e.g., longer file, different language)
+
+```sh
+bash scripts/capture-real-app-fixtures.sh
+bun test/differential/run.ts   # confirm new captures still pass
+```
+
+Captures use Python's `pty` module via `scripts/capture-fixture.py` (no
+`script(1)` because Claude Code agent shells lack a controlling TTY). Vim
+and less captures intentionally do not send a quit command — quitting
+emits the alt-screen-exit sequence (`ESC [ ? 1049 l`) which restores an
+empty main screen and erases all the rendered content. We let the SIGKILL
+timeout fire instead, freezing the displayed state for the harness to
+replay.
 
 ## Architecture
 
