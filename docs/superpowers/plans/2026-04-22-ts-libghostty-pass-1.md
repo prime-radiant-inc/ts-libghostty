@@ -18,9 +18,11 @@
 
 **Pinned upstream:** Ghostty commit is pinned in **Task 2 Step 1** — the executor must pick a specific commit SHA before proceeding, and all downstream work consumes that choice via the ABI Discovery pass in Task 3. Do not start Task 2 without a chosen SHA. The pinned SHA is the only source of truth; any later reference to "the pin" or "upstream" means that commit.
 
-**Module format.** TypeScript source uses `.js` relative import specifiers (the canonical TS→ESM pattern). `tsconfig.json` sets `moduleResolution: "bundler"`, `module: "ESNext"`, `allowImportingTsExtensions: false`. `tsc` emits to `dist/`; the tarball ships `src/` plus `dist/` plus `prebuilds/`. Tarball-smoke (Task 19) proves the emitted imports resolve in a clean install.
+**Module format.** TypeScript source and tests use **extensionless relative imports** — e.g. `import { Terminal } from "./terminal"`. Under `moduleResolution: "bundler"` Bun resolves these to `.ts` files at dev/test time, and `bun build` resolves them to the emitted targets at build time. `tsc` is used only for `.d.ts` emission (`--emitDeclarationOnly`); `bun build --target bun --format esm` produces the `dist/*.js` JavaScript. This keeps `bun test` working directly against source files without a build step, and still produces a clean `dist/` for npm publication. Tarball-smoke (Task 19) proves the emitted artifact imports correctly in a clean install outside the repo.
 
-**ABI discovery is gated before FFI implementation.** Task 3 consumes the pinned Ghostty headers to produce a checked-in reference document enumerating the exact C signatures, struct fields, enum names, and ownership rules the binding depends on. Tasks 4 onward read from that doc. Every later task that historically carried a "verify at pin" note now simply references the discovery artifact.
+**ABI discovery is gated before FFI implementation.** Task 3 consumes the pinned Ghostty headers to produce a checked-in reference document enumerating the exact C signatures, struct fields, enum names, and ownership rules the binding depends on. Tasks 4 onward read from that doc. **Task 3 Step 5 is a hard stop**: the executor must reconcile every later code snippet that carries an ABI-discovery dependency before beginning Task 4. Any mismatch between the discovery doc and a snippet is a plan-level bug fixed by editing the plan before execution.
+
+**Binding symbol verification.** On first native use, `src/ffi.ts` dlopens the resolved library declaring the exact set of symbols in `requiredSymbols` (exported from `ffi.ts`), then verifies every one resolves to a callable. A missing required symbol raises `LibraryCompatibilityError` before any Terminal or Formatter can be constructed. `declaredHeaderSymbols` (generated from header parsing) is a diagnostic-only superset; Task 18 asserts `requiredSymbols ⊆ declaredHeaderSymbols` to catch drift between what the binding asks for and what the pinned header actually declares.
 
 **Out of scope for Pass 1 (deferred to later passes):** effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`); `RenderState` + `RenderRow` + `RenderCell`; `KeyEncoder` + `KeyEvent`; `encodeFocus`; colors get/set; viewport scroll; `cellAt`; mouse and Kitty and OSC and paste.
 
@@ -178,11 +180,14 @@ Contents:
     "build:probe": "mkdir -p .tmp && cc -O2 -I vendor/ghostty/include -o .tmp/probe-layout scripts/probe-layout.c && .tmp/probe-layout > .tmp/layout.json",
     "build:bindings": "bun scripts/gen-bindings.ts",
     "build:native": "bun run build:libghostty && bun run build:probe && bun run build:bindings",
-    "build:ts": "tsc -p tsconfig.json",
+    "build:js": "bun build ./src/index.ts --outdir dist --target bun --format esm",
+    "build:types": "tsc -p tsconfig.json",
+    "build:ts": "bun run build:js && bun run build:types",
     "build": "bun run build:native && bun run build:ts",
     "test": "bun test test/smoke test/tarball/smoke.test.ts",
     "test:smoke": "bun test test/smoke",
     "test:tarball": "bash scripts/run-tarball-smoke.sh",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "verify:generated": "bun run build:probe && bun run build:bindings && git diff --exit-code src/internal/generated.ts"
   },
   "ghostty": {
@@ -203,8 +208,8 @@ Contents:
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
     "lib": ["ES2023"],
     "types": ["bun"],
     "outDir": "./dist",
@@ -212,7 +217,7 @@ Contents:
     "strict": true,
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true,
+    "emitDeclarationOnly": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true,
@@ -227,7 +232,13 @@ Contents:
 }
 ```
 
-Source code throughout this plan uses `.js` relative import specifiers (the canonical TS→ESM pattern for NodeNext). For example `import { X } from "./terminal.js"` — TypeScript resolves this to `./terminal.ts` at compile time; the emitted `dist/index.js` then imports `./terminal.js`, which exists. `verbatimModuleSyntax` is off because we mix value and type imports; use explicit `import type` where needed.
+Source throughout this plan uses **extensionless relative imports** — e.g. `import { X } from "./terminal"`. Under `moduleResolution: "bundler"`:
+
+- **At dev/test time** Bun resolves `./terminal` directly to `src/terminal.ts` when running `bun test` or `bun <script>.ts`.
+- **At build time** `bun build` resolves and emits the JavaScript into `dist/`.
+- **Declarations** come from `tsc` with `emitDeclarationOnly: true` — the compiler produces `.d.ts` files only; JavaScript emission is delegated to `bun build`.
+
+This avoids the NodeNext `.js`-specifier hazard (where explicit extensions would mismatch `.ts` source files under `bun test`) and also avoids needing a separate test tsconfig.
 
 - [ ] **Step 6: Create `LICENSE` (Apache-2.0)**
 
@@ -474,6 +485,7 @@ If either check fails, re-run Task 2.
 - [ ] **Step 2: Enumerate header files and top-level symbols**
 
 ```bash
+mkdir -p .tmp
 find vendor/ghostty/include/ghostty -name '*.h' -print | sort > .tmp/abi-headers.txt
 grep -hE '^\s*ghostty_[A-Za-z0-9_]+\s*\(' vendor/ghostty/include -r | sort -u > .tmp/abi-symbol-decls.txt || true
 # Also capture a more structured function-declaration listing. This filters to
@@ -482,7 +494,7 @@ grep -hE '\bghostty_[A-Za-z0-9_]+\s*\([^;]*\)\s*(__attribute__[^;]*)?;' vendor/g
 wc -l .tmp/abi-headers.txt .tmp/abi-symbol-decls.txt .tmp/abi-symbol-funcs.txt
 ```
 
-These counts are informational; they give the executor a sense of how much surface exists. Used to hand-write the reference doc in Step 3.
+These files live in `.tmp/` and are **not** checked in — they are scratch input used to hand-write the reference doc in Step 3. The doc captures only what matters, verbatim.
 
 - [ ] **Step 3: Write `docs/abi/2026-04-22-abi-discovery.md`**
 
@@ -495,7 +507,7 @@ Use this template:
 
 **Pinned commit:** <SHA>
 **Date:** 2026-04-22
-**Headers scanned:** see `.tmp/abi-headers.txt`
+**Headers scanned:** every `*.h` under `vendor/ghostty/include/ghostty/` at the pinned commit. The raw list was captured in `.tmp/abi-headers.txt` during discovery; that file is not part of the artifact. Total count: `<N>` headers.
 
 ## 1. Build target
 
@@ -618,18 +630,36 @@ Each surprise triggers one of three outcomes: (a) update the plan snippet in the
 
 - [ ] **Step 4: Cross-reference surprises back into the plan**
 
-For each surprise recorded in §12 of the discovery doc that requires a snippet change, edit the relevant plan task before executing it. This is the "plan lock" step — the plan and the discovery doc are now consistent.
+For each surprise recorded in §12 of the discovery doc that requires a snippet change, edit the relevant plan task before executing it.
 
 Examples of what might change:
 
-- Task 4 generator: `ModeTag` prefix is `GHOSTTY_MODE_TAG_` (not `GHOSTTY_MODE_`) → update `modeTagFromName`.
-- Task 4 generator: `GhosttyResult` values are non-contiguous or hex → generator's `parseEnums` still works but verify.
-- Task 5 probe: `GhosttyTerminalOptions` lacks `apc_max_bytes` → Task 11's constructor skips those fields; Pass 1 README notes that APC bounds use upstream default.
-- Task 8 FFI: `ghostty_terminal_get_multi` takes a `GhosttyTerminalGetValue*` union array (not a flat byte buffer) → Task 14 snapshot rewrites accordingly.
-- Task 8 FFI: `ghostty_formatter_new` takes `(tag, &options, &out)` (not `(allocator, &options, &out)`) → Task 16 `Formatter` constructor adjusts.
-- Task 7 FFI: build identity is exposed via `ghostty_build_info_*` → wire into `libraryInfo()` and populate `LibraryCompatibilityError.actualCommit`. Otherwise narrow the claim in Task 21 README.
+- Task 5 generator: `ModeTag` prefix is `GHOSTTY_MODE_TAG_` (not `GHOSTTY_MODE_`) → update the `MODE_TAG_PREFIX` constant.
+- Task 5 generator: `GhosttyResult` values are non-contiguous or hex → verify the parser handles them; add entries to `RESULT_CODE_MAP` as needed.
+- Task 4 probe: `GhosttyTerminalOptions` lacks `apc_max_bytes` → the conditional emits in the probe skip those fields; Task 11's constructor will naturally not wire them; Task 21 README notes that APC bounds use upstream default.
+- Task 8 FFI: `ghostty_terminal_get_multi` takes a `GhosttyTerminalGetValue*` union array (not a flat byte buffer) → update the `SYMBOLS` signature in `src/ffi.ts` and rewrite Task 14's `snapshot()` implementation.
+- Task 8 FFI: `ghostty_formatter_new` takes `(tag, &options, &out)` (not `(allocator, &options, &out)`) → update `SYMBOLS` and Task 16 `Formatter` constructor to match.
+- Task 8 FFI: build identity is exposed via `ghostty_build_info_*` → add those symbols to `SYMBOLS`, populate `loadedIdentity` in `getLib()`, populate `LibraryCompatibilityError.actualCommit`. Otherwise narrow the compatibility claim in Task 21 README.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: RECONCILIATION CHECKPOINT (hard stop — do not skip)**
+
+Before committing this task and before beginning Task 4, verify every snippet in the plan that carries an ABI-discovery dependency has been reconciled with the findings. Go through this checklist line by line. Tick every item: "matches discovery as written" or "snippet updated to match discovery." If any item is unchecked, **stop** and fix the plan before proceeding.
+
+- [ ] Task 4 `probe-layout.c` field lists match ABI discovery §5 and §7 (including or omitting `apc_max_bytes` per the pin) and reflect the `isSized` finding.
+- [ ] Task 5 `MODE_TAG_PREFIX` constant matches ABI discovery §8.
+- [ ] Task 5 `RESULT_CODE_MAP` covers every entry in ABI discovery §3 (no `WARNING: ... has no TS mapping` output from the generator on a real run).
+- [ ] Task 8 `SYMBOLS` signatures match ABI discovery §4, §6, and §11 (every symbol's args and return type).
+- [ ] Task 8 build-identity wiring: if ABI discovery §2 records a getter, `SYMBOLS` includes it and `getLib()` populates `loadedIdentity`; otherwise the Task 21 README's compat-claim paragraph narrows to "symbol + layout" only.
+- [ ] Task 11 `Terminal` constructor call shape (`ghostty_terminal_new(...)`) matches ABI discovery §4.
+- [ ] Task 14 `snapshot()` matches ABI discovery §4's `get_multi` shape (key array type, value slot size, string representation).
+- [ ] Task 14 `SNAPSHOT_KEYS` uses only enum names that exist in ABI discovery §9. Fields marked "NOT AT PIN" in §9 are dropped from `SNAPSHOT_KEYS` and their corresponding snapshot fields are reported as `undefined`.
+- [ ] Task 15 `modeTagByName` is consumed from generated — no prefix-string guessing remains.
+- [ ] Task 16 `Formatter` constructor matches ABI discovery §6 (either allocator-first or tag-first; chosen branch in the implementation comments).
+- [ ] Task 16 `Formatter.format` free path matches ABI discovery §6's ownership rules (`ghostty_free` vs. a dedicated free function).
+
+When every box above is ticked, proceed.
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add docs/abi/2026-04-22-abi-discovery.md
@@ -640,7 +670,7 @@ rules the binding depends on. Subsequent tasks consume this doc rather
 than guessing."
 ```
 
-If any plan snippets were updated in Step 4, also commit those changes to the plan:
+If any plan snippets were updated during Step 4/5 reconciliation, also commit those changes to the plan:
 
 ```bash
 git add docs/superpowers/plans/2026-04-22-ts-libghostty-pass-1.md
@@ -1111,7 +1141,7 @@ head -60 src/internal/generated.ts
 grep -c 'ghostty_terminal_new\|ghostty_terminal_free\|ghostty_formatter_new\|ghostty_formatter_format' src/internal/generated.ts
 # Expected: 4 (each symbol appears exactly once in declaredHeaderSymbols)
 
-bun -e 'const g = await import("./src/internal/generated.js"); console.log({commit: g.pinnedCommit, modes: g.modeNames.length, resultCodes: Object.keys(g.resultCodeByValue).length});'
+bun -e 'const g = await import("./src/internal/generated.ts"); console.log({commit: g.pinnedCommit, modes: g.modeNames.length, resultCodes: Object.keys(g.resultCodeByValue).length});'
 # Expected: commit is your pinned SHA; modes > 0; resultCodes > 0.
 ```
 
@@ -1146,7 +1176,7 @@ import {
   UnsupportedPlatformError,
   LibraryCompatibilityError,
   UseAfterCloseError,
-} from "../../src/errors.js";
+} from "../../src/errors";
 
 describe("GhosttyError hierarchy", () => {
   it("GhosttyError has code and optional functionName", () => {
@@ -1326,8 +1356,8 @@ Create `test/smoke/path.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import { detectPlatform, SUPPORTED_PLATFORMS, resolveLibraryPath } from "../../src/internal/path.js";
-import { LibraryNotFoundError, UnsupportedPlatformError } from "../../src/errors.js";
+import { detectPlatform, SUPPORTED_PLATFORMS, resolveLibraryPath } from "../../src/internal/path";
+import { LibraryNotFoundError, UnsupportedPlatformError } from "../../src/errors";
 
 describe("platform detection", () => {
   it("detects current platform as a known string", () => {
@@ -1449,7 +1479,7 @@ Contents:
 ```typescript
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { LibraryNotFoundError, UnsupportedPlatformError } from "../errors.js";
+import { LibraryNotFoundError, UnsupportedPlatformError } from "../errors";
 
 export const SUPPORTED_PLATFORMS = ["darwin-arm64"] as const;
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -1579,8 +1609,8 @@ Create `test/smoke/ffi.test.ts`:
 ```typescript
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { join } from "node:path";
-import * as ffi from "../../src/ffi.js";
-import { LibraryCompatibilityError, LibraryNotFoundError } from "../../src/errors.js";
+import * as ffi from "../../src/ffi";
+import { LibraryCompatibilityError, LibraryNotFoundError } from "../../src/errors";
 
 const BUNDLED = join(
   process.cwd(),
@@ -1649,9 +1679,9 @@ import { dlopen, FFIType } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LibraryCompatibilityError, LibraryNotFoundError } from "./errors.js";
-import { resolveLibraryPath } from "./internal/path.js";
-import { declaredHeaderSymbols, pinnedCommit } from "./internal/generated.js";
+import { LibraryCompatibilityError, LibraryNotFoundError } from "./errors";
+import { resolveLibraryPath } from "./internal/path";
+import { declaredHeaderSymbols, pinnedCommit } from "./internal/generated";
 
 // ---- Symbol declarations ---------------------------------------------------
 // Every symbol the binding dlopens is declared here with its bun:ffi signature.
@@ -1901,8 +1931,8 @@ Create `test/smoke/internal-helpers.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import { writeStruct } from "../../src/internal/sized-struct.js";
-import { readCString, writeCString } from "../../src/internal/marshal.js";
+import { writeStruct } from "../../src/internal/sized-struct";
+import { readCString, writeCString } from "../../src/internal/marshal";
 
 const kind = (k: "uint" | "int" | "bool" | "ptr" | "struct") => k;
 
@@ -2026,7 +2056,7 @@ Expected: module not found.
 Contents:
 
 ```typescript
-import type { StructLayout } from "./generated.js";
+import type { StructLayout } from "./generated";
 
 /**
  * Build a byte buffer matching `layout`. Writes each provided field at its
@@ -2169,7 +2199,7 @@ Contents:
 
 // ModeName is the generated string-literal union (see src/internal/generated.ts).
 // Re-exported here so consumers can import it alongside other types from "ts-libghostty".
-export { modeNames, type ModeName } from "./internal/generated.js";
+export { modeNames, type ModeName } from "./internal/generated";
 
 export type RGB = readonly [r: number, g: number, b: number];
 export type PaletteIndex = { palette: number };
@@ -2218,7 +2248,7 @@ export interface FormatterOptions {
 - [ ] **Step 2: Verify `tsc` accepts the file**
 
 ```bash
-bun x tsc --noEmit -p tsconfig.json
+bun run typecheck
 ```
 
 Expected: no output / exit 0.
@@ -2246,9 +2276,9 @@ Create `test/smoke/terminal.test.ts`:
 
 ```typescript
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
-import { Terminal } from "../../src/terminal.js";
-import { UseAfterCloseError } from "../../src/errors.js";
-import * as ffi from "../../src/ffi.js";
+import { Terminal } from "../../src/terminal";
+import { UseAfterCloseError } from "../../src/errors";
+import * as ffi from "../../src/ffi";
 
 describe("Terminal lifecycle", () => {
   beforeEach(() => {
@@ -2309,15 +2339,15 @@ Contents:
 
 ```typescript
 import type { Pointer } from "bun:ffi";
-import { getLib } from "./ffi.js";
-import { GhosttyError, UseAfterCloseError } from "./errors.js";
-import { resultCodeByValue, structLayouts } from "./internal/generated.js";
-import { writeStruct } from "./internal/sized-struct.js";
+import { getLib } from "./ffi";
+import { GhosttyError, UseAfterCloseError } from "./errors";
+import { resultCodeByValue, structLayouts } from "./internal/generated";
+import { writeStruct } from "./internal/sized-struct";
 import type {
   ModeName,
   TerminalOptions,
   TerminalSnapshot,
-} from "./types.js";
+} from "./types";
 
 /**
  * Map a GhosttyResult numeric value returned from FFI into either success
@@ -2525,6 +2555,14 @@ Expected: new tests fail with "not implemented yet".
 
 - [ ] **Step 3: Implement**
 
+At the top of `src/terminal.ts`, augment the `bun:ffi` import to include `ptr`:
+
+```typescript
+import { ptr, type Pointer } from "bun:ffi";
+```
+
+(If `type Pointer` is already imported, extend the single import line rather than adding a new one.)
+
 Replace the `vtWrite` stub in `src/terminal.ts`:
 
 ```typescript
@@ -2532,7 +2570,6 @@ Replace the `vtWrite` stub in `src/terminal.ts`:
     this.#assertOpen();
     if (bytes.length === 0) return;
     const lib = getLib();
-    const { ptr } = require("bun:ffi");
     // Pass zero-copy into ghostty_terminal_vt_write(term, bytes, len).
     const result = lib.symbols.ghostty_terminal_vt_write(
       this.#handle,
@@ -2728,7 +2765,7 @@ Add a helper at the top of `src/terminal.ts` after imports:
 // from GhosttyTerminalGetKeyValues at runtime; names are verified against the
 // generated file. If a key is missing from the generated enum, the helper
 // will throw a clear error rather than silently returning zero.
-import { GhosttyTerminalGetKeyValues } from "./internal/generated.js";
+import { GhosttyTerminalGetKeyValues } from "./internal/generated";
 
 const SNAPSHOT_KEYS: Array<{ name: string; key: keyof typeof GhosttyTerminalGetKeyValues; size: "u32" | "bool" | "string" }> = [
   { name: "cols", key: "GHOSTTY_TERMINAL_GET_COLS" as const, size: "u32" },
@@ -2747,13 +2784,18 @@ const SNAPSHOT_KEYS: Array<{ name: string; key: keyof typeof GhosttyTerminalGetK
 
 **Executor note:** replace the `GHOSTTY_TERMINAL_GET_*` names above with the exact names recorded in `docs/abi/2026-04-22-abi-discovery.md` §9. Any name missing from `GhosttyTerminalGetKeyValues` causes a compile error — consult the ABI discovery doc's "NOT AT PIN" column to know which snapshot fields to mark `undefined` instead of looking up.
 
+At the top of `src/terminal.ts`, augment the `bun:ffi` import to include `ptr` and `toArrayBuffer` (these are also used by `vtWrite` and `Formatter`):
+
+```typescript
+import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
+```
+
 Replace the `snapshot()` stub:
 
 ```typescript
   snapshot(): TerminalSnapshot {
     this.#assertOpen();
     const lib = getLib();
-    const { read, ptr } = require("bun:ffi");
 
     // Build keys[] and values[] arrays.
     // keys[]: u32 array, length = SNAPSHOT_KEYS.length
@@ -2761,10 +2803,12 @@ Replace the `snapshot()` stub:
     //   - a u32 for size: "u32" | "bool"
     //   - a (char *, size_t) pair for size: "string"
     //
-    // The exact ABI of ghostty_terminal_get_multi is the union type
-    // GhosttyTerminalGetValue in vt.h — verify at pin time. The shape
-    // sketched below uses per-entry heap slots; replace with the actual
-    // struct layout if different.
+    // The concrete ABI of ghostty_terminal_get_multi and its value struct is
+    // recorded in docs/abi/2026-04-22-abi-discovery.md §4 ("ghostty_terminal
+    // _get_multi details"). If the pin uses a different shape — e.g. a
+    // GhosttyTerminalGetValue union array rather than a flat slot buffer —
+    // the Task 3 hard-stop required this snippet to be rewritten before
+    // execution reached this task.
 
     const n = SNAPSHOT_KEYS.length;
     const keysBuf = new Uint32Array(n);
@@ -2782,8 +2826,9 @@ Replace the `snapshot()` stub:
     }
 
     // Allocate a values buffer large enough for the widest entry type.
-    // For Pass 1 assume each slot is 16 bytes (enough for a u32, a bool, or
-    // a {char*, size_t} pair). Refine after reading vt.h's actual struct.
+    // SLOT_SIZE is taken from ABI discovery §4. If the pinned value struct
+    // is larger (e.g. pointer + length + type tag + padding), update here
+    // and the field-reading loop below accordingly.
     const SLOT_SIZE = 16;
     const valuesBuf = new Uint8Array(n * SLOT_SIZE);
 
@@ -2810,9 +2855,12 @@ Replace the `snapshot()` stub:
         const strLen = Number(view.getBigUint64(off + 8, true));
         if (strPtr === 0n || strLen === 0) raw[entry.name] = undefined;
         else {
-          const bytes = new Uint8Array(read.buffer(Number(strPtr), 0, strLen));
-          // Copy immediately — libghostty may invalidate on next vt_write.
-          raw[entry.name] = new TextDecoder("utf-8").decode(new Uint8Array(bytes));
+          // Copy immediately — libghostty may invalidate the string memory
+          // on the next mutating call (vt_write, resize, reset).
+          const view = new Uint8Array(toArrayBuffer(Number(strPtr), 0, strLen));
+          const copy = new Uint8Array(strLen);
+          copy.set(view);
+          raw[entry.name] = new TextDecoder("utf-8").decode(copy);
         }
       }
     }
@@ -2843,7 +2891,7 @@ Replace the `snapshot()` stub:
   }
 ```
 
-**Executor note:** `ghostty_terminal_get_multi`'s ABI may not match the `u32 keys[] / opaque values[]` shape sketched above. Read `ghostty/vt/terminal.h` at the pinned commit for the actual signature — it may take a union struct, an array of key/value pairs, or require per-key allocation via `ghostty_alloc`. Adjust the implementation to match. Tests will fail loudly if the shape is wrong.
+**Executor note:** `ghostty_terminal_get_multi`'s ABI is authoritatively recorded in `docs/abi/2026-04-22-abi-discovery.md` §4. Task 3's hard-stop required that any deviation from the shape sketched above (flat u32-key array + 16-byte slot values) be reconciled with this snippet before Task 14 began. If you are reading this text and have not performed that reconciliation, stop here and complete Task 3 Step 5 first.
 
 - [ ] **Step 4: Run — verify pass**
 
@@ -2904,7 +2952,7 @@ Expected: new tests fail with "not implemented yet".
 Add to the imports at the top of `src/terminal.ts`:
 
 ```typescript
-import { modeTagByName } from "./internal/generated.js";
+import { modeTagByName } from "./internal/generated";
 ```
 
 Add a helper near the top of the class-module (before the class):
@@ -2971,9 +3019,9 @@ Create `test/smoke/formatter.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import { Terminal } from "../../src/terminal.js";
-import { Formatter } from "../../src/formatter.js";
-import { UseAfterCloseError } from "../../src/errors.js";
+import { Terminal } from "../../src/terminal";
+import { Formatter } from "../../src/formatter";
+import { UseAfterCloseError } from "../../src/errors";
 
 describe("Formatter lifecycle", () => {
   it("constructs with format: 'plain'", () => {
@@ -3044,13 +3092,13 @@ Contents:
 
 ```typescript
 import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
-import { getLib } from "./ffi.js";
-import { checkResult } from "./terminal.js";
-import { GhosttyError, UseAfterCloseError } from "./errors.js";
-import { formatterTagByName, structLayouts } from "./internal/generated.js";
-import { writeStruct } from "./internal/sized-struct.js";
-import { Terminal } from "./terminal.js";
-import type { FormatterOptions } from "./types.js";
+import { getLib } from "./ffi";
+import { checkResult } from "./terminal";
+import { GhosttyError, UseAfterCloseError } from "./errors";
+import { formatterTagByName, structLayouts } from "./internal/generated";
+import { writeStruct } from "./internal/sized-struct";
+import { Terminal } from "./terminal";
+import type { FormatterOptions } from "./types";
 
 function formatTag(format: "plain" | "vt" | "html"): number {
   const v = formatterTagByName[format];
@@ -3242,8 +3290,8 @@ Create `test/helpers/fixture-harness.ts`:
 ```typescript
 import { readFile, writeFile, readdir } from "node:fs/promises";
 import { join, basename } from "node:path";
-import { Terminal } from "../../src/terminal.js";
-import { Formatter } from "../../src/formatter.js";
+import { Terminal } from "../../src/terminal";
+import { Formatter } from "../../src/formatter";
 
 export interface FixtureResult {
   name: string;
@@ -3313,7 +3361,7 @@ Create `test/smoke/fixtures.test.ts`:
 
 ```typescript
 import { describe, expect, it } from "bun:test";
-import { listFixtures, runFixture } from "../helpers/fixture-harness.js";
+import { listFixtures, runFixture } from "../helpers/fixture-harness";
 import { join } from "node:path";
 
 const DIR = join(process.cwd(), "test/fixtures");
@@ -3383,8 +3431,8 @@ import {
   declaredHeaderSymbols,
   pinnedCommit,
   structLayouts,
-} from "../../src/internal/generated.js";
-import { getLib, requiredSymbols } from "../../src/ffi.js";
+} from "../../src/internal/generated";
+import { getLib, requiredSymbols } from "../../src/ffi";
 
 describe("ABI smoke", () => {
   it("pinnedCommit matches package.json ghostty.commit", async () => {
@@ -3647,7 +3695,7 @@ jobs:
         run: git diff --exit-code src/internal/generated.ts
 
       - name: Typecheck
-        run: bun x tsc --noEmit -p tsconfig.json
+        run: bun run typecheck
 
       - name: Unit + smoke tests
         run: bun run test:smoke
@@ -3672,7 +3720,7 @@ CI will execute on the first push to a branch. Before pushing, verify locally:
 bun install --frozen-lockfile
 bun run build:native
 bun run verify:generated
-bun x tsc --noEmit -p tsconfig.json
+bun run typecheck
 bun run test:smoke
 bun run build:ts
 bun run test:tarball
@@ -3693,25 +3741,25 @@ All steps should pass.
 Contents:
 
 ```typescript
-export { Terminal } from "./terminal.js";
-export { Formatter } from "./formatter.js";
+export { Terminal } from "./terminal";
+export { Formatter } from "./formatter";
 export {
   GhosttyError,
   LibraryNotFoundError,
   UnsupportedPlatformError,
   LibraryCompatibilityError,
   UseAfterCloseError,
-} from "./errors.js";
-export type { GhosttyErrorCode } from "./errors.js";
+} from "./errors";
+export type { GhosttyErrorCode } from "./errors";
 export {
   setLibraryPath,
   isLoaded,
   libraryInfo,
-} from "./ffi.js";
-export type { LibraryInfo } from "./ffi.js";
+} from "./ffi";
+export type { LibraryInfo } from "./ffi";
 export {
   modeNames,
-} from "./internal/generated.js";
+} from "./internal/generated";
 export type {
   RGB,
   PaletteIndex,
@@ -3721,8 +3769,8 @@ export type {
   TerminalOptions,
   TerminalSnapshot,
   FormatterOptions,
-} from "./types.js";
-export { pinnedCommit } from "./internal/generated.js";
+} from "./types";
+export { pinnedCommit } from "./internal/generated";
 ```
 
 - [ ] **Step 2: Build the package to verify re-exports**
@@ -3842,7 +3890,7 @@ rm -rf node_modules dist .tmp vendor prebuilds/*/libghostty-vt.*
 bun install --frozen-lockfile
 bun run build:native
 bun run verify:generated
-bun x tsc --noEmit -p tsconfig.json
+bun run typecheck
 bun run test:smoke
 bun run build:ts
 bun run test:tarball
