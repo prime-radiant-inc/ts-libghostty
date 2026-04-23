@@ -36,12 +36,37 @@ git fetch --all --quiet
 git checkout --quiet "$COMMIT"
 cd "$ROOT"
 
-# Build libghostty-vt.
-# NOTE: Verify the exact build target with `zig build --help` inside vendor/ghostty
-# on the pinned commit. The name below is the current target at recent commits;
-# update if upstream renames it.
+# Resolve zig. On macOS Tahoe (26.x), the official ziglang.org zig 0.15.x
+# tarballs (which mise installs) ship libSystem stubs that predate Tahoe and
+# fail to link. Use Homebrew's zig@0.15 bottle, which is built against the
+# Tahoe SDK. Per Ghostty PR #12363 this is the upstream-recommended fix until
+# Ghostty migrates to zig 0.16. On Linux any zig 0.15.2 should work.
+ZIG=""
+if [ -x /opt/homebrew/opt/zig@0.15/bin/zig ]; then
+  ZIG=/opt/homebrew/opt/zig@0.15/bin/zig
+elif command -v zig >/dev/null 2>&1; then
+  ZIG=$(command -v zig)
+fi
+if [ -z "$ZIG" ]; then
+  echo "zig not found. On macOS: brew install zig@0.15  (Tahoe-compatible bottle)" >&2
+  echo "                       Linux: install zig 0.15.2 via your package manager." >&2
+  exit 1
+fi
+ZIG_VSN=$("$ZIG" version)
+case "$ZIG_VSN" in
+  0.15.*) ;;
+  *)
+    echo "zig at $ZIG is version $ZIG_VSN; Ghostty 1.3.x requires 0.15.x." >&2
+    exit 1
+    ;;
+esac
+echo "using zig $ZIG_VSN at $ZIG"
+
+# Build libghostty-vt. The build target name on Ghostty 1.3.x is `lib-vt`
+# (verified via `zig build --help`). If a future pin renames it (e.g. back to
+# `libghostty-vt`), update here. The plan flagged this as a known drift point.
 cd vendor/ghostty
-zig build libghostty-vt -Doptimize=ReleaseFast
+"$ZIG" build lib-vt -Doptimize=ReleaseFast
 cd "$ROOT"
 
 # Locate the output and copy to prebuilds/.
