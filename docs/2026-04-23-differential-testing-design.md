@@ -94,7 +94,7 @@ CI wiring is a follow-up decision after v0 lands.
 ### Stretch (this branch if time permits)
 
 - ~~`vt` and `html` format runs alongside `plain`~~ — done in this branch. Each fixture now runs 3× (plain/vt/html), tripling attribute coverage at ~0 cost.
-- ~~Real-app captures (Matt follow-up)~~ — done. Six PTY-captured fixtures added: `20-bash-prompt`, `21-vim-edit`, `22-vim-syntax` (color verification per Matt's ask), `23-less-pager`, `24-tmux-splits`, `25-top-snapshot`. Captured via `scripts/capture-fixture.py` (Python `pty`) + `scripts/capture-real-app-fixtures.sh` driver. Used `top` in lieu of `htop` (not on macOS by default).
+- ~~Real-app captures (Matt follow-up)~~ — done. Six PTY-captured fixtures added: `20-bash-prompt`, `21-vim-edit`, `22-vim-syntax` (color verification per Matt's ask), `23-less-pager`, `24-tmux-splits`, `25-top-snapshot`. Captured via `scripts/capture-fixtures.ts` using `Bun.Terminal` + `Bun.spawn({ terminal })` — no external runtime dependencies beyond Bun. Used `top` in lieu of `htop` (not on macOS by default).
 - Expand corpus to 25–50 cases — currently 20 (4 handcrafted + 10 fuzz seeds + 6 real-app).
 - `test:differential` package.json script
 

@@ -1,3 +1,4 @@
+bash: no job control in this shell
 
 The default interactive shell is now zsh.
 To update your account to use zsh, please run `chsh -s /bin/zsh`.

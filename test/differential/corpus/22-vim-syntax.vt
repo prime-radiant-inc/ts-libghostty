@@ -1,4 +1,4 @@
-[?1006;1000h[?1002h[?1049h[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H<gz9ryb7gr_v2k900000gn/T/tmp.60uOz8QerA/sample.py"<_v2k900000gn/T/tmp.60uOz8QerA/sample.py" 10L, 265B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c[27m[23m[29m[m[H[2J[1;1H[96m#!/usr/bin/env python3[m
+[?1006;1000h[?1002h[?1049h[>4;2m[?1h=[?2004h[?1004h[1;24r[?12h[?12l[22;2t[22;1t[27m[23m[29m[m[H[2J[?25l[24;1H<gz9ryb7gr_v2k900000gn/T/cap-vim-F6dgg8/sample.py"<_v2k900000gn/T/cap-vim-F6dgg8/sample.py" 10L, 265B[2;1H▽[6n[2;1H  [3;1HPzz\[0%m[6n[3;1H           [1;1H[>c[27m[23m[29m[m[H[2J[1;1H[96m#!/usr/bin/env python3[m
 [95m"""A small colored-syntax sample."""[m
 
 [93mdef[m [1m[96mgreet[m(name: [1m[96mstr[m) -> [1m[96mstr[m:

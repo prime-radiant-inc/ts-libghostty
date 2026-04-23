@@ -51,9 +51,9 @@ Not currently in CI. See design memo §"CI wiring: deferred".
     corpus (`vendor/ghostty/test/fuzz-libghostty/corpus/parser-initial/`)
   - **`2X-*`** — real-application captures recorded under a PTY
     (bash prompt, vim plain edit, vim with syntax highlighting, less,
-    tmux splits, top). Captured by `scripts/capture-real-app-fixtures.sh`,
-    which uses `scripts/capture-fixture.py` (Python `pty` module) to
-    drive each program with scripted input and record every byte it emits.
+    tmux splits, top). Captured by `scripts/capture-fixtures.ts` via
+    `Bun.Terminal` + `Bun.spawn({ terminal })` — no external runtime
+    dependencies beyond Bun itself.
 - Fixed 80×24 terminal geometry on both sides.
 
 ## What it does not cover (yet)
@@ -73,7 +73,7 @@ prefix sorts it into a category:
 - `0X-*` — handcrafted smoke cases
 - `1X-*` — curated from `parser-initial`
 - `2X-*` — real-application PTY captures (regenerate via
-  `bash scripts/capture-real-app-fixtures.sh`)
+  `bun scripts/capture-fixtures.ts`)
 - (future) `3X-*` — curated from `parser-cmin` / `stream-cmin`
 
 Re-run the harness; new fixture should pass on day one. If it doesn't, you
@@ -90,17 +90,24 @@ on tool version, process list, time). Regenerate them when:
 - you want different content (e.g., longer file, different language)
 
 ```sh
-bash scripts/capture-real-app-fixtures.sh
+bun scripts/capture-fixtures.ts
 bun test/differential/run.ts   # confirm new captures still pass
 ```
 
-Captures use Python's `pty` module via `scripts/capture-fixture.py` (no
-`script(1)` because Claude Code agent shells lack a controlling TTY). Vim
-and less captures intentionally do not send a quit command — quitting
-emits the alt-screen-exit sequence (`ESC [ ? 1049 l`) which restores an
-empty main screen and erases all the rendered content. We let the SIGKILL
-timeout fire instead, freezing the displayed state for the harness to
-replay.
+Captures use `Bun.Terminal` + `Bun.spawn({ terminal })` — no external
+runtime dependencies beyond Bun. `script(1)` doesn't work from Claude
+Code agent shells (no controlling TTY); `Bun.Terminal` allocates a pty
+itself.
+
+Vim, less, and tmux captures intentionally do not send a quit command.
+Quitting emits the alt-screen-exit sequence (`ESC [ ? 1049 l`) which
+restores an empty main screen and erases all the rendered content. We
+let the timeout fire instead. The capture function sets a `frozen` flag
+right before `proc.kill`, so any cleanup bytes that programs emit in
+response to their PTY closing (tmux in particular runs a SIGHUP handler
+that clears the screen + exits alt-screen) are dropped — what we save
+is exactly the state that was displayed at the moment we decided to
+stop.
 
 ## Architecture
 
