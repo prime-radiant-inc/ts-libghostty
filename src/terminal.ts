@@ -1,7 +1,11 @@
-import { ptr, type Pointer } from "bun:ffi";
+import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
 import { GhosttyError, UseAfterCloseError } from "./errors";
-import { resultCodeByValue, structLayouts } from "./internal/generated";
+import {
+  GhosttyTerminalDataValues,
+  resultCodeByValue,
+  structLayouts,
+} from "./internal/generated";
 import { writeStruct } from "./internal/sized-struct";
 import type {
   ModeName,
@@ -21,6 +25,39 @@ export function checkResult(result: number, functionName: string): void {
     `${functionName} returned non-OK GhosttyResult (code ${result}, mapped to "${code ?? "unknown"}")`,
     { code: (code ?? "unknown") as GhosttyError["code"], functionName },
   );
+}
+
+// ---- snapshot() helpers ----------------------------------------------------
+//
+// ghostty_terminal_get_multi takes `void** values` — an array of N
+// caller-allocated OUTPUT pointers, each pointing to a typed slot sized for
+// its specific key's output type. NOT a flat byte buffer. Per-key slot
+// sizes come from ABI §9.
+
+type SlotKind = "u16" | "bool" | "i32" | "size_t" | "string";
+
+const SNAPSHOT_KEYS: Array<{ name: string; key: keyof typeof GhosttyTerminalDataValues; kind: SlotKind }> = [
+  { name: "cols",           key: "GHOSTTY_TERMINAL_DATA_COLS"             as const, kind: "u16" },
+  { name: "rows",           key: "GHOSTTY_TERMINAL_DATA_ROWS"             as const, kind: "u16" },
+  { name: "cursorX",        key: "GHOSTTY_TERMINAL_DATA_CURSOR_X"         as const, kind: "u16" },
+  { name: "cursorY",        key: "GHOSTTY_TERMINAL_DATA_CURSOR_Y"         as const, kind: "u16" },
+  { name: "cursorVisible",  key: "GHOSTTY_TERMINAL_DATA_CURSOR_VISIBLE"   as const, kind: "bool" },
+  { name: "activeScreen",   key: "GHOSTTY_TERMINAL_DATA_ACTIVE_SCREEN"    as const, kind: "i32" },
+  { name: "scrollbackRows", key: "GHOSTTY_TERMINAL_DATA_SCROLLBACK_ROWS"  as const, kind: "size_t" },
+  { name: "title",          key: "GHOSTTY_TERMINAL_DATA_TITLE"            as const, kind: "string" },
+  { name: "pwd",            key: "GHOSTTY_TERMINAL_DATA_PWD"              as const, kind: "string" },
+  // CURSOR_STYLE, MOUSE_TRACKING, WIDTH_PX/HEIGHT_PX, color data, and Kitty
+  // fields are Pass 2+. See ABI §9 for the full enum.
+];
+
+function slotByteSize(kind: SlotKind): number {
+  switch (kind) {
+    case "u16":    return 2;
+    case "bool":   return 1;
+    case "i32":    return 4;
+    case "size_t": return 8;
+    case "string": return 16;  // GhosttyString: {uint8_t* ptr@0, size_t len@8}
+  }
 }
 
 export class Terminal {
@@ -172,7 +209,114 @@ export class Terminal {
 
   snapshot(): TerminalSnapshot {
     this.#assertOpen();
-    throw new Error("Terminal.snapshot not implemented yet (Task 14)");
+    const lib = getLib();
+
+    const n = SNAPSHOT_KEYS.length;
+
+    // Build the keys array (i32 each — GhosttyTerminalData is c_int-backed).
+    const keysBuf = new Int32Array(n);
+    // Allocate one typed slot per key. We keep the slot ArrayBuffers alive
+    // via the `slots` array so the pointers we capture in `ptrArray` remain
+    // valid for the duration of the FFI call.
+    const slots: ArrayBuffer[] = new Array(n);
+    const ptrArray = new BigUint64Array(n);
+
+    for (let i = 0; i < n; i++) {
+      const entry = SNAPSHOT_KEYS[i];
+      if (!entry) continue;
+      const v = GhosttyTerminalDataValues[entry.key];
+      if (v === undefined) {
+        throw new GhosttyError(`GhosttyTerminalData.${entry.key} is missing at the pinned Ghostty commit`, {
+          code: "unknown",
+          functionName: "Terminal.snapshot",
+        });
+      }
+      keysBuf[i] = v;
+      const slot = new ArrayBuffer(slotByteSize(entry.kind));
+      slots[i] = slot;
+      ptrArray[i] = BigInt(ptr(new Uint8Array(slot)));
+    }
+
+    const outWritten = new BigUint64Array(1);
+    const result = lib.symbols.ghostty_terminal_get_multi(
+      this.#handle,
+      BigInt(n),
+      ptr(keysBuf),
+      ptr(ptrArray),
+      ptr(outWritten),
+    );
+    checkResult(result, "ghostty_terminal_get_multi");
+
+    // Decode each slot per its kind. String values (TITLE, PWD) are borrowed
+    // — the ptr aliases into terminal-owned memory valid only until the next
+    // mutating call. We copy them into JS strings immediately (ABI §4/§9).
+    const raw: Record<string, number | boolean | string | undefined> = {};
+    for (let i = 0; i < n; i++) {
+      const entry = SNAPSHOT_KEYS[i];
+      if (!entry) continue;
+      const slot = slots[i];
+      if (!slot) continue;
+      const view = new DataView(slot);
+      switch (entry.kind) {
+        case "u16":
+          raw[entry.name] = view.getUint16(0, true);
+          break;
+        case "bool":
+          raw[entry.name] = view.getUint8(0) !== 0;
+          break;
+        case "i32":
+          raw[entry.name] = view.getInt32(0, true);
+          break;
+        case "size_t":
+          raw[entry.name] = Number(view.getBigUint64(0, true));
+          break;
+        case "string": {
+          const strPtr = view.getBigUint64(0, true);
+          const strLen = Number(view.getBigUint64(8, true));
+          if (strPtr === 0n || strLen === 0) {
+            raw[entry.name] = undefined;
+          } else {
+            // Copy immediately — borrowed pointer, invalidated by the next
+            // mutating terminal call.
+            const borrowed = new Uint8Array(
+              toArrayBuffer(Number(strPtr) as unknown as Pointer, 0, strLen),
+            );
+            const copy = new Uint8Array(strLen);
+            copy.set(borrowed);
+            raw[entry.name] = new TextDecoder("utf-8").decode(copy);
+          }
+          break;
+        }
+      }
+    }
+
+    const activeScreenNum = raw.activeScreen as number | undefined;
+    const activeScreen: "primary" | "alternate" =
+      activeScreenNum === 1 ? "alternate" : "primary";
+
+    const { width: cellW, height: cellH } = this.#cellPx;
+
+    // Under exactOptionalPropertyTypes, optional fields cannot be assigned
+    // `undefined` explicitly — we only include them when the C side returned
+    // a non-empty borrowed pointer.
+    const snap: TerminalSnapshot = {
+      cols: raw.cols as number,
+      rows: raw.rows as number,
+      pixelWidth: (raw.cols as number) * cellW,
+      pixelHeight: (raw.rows as number) * cellH,
+      cursor: {
+        x: raw.cursorX as number,
+        y: raw.cursorY as number,
+        visible: raw.cursorVisible as boolean,
+        style: "block",  // CURSOR_STYLE returns a 72 B GhosttyStyle struct; Pass 2+.
+      },
+      activeScreen,
+      scrollbackRows: raw.scrollbackRows as number,
+      mouseTracking: "none",  // MOUSE_TRACKING returns a bool; richer reporting is Pass 2+.
+    };
+    if (typeof raw.title === "string") snap.title = raw.title;
+    if (typeof raw.pwd === "string") snap.pwd = raw.pwd;
+    return snap;
   }
 
   mode(_name: ModeName): boolean {

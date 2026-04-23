@@ -94,3 +94,47 @@ describe("Terminal.reset", () => {
     term.reset();
   });
 });
+
+describe("Terminal.snapshot", () => {
+  it("returns cols/rows matching construction", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    const snap = term.snapshot();
+    expect(snap.cols).toBe(80);
+    expect(snap.rows).toBe(24);
+  });
+
+  it("returns cursor at (0,0) initially", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    const snap = term.snapshot();
+    expect(snap.cursor.x).toBe(0);
+    expect(snap.cursor.y).toBe(0);
+  });
+
+  it("cursor.x advances after writing characters", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    term.vtWrite(new TextEncoder().encode("hello"));
+    const snap = term.snapshot();
+    expect(snap.cursor.x).toBe(5);
+    expect(snap.cursor.y).toBe(0);
+  });
+
+  it("cursor.y advances after CRLF", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    term.vtWrite(new TextEncoder().encode("hello\r\n"));
+    const snap = term.snapshot();
+    expect(snap.cursor.x).toBe(0);
+    expect(snap.cursor.y).toBe(1);
+  });
+
+  it("activeScreen is 'primary' initially", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    expect(term.snapshot().activeScreen).toBe("primary");
+  });
+
+  it("activeScreen switches to 'alternate' on DECSET 1049", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    // ESC [ ? 1049 h
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x3f, 0x31, 0x30, 0x34, 0x39, 0x68]));
+    expect(term.snapshot().activeScreen).toBe("alternate");
+  });
+});
