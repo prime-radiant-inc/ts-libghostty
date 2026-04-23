@@ -48,12 +48,13 @@ Task 2 Step 1 in `docs/superpowers/plans/2026-04-22-ts-libghostty-pass-1.md` has
 | 1: Scaffolding | ✅ Done | Asimov, `23def11`. Spec ✓ (Probity), quality ✓ (Gauge). |
 | (extra: mise pins) | ✅ Done | Lessa, `f2c2904`. Mise.toml later modified to zig=0.15.2 by Forge in `ffedfcd` (now stale — see Resolution above). |
 | 2: Pin + build | ✅ Done | Forge attempted; Lessa committed scaffold at `ffedfcd`; Lessa committed unblock at `ad50456`. Build verified end-to-end. Local dylib exists in `prebuilds/darwin-arm64/` (gitignored). |
-| 3: ABI discovery | 🟢 **Up next** | Now unblocked — needs the dylib + headers, both present. **Hard gate, 11-item reconciliation checklist; Matt should be in the loop for this one.** |
-| 4: Struct probe | ⏸ Holding | After Task 3. |
-| 5: Bindings generator | ⏸ Holding | After Task 3. |
-| 6: Error hierarchy | ✅ Done | Atticus, `46d23e8`. Spec ✓ (Sentry), quality ✓ (Marlowe). 5/5 tests pass. |
+| 3: ABI discovery + reconciliation | ✅ Done | Pin switched to tip-of-main `e88c6c0` (`364371f`). Hansard wrote 524-line ABI doc (`ce42dc5`). Redline applied 33 reconciliation items across the plan + 2 committed source files (`0c4ed5c`). All 17 surprises resolved. Task 3's hard gate passed. |
+| 4: Struct probe | 🟢 Up next | Four-struct probe: `GhosttyTerminalOptions` (16B, not sized), `GhosttyFormatterTerminalOptions` (56B sized) + nested `Extra` (32B) + `ScreenExtra` (16B). |
+| 5: Bindings generator | 🟢 Up next | `parseModeDefines()` for `#define`-based modes; 5 real result codes; renamed Formatter enum. |
+| 6: Error hierarchy | ✅ Done | Atticus, `46d23e8`. `GhosttyErrorCode` union updated in `0c4ed5c` to match reality (invalid_value / out_of_space / no_value replace invalid_argument / uninitialized). Tests still 5/5 pass. |
 | 7: Path resolution | ✅ Done | Lavoisier, `4cc020b`. Spec ✓ (Linnaeus), quality ✓ (Mendeleev). 10/10 tests pass. |
-| 8–22 | ⏸ Holding | All depend on Task 3+5 outputs (`generated.ts`, ABI doc) and the dylib. |
+| 8: FFI loader | ⏸ Holding | SYMBOLS table reconciled; register-split call shape for `ghostty_terminal_new`; build-identity wiring via `ghostty_build_info` (semver). Ready to implement. |
+| 9–22 | ⏸ Holding | All snippets reconciled with ABI doc; ready to execute in order. |
 
 **Tonight's commits on `main` (newest first):**
 - `ad50456` build: resolve zig via brew, use lib-vt target — unblocks Task 2
@@ -82,7 +83,15 @@ Picked up by code-quality reviewers (Marlowe on Task 6, Mendeleev on Task 7) —
 **For whoever wires generated.ts → consumers:**
 - `GhosttyErrorCode` in `src/errors.ts` is hand-coded today. When Task 5's `generated.ts` produces an FFI-result enum mapping (`resultCodeByValue`), confirm the union is a superset of the FFI codes plus binding-only codes (`library_not_found`, `unsupported_platform`, etc.). If they drift, type-confusion bugs follow.
 
-**For Task 3 (ABI discovery — next up):**
-- The dylib at `prebuilds/darwin-arm64/libghostty-vt.dylib` was produced from `vendor/ghostty` at commit `332b2aefc6e72d363aa93ab6ecfc86eeeeb5ed28` (v1.3.1). Headers live at `vendor/ghostty/include/ghostty/vt.h`.
-- Quick sanity check before starting reconciliation: `nm -gU prebuilds/darwin-arm64/libghostty-vt.dylib | grep -c '_ghostty_'` should return a large number (currently produces hundreds of `_ghostty_*` symbols).
-- Plan's Task 3 Step 5 has the 11-item reconciliation gate — every box ticked before Task 4 begins. Expect to edit the plan during reconciliation if reality and snippets disagree.
+**For Task 11 (Terminal constructor) executor:**
+- The plan's reconciled constructor stores `#handle: Pointer` via `Number(handleBig) as Pointer` — safe on darwin-arm64 (48-bit pointers fit in `Number.MAX_SAFE_INTEGER`) but fragile if we ever expand to platforms with larger address spaces. Consider storing as `bigint` if bun:ffi's Pointer-arg coercion cooperates.
+
+**For Task 13 (resize) executor:**
+- The plan's resize tests call `term.resize(100, 30)` without `cellPx`. Constructor defaults `#cellPx = {0, 0}`. The reconciled 5-arg FFI call passes those zeros to `ghostty_terminal_resize(handle, 100, 30, 0, 0)`. Whether libghostty-vt accepts cellPx=0 isn't in the ABI doc. If it returns `INVALID_VALUE`, either (a) default cellPx to something like 8x16 in the constructor when not provided, or (b) make cellPx required in `TerminalOptions`, or (c) update the tests to pass explicit cellPx. Decide by running the test and seeing what happens — libghostty might accept 0 as "don't care."
+
+**For Task 16 (Formatter) executor:**
+- `#closed` flag is load-bearing for the `UseAfterCloseError` test. No native handle is held between `format()` calls (constructed+freed per call per Matt's decision 3b), so the flag is the only thing preventing use-after-close.
+- `GhosttyFormatterTerminalOptions` is 56B sized with nested sized sub-structs (`extra` at offset 16 is 32B sized; nested `extra.screen` at offset 16-within-extra is 16B sized). Task 9's `sized-struct.ts` helpers need to handle nested composition.
+
+**For Task 3 template cleanup (nice-to-have):**
+- Plan lines ~520-660 contain Task 3's original illustrative template with stale example names (`GHOSTTY_RESULT_OK`, `GhosttyFormatterOptions`, etc.). Task 3 is done and the real ABI doc is at `docs/abi/2026-04-22-abi-discovery.md`. The template is harmless but reading it in isolation could confuse a future Bob. Low-priority cleanup to either update the examples or add a pointer to the actual ABI doc.
