@@ -118,9 +118,18 @@ export class Terminal {
 
   // ---- Methods stubbed — real implementations in Tasks 12-15 ------------
 
-  vtWrite(_bytes: Uint8Array): void {
+  vtWrite(bytes: Uint8Array): void {
     this.#assertOpen();
-    throw new Error("Terminal.vtWrite not implemented yet (Task 12)");
+    if (bytes.length === 0) return;
+    const lib = getLib();
+    // ghostty_terminal_vt_write returns void (documented to never fail — ABI §4).
+    // Zero-copy: ptr(bytes) aliases the Uint8Array's backing buffer for the
+    // duration of the call.
+    lib.symbols.ghostty_terminal_vt_write(
+      this.#handle,
+      ptr(bytes),
+      BigInt(bytes.length),
+    );
   }
 
   resize(_cols: number, _rows: number, _cellPx?: { width: number; height: number }): void {

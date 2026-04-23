@@ -46,3 +46,30 @@ describe("Terminal lifecycle", () => {
     expect(() => new Terminal({ cols: -1, rows: 24 })).toThrow();
   });
 });
+
+describe("Terminal.vtWrite", () => {
+  it("accepts a Uint8Array and returns void", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    // "hello\r\n" — plain ASCII, should not throw
+    const bytes = new TextEncoder().encode("hello\r\n");
+    expect(term.vtWrite(bytes)).toBeUndefined();
+  });
+
+  it("accepts an empty Uint8Array", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    term.vtWrite(new Uint8Array(0));
+  });
+
+  it("accepts a long byte stream (1 MiB)", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    const big = new Uint8Array(1 << 20);
+    big.fill(0x41);  // 'A'
+    term.vtWrite(big);
+  });
+
+  it("throws UseAfterCloseError if called after close", () => {
+    const term = new Terminal({ cols: 80, rows: 24 });
+    term.close();
+    expect(() => term.vtWrite(new Uint8Array([65]))).toThrow(UseAfterCloseError);
+  });
+});
