@@ -36,15 +36,21 @@ export interface TerminalSnapshot {
 
 export interface FormatterOptions {
   format: "plain" | "vt" | "html";
+  // Outer-struct fields (GhosttyFormatterTerminalOptions):
+  unwrap?: boolean;
+  trim?: boolean;
+  // Extra-struct fields (GhosttyFormatterTerminalExtra):
   palette?: boolean;
   modes?: boolean;
   scrollingRegion?: boolean;
-  tabStops?: boolean;
+  tabStops?: boolean;            // C field: `tabstops` (no underscore)
   pwd?: boolean;
   keyboard?: boolean;
+  // Screen-extra fields (GhosttyFormatterScreenExtra):
   cursor?: boolean;
   style?: boolean;
   hyperlink?: boolean;
   protection?: boolean;
+  kittyKeyboard?: boolean;       // C field: `kitty_keyboard`
   charsets?: boolean;
 }
