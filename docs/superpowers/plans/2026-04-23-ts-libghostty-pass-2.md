@@ -6,7 +6,7 @@
 
 **Pass:** 2 of ~5. Pass 1 shipped `Terminal` + `Formatter` + lifecycle + ABI safety as `v0.1.0`. Pass 2 adds the three effect callbacks the spec declares v0: `onWritePty`, `onBell`, `onTitleChanged`. Passes 3–5 add render-state / key-encoder / polish — unchanged from the Pass 1 header.
 
-**Status at start of Pass 2:** all Pass 1 tasks complete; any in-flight fixes from Codex review (e.g. `apcMaxBytes` field removal, range validation, snapshot stub fields) are assumed landed. This plan writes against the post-fix state. If a fix hasn't landed, Task 1 calls it out as a precondition.
+**Status at start of Pass 2:** Pass 1 shipped (`v0.1.0`). The Pass-1-fix Bob — spun up in parallel to address Codex-surfaced contract bugs (`apcMaxBytes*` silent-drop, missing range validation, stub `cursor.style` / `mouseTracking`) — **must land before Pass 2 can begin.** As of this plan's first draft, that work is in flight. Task 1 is a hard preflight gate: it verifies the fix landed and halts with a clear delta if not. **Pass 2 cannot start from the current `main` tree** — that's by design. If Matt wants to fold the Pass-1 fix into Pass 2's first commits instead of a separate PR, strike Task 1 and ship the fix as Tasks 0.1–0.3; do not start at Task 2 against unfixed code.
 
 ---
 
@@ -122,9 +122,13 @@ Rationale: detaching via `set(NULL)` before `JSCallback.close()` ensures libghos
 
 ### Concurrency and re-entry
 
-The spec (§5.4) and the C header both prohibit re-entry into `vtWrite()` on the same terminal from inside a callback. The binding does not add a runtime guard — the cost of wrapping every `vtWrite` in a reentry flag is paid on every call, and the guard would catch the same misuse the docs forbid. Document the constraint prominently in `TerminalOptions` JSDoc (already spec'd) and in the README. A Tranche 1+ stretch goal could add a dev-mode reentry assertion under an env flag.
+The C header forbids only `vt_write` re-entry on the same terminal (header lines 66-67). But `reset`, `resize`, `setMode`, and `close` on the same terminal are also unsafe from inside a callback — libghostty is mid-parse, its internal state is in flux, and mutating calls can corrupt or free state the parser still references. The spec's §5.4 note "Must not re-enter `vtWrite()`" is *necessary but not sufficient*.
 
-Callbacks throwing are handled by the trampoline's `try/catch`. Nothing else in the system needs to care.
+**Full constraint (documented in `TerminalOptions` JSDoc and the README, enforced at runtime):** from inside a callback, the user MUST NOT call any mutating method on the same Terminal — `vtWrite`, `reset`, `resize`, `setMode`, `close`, `[Symbol.dispose]`. `snapshot()` and `mode()` are read-only and are explicitly allowed.
+
+**Runtime enforcement via `#inCallback` flag.** Each trampoline wraps the user call in `try { #inCallback = true; userFn(...); } finally { #inCallback = false; }`. Mutating public methods call a new `#assertNotInCallback(methodName)` helper first; violation throws `GhosttyError` with code `"invalid_value"` and a message that names the method and tells the user to defer via `queueMicrotask`. The guard is a single boolean read — cost is negligible vs. the value of catching real user bugs at the point of the bug.
+
+Callbacks throwing are handled by the trampoline's outer `try/catch` (the user's throw escapes the inner `try/finally` via `finally`'s non-swallowing semantics, reaches the outer `try/catch`, is logged, and is swallowed — `#inCallback` is cleared in both paths).
 
 ---
 
@@ -132,7 +136,9 @@ Callbacks throwing are handled by the trampoline's `try/catch`. Nothing else in 
 
 Each of these has a default path and a fallback. Task owners should probe, not guess, and update the plan + ABI doc if reality diverges.
 
-1. **Title query timing.** Does `ghostty_terminal_get(TITLE)` inside the `title_changed` trampoline return the new title, or the pre-change one? The header's "can be queried from the terminal after the callback returns" is ambiguous. **Default:** query synchronously inside the trampoline; test that the observed title matches the OSC payload that triggered the callback. **Fallback:** if the title is stale, queue `{event, timestamp}` tuples inside the trampoline and drain them at the end of `vtWrite()` before returning — preserves sync-delivery semantics of §4.1.
+1. **Title query timing.** Does `ghostty_terminal_get(TITLE)` inside the `title_changed` trampoline return the new title, or the pre-change one? The header's "can be queried from the terminal after the callback returns" is ambiguous. **Default:** query synchronously inside the trampoline; test (Task 9) that the observed title matches the OSC payload that triggered the callback, and that sequential title changes within one `vtWrite` are delivered individually with their per-change titles.
+
+   **If the default fails, STOP AND ESCALATE.** A queue-and-drain fallback will NOT preserve the spec's "one callback per title change, with that change's title" semantics — by the time we drain the queue, only the final title is readable, so every queued event reads the same value. The per-change title is not recoverable from a post-hoc query. Either libghostty's C API exposes the new title via a different accessor (e.g. a `terminal_get_title_change_event` cursor) that we haven't discovered, or Pass 2 has to narrow `onTitleChanged` to "fires once at the end of vtWrite with the final title" — a spec change that needs Matt's sign-off. Do not silently compromise the semantics.
 
 2. **`JSCallback.ptr` type compatibility with `const void*`.** Bun's `JSCallback.ptr` is typed as `Pointer | null`. `ghostty_terminal_set`'s `value` arg is declared `FFIType.ptr`. Passing `cb.ptr` directly should work; if not, wrap with `ptr(...)` or fall back to `new BigUint64Array([BigInt(cb.ptr)])`. Task 3's FFI declaration step verifies this path with a live probe before wiring all three callbacks.
 
@@ -167,9 +173,9 @@ CLAUDE.md             # add entry for callback-trampoline copy-before-invoke sem
 CONFIRM_WITH_MATT.md  # Pass 2 status block + any surfaced plan/code drift
 ```
 
-No changes to: `errors.ts` (no new error classes; existing `GhosttyError` covers `_set` failures); `formatter.ts` (orthogonal); `internal/generated.ts` (regenerated but the option enum is already there); `internal/path.ts` / `internal/sized-struct.ts` / `internal/marshal.ts`.
+No changes to: `errors.ts` (no new error classes; existing `GhosttyError` covers `_set` failures and the new `#assertNotInCallback` throws); `formatter.ts` (orthogonal); `internal/generated.ts` (regenerated but the option enum is already there); `internal/path.ts` / `internal/sized-struct.ts` / `internal/marshal.ts`.
 
-No changes to `scripts/` — we don't regenerate bindings as part of Pass 2; `bun run verify:generated` continues to assert the existing `generated.ts` matches the pin.
+No changes to existing generator/build scripts (`build-libghostty.sh`, `probe-layout.c`, `gen-bindings.ts`, `run-tarball-smoke.sh`). Task 2 adds one new diagnostic script, `scripts/probe-callbacks.ts`; `bun run verify:generated` continues to assert the existing `generated.ts` matches the pin.
 
 ---
 
@@ -269,10 +275,10 @@ Write a one-paragraph "Pass 2 start-state" entry to `CONFIRM_WITH_MATT.md` captu
 
 ## Task 2: Probe `JSCallback` + `ghostty_terminal_set` compatibility
 
-**Purpose:** Resolve three open questions (Questions #2–#4 in the plan header) with a short, throwaway probe script, *before* wiring real callbacks into `Terminal`. Eliminates the scenario where all three callbacks have to be unwound because the foundational FFI call doesn't work.
+**Purpose:** Resolve Open Questions #2–#5 *before* wiring real callbacks into `Terminal`. One exploratory script, committed as a diagnostic tool for future pin bumps. Eliminates the scenario where all three callbacks have to be unwound because the foundational FFI assumption was wrong.
 
 **Files:**
-- Create: `scripts/probe-callbacks.ts` (committed; useful diagnostic tool, not thrown away)
+- Create: `scripts/probe-callbacks.ts`
 
 - [ ] **Step 1: Write the probe script.**
 
@@ -284,18 +290,25 @@ Contents of `scripts/probe-callbacks.ts`:
 //
 //   bun run scripts/probe-callbacks.ts
 //
-// Probes:
-//   (a) JSCallback.ptr passes to ghostty_terminal_set for all 3 Pass 2 options
-//       without a libghostty error return.
-//   (b) ghostty_terminal_set(handle, OPT, null) detaches without error.
-//   (c) A minimal vt_write triggers the bell callback synchronously.
-//   (d) Callback teardown order (set NULL → jscallback.close → terminal_free)
-//       does not crash.
+// Probes (structured tagged output, parseable by the Task 2 Step 2 gate):
+//   (a)  JSCallback.ptr passes to ghostty_terminal_set for each of the three
+//        Pass 2 options (WRITE_PTY, BELL, TITLE_CHANGED) without error return.
+//   (b)  ghostty_terminal_set(handle, OPT, null) detaches each without error.
+//   (c)  A minimal vt_write triggers each callback synchronously.
+//   (d)  The `terminal` arg passed by libghostty to the callback equals the
+//        handle we stored from ghostty_terminal_new — so JS closures can rely
+//        on identity, and userdata can stay NULL.
+//   (e)  A DA1 (CSI c) query triggers WRITE_PTY with CSI-prefixed reply bytes.
+//   (f)  An OSC 0 title change triggers TITLE_CHANGED; a snapshot()-equivalent
+//        ghostty_terminal_get(TITLE) from INSIDE the trampoline reveals
+//        whether the post-change title is synchronously readable
+//        (Open Question #1 resolution). This result directs Task 9's Step 3.
+//   (g)  Teardown order (set NULL → jscallback.close → terminal_free) does
+//        not crash for any registered subset.
 //
-// All output goes to stdout as structured tagged lines so a human (or the
-// plan's Task 2 Step 2 verification) can audit trivially. Exits 0 on success.
+// Exits 0 on success. On any failure, prints a tagged error line and exits 1.
 
-import { dlopen, FFIType, JSCallback, ptr, type Pointer } from "bun:ffi";
+import { dlopen, FFIType, JSCallback, ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
 
@@ -320,60 +333,174 @@ const lib = dlopen(DYLIB, {
     args: [FFIType.ptr, FFIType.i32, FFIType.ptr],
     returns: FFIType.i32,
   },
+  ghostty_terminal_get: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],
+    returns: FFIType.i32,
+  },
   ghostty_terminal_vt_write: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.u64],
     returns: FFIType.void,
   },
 });
 
+const OPT_WRITE_PTY     = 1;
+const OPT_BELL          = 2;
+const OPT_TITLE_CHANGED = 5;
+const DATA_TITLE        = 12;
+
+function failIf(cond: boolean, tag: string, detail: string): void {
+  if (!cond) return;
+  console.error(`tag=${tag} FAIL ${detail}`);
+  process.exit(1);
+}
+
 // Build a 10x3 Terminal options struct (cols=10, rows=3, max_scrollback=100).
 const opts = new Uint8Array(16);
-new DataView(opts.buffer).setUint16(0, 10, true); // cols
-new DataView(opts.buffer).setUint16(2, 3, true);  // rows
-new DataView(opts.buffer).setBigUint64(8, 100n, true); // max_scrollback
+new DataView(opts.buffer).setUint16(0, 10, true);
+new DataView(opts.buffer).setUint16(2, 3, true);
+new DataView(opts.buffer).setBigUint64(8, 100n, true);
 const u64s = new BigUint64Array(opts.buffer, 0, 2);
 const outSlot = new BigUint64Array(1);
 
 const newResult = lib.symbols.ghostty_terminal_new(null, ptr(outSlot), u64s[0]!, u64s[1]!);
 console.log("tag=terminal_new result=", newResult);
-if (newResult !== 0) process.exit(1);
+failIf(newResult !== 0, "terminal_new", `result=${newResult}`);
 const handle = Number(outSlot[0]!) as Pointer;
-console.log("tag=handle ok=", handle !== 0);
+const handleBig = outSlot[0]!;
+console.log("tag=handle ok=", handle !== 0, "value=", handle);
 
-// ---- (a) Register a bell callback via ghostty_terminal_set -----------------
+// ---- Register all three callbacks; track observed terminal-handle args ----
 
 let bellCount = 0;
+let titleCount = 0;
+let writePtyCount = 0;
+const observedTerminalArgs: bigint[] = [];
+let lastWritePtyBytes: Uint8Array | null = null;
+let titleReadDuringCallback: string = "<not-read>";
+
 const bellCb = new JSCallback(
-  (_term: Pointer, _userdata: Pointer) => { bellCount++; },
+  (term: Pointer | null, _userdata: Pointer | null) => {
+    bellCount++;
+    if (term !== null) observedTerminalArgs.push(BigInt(term));
+  },
   { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
 );
-const OPT_BELL = 2;
-const setBellResult = lib.symbols.ghostty_terminal_set(handle, OPT_BELL, bellCb.ptr);
-console.log("tag=set_bell result=", setBellResult);
-if (setBellResult !== 0) process.exit(1);
 
-// ---- (c) Drive vt_write with a BEL, confirm the callback fires -------------
+const titleCb = new JSCallback(
+  (term: Pointer | null, _userdata: Pointer | null) => {
+    titleCount++;
+    if (term !== null) observedTerminalArgs.push(BigInt(term));
+    // Open Question #1 probe: read TITLE from inside the trampoline.
+    const slot = new ArrayBuffer(16);
+    const r = lib.symbols.ghostty_terminal_get(term, DATA_TITLE, ptr(new Uint8Array(slot)));
+    if (r === 0) {
+      const view = new DataView(slot);
+      const p = Number(view.getBigUint64(0, true));
+      const l = Number(view.getBigUint64(8, true));
+      if (p !== 0 && l !== 0) {
+        const bytes = new Uint8Array(toArrayBuffer(p as unknown as Pointer, 0, l));
+        const copy = new Uint8Array(l);
+        copy.set(bytes);
+        titleReadDuringCallback = new TextDecoder("utf-8").decode(copy);
+      } else {
+        titleReadDuringCallback = "";
+      }
+    } else {
+      titleReadDuringCallback = `<err=${r}>`;
+    }
+  },
+  { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
+);
 
-const bel = new Uint8Array([0x07]);
-lib.symbols.ghostty_terminal_vt_write(handle, ptr(bel), 1n);
-console.log("tag=bell_count count=", bellCount);
-if (bellCount !== 1) process.exit(1);
+const writePtyCb = new JSCallback(
+  (term: Pointer | null, _userdata: Pointer | null, data: Pointer | null, len: bigint | number) => {
+    writePtyCount++;
+    if (term !== null) observedTerminalArgs.push(BigInt(term));
+    const lenN = typeof len === "bigint" ? Number(len) : len;
+    if (data !== null && lenN > 0) {
+      const borrowed = new Uint8Array(toArrayBuffer(data, 0, lenN));
+      const owned = new Uint8Array(lenN);
+      owned.set(borrowed);
+      lastWritePtyBytes = owned;
+    }
+  },
+  { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.void },
+);
 
-// ---- (b) Detach with NULL --------------------------------------------------
+const setBell = lib.symbols.ghostty_terminal_set(handle, OPT_BELL, bellCb.ptr);
+console.log("tag=set_bell result=", setBell);
+failIf(setBell !== 0, "set_bell", `result=${setBell}`);
 
-const detachResult = lib.symbols.ghostty_terminal_set(handle, OPT_BELL, null);
-console.log("tag=detach_bell result=", detachResult);
-if (detachResult !== 0) process.exit(1);
+const setTitle = lib.symbols.ghostty_terminal_set(handle, OPT_TITLE_CHANGED, titleCb.ptr);
+console.log("tag=set_title result=", setTitle);
+failIf(setTitle !== 0, "set_title", `result=${setTitle}`);
 
-// Drive another BEL; count should not increment.
-lib.symbols.ghostty_terminal_vt_write(handle, ptr(bel), 1n);
-console.log("tag=bell_count_after_detach count=", bellCount);
-if (bellCount !== 1) process.exit(1);
+const setWritePty = lib.symbols.ghostty_terminal_set(handle, OPT_WRITE_PTY, writePtyCb.ptr);
+console.log("tag=set_write_pty result=", setWritePty);
+failIf(setWritePty !== 0, "set_write_pty", `result=${setWritePty}`);
 
-// ---- (d) Teardown order ----------------------------------------------------
+// ---- (c) BEL triggers bell synchronously ---------------------------------
+
+lib.symbols.ghostty_terminal_vt_write(handle, ptr(new Uint8Array([0x07])), 1n);
+console.log("tag=bell_fire count=", bellCount);
+failIf(bellCount !== 1, "bell_fire", `expected 1, got ${bellCount}`);
+
+// ---- (e) DA1 triggers write_pty with CSI-prefixed reply ------------------
+
+lib.symbols.ghostty_terminal_vt_write(handle, ptr(new Uint8Array([0x1b, 0x5b, 0x63])), 3n);
+console.log("tag=write_pty_fire count=", writePtyCount);
+failIf(writePtyCount < 1, "write_pty_fire", `expected ≥1, got ${writePtyCount}`);
+failIf(lastWritePtyBytes === null, "write_pty_bytes", "null bytes");
+failIf(lastWritePtyBytes !== null && lastWritePtyBytes[0] !== 0x1b, "write_pty_bytes",
+       `expected 0x1b prefix, got ${lastWritePtyBytes?.[0]}`);
+
+// ---- (f) OSC 0 title change triggers title_changed + Open Question #1 ---
+
+const enc = new TextEncoder();
+const titleSeq = new Uint8Array([
+  ...enc.encode("\x1b]0;probe-title"),
+  0x07,
+]);
+lib.symbols.ghostty_terminal_vt_write(handle, ptr(titleSeq), BigInt(titleSeq.length));
+console.log("tag=title_fire count=", titleCount);
+failIf(titleCount < 1, "title_fire", `expected ≥1, got ${titleCount}`);
+console.log("tag=title_read_during_callback value=", JSON.stringify(titleReadDuringCallback));
+// This is the key Open Question #1 result. "probe-title" = default path
+// works (Task 9 Step 3 is a no-op). "" or "<not-read>" or an older value =
+// the default is broken; Task 9 Step 3 instructs HALT AND ESCALATE.
+
+// ---- (d) terminal arg identity ------------------------------------------
+
+const allMatch = observedTerminalArgs.every((t) => t === handleBig);
+console.log("tag=terminal_arg_identity all_match=", allMatch, "observed=", observedTerminalArgs.length);
+failIf(!allMatch, "terminal_arg_identity",
+       `expected all args=${handleBig}, got ${observedTerminalArgs.map(String).join(",")}`);
+
+// ---- (b) Detach all three with NULL -------------------------------------
+
+const detachBell = lib.symbols.ghostty_terminal_set(handle, OPT_BELL, null);
+console.log("tag=detach_bell result=", detachBell);
+failIf(detachBell !== 0, "detach_bell", `result=${detachBell}`);
+
+const detachTitle = lib.symbols.ghostty_terminal_set(handle, OPT_TITLE_CHANGED, null);
+console.log("tag=detach_title result=", detachTitle);
+failIf(detachTitle !== 0, "detach_title", `result=${detachTitle}`);
+
+const detachWritePty = lib.symbols.ghostty_terminal_set(handle, OPT_WRITE_PTY, null);
+console.log("tag=detach_write_pty result=", detachWritePty);
+failIf(detachWritePty !== 0, "detach_write_pty", `result=${detachWritePty}`);
+
+// Post-detach: another BEL must not increment the bell count.
+lib.symbols.ghostty_terminal_vt_write(handle, ptr(new Uint8Array([0x07])), 1n);
+console.log("tag=bell_after_detach count=", bellCount);
+failIf(bellCount !== 1, "bell_after_detach", `expected 1, got ${bellCount}`);
+
+// ---- (g) Teardown ------------------------------------------------------
 
 bellCb.close();
-console.log("tag=jscallback_close ok=true");
+titleCb.close();
+writePtyCb.close();
+console.log("tag=jscallbacks_close ok=true");
 lib.symbols.ghostty_terminal_free(handle);
 console.log("tag=terminal_free ok=true");
 
@@ -703,6 +830,18 @@ At the top of `src/terminal.ts`, extend the `bun:ffi` import to include `JSCallb
 import { ptr, toArrayBuffer, type JSCallback, type Pointer } from "bun:ffi";
 ```
 
+Extend the generated-module import to include `GhosttyTerminalOptionValues` (needed by `close()` for the detach loop):
+
+```typescript
+import {
+  GhosttyTerminalDataValues,
+  GhosttyTerminalOptionValues,
+  modeTagByName,
+  resultCodeByValue,
+  structLayouts,
+} from "./internal/generated";
+```
+
 Add callback factory imports below the existing internal imports:
 
 ```typescript
@@ -722,6 +861,11 @@ Add private fields inside the `Terminal` class, directly after `#cellPx`:
   #writePtyCb: JSCallback | null = null;
   #bellCb: JSCallback | null = null;
   #titleCb: JSCallback | null = null;
+
+  // Re-entry guard. Set to true by each trampoline for the duration of the
+  // user callback; checked by mutating public methods to reject calls made
+  // from inside a callback. Spec §5.4 + plan §"Concurrency and re-entry".
+  #inCallback = false;
 ```
 
 - [ ] **Step 2: Add a private `#readTitle()` helper.**
@@ -765,18 +909,30 @@ This method reads the current title via `ghostty_terminal_get(TITLE)` and copies
 
 - [ ] **Step 3: Register callbacks in the constructor.**
 
-Inside `Terminal.constructor`, AFTER the `this.#handle = Number(handleBig) as Pointer;` line, append:
+Inside `Terminal.constructor`, AFTER the `this.#handle = Number(handleBig) as Pointer;` line, append. Note each user fn is wrapped in an `#inCallback`-flipping closure before being handed to the factory:
 
 ```typescript
     // ---- Register effect callbacks ------------------------------------------
-    // Each callback factory returns a JSCallback + the option enum value.
-    // We register via ghostty_terminal_set; failure here is rare (indicates
-    // an ABI mismatch) but we must unwind cleanly: free the handle, close
-    // any JSCallbacks already created, then rethrow.
+    // Each callback factory returns a JSCallback + the option enum value. The
+    // user fn is wrapped in an #inCallback-flipping closure BEFORE going to
+    // the factory — so mutating methods invoked from inside the callback can
+    // detect and reject re-entry (see #assertNotInCallback below and plan
+    // §"Concurrency and re-entry").
+    //
+    // Registration via ghostty_terminal_set; failure here is rare (indicates
+    // an ABI mismatch) but we must unwind cleanly: detach anything already
+    // set, close any JSCallbacks already created, free the handle, then
+    // rethrow.
     const registered: TrampolineResult[] = [];
     try {
       if (opts.onWritePty !== undefined) {
-        const t = makeWritePtyCallback(opts.onWritePty);
+        const userFn = opts.onWritePty;
+        const guarded = (bytes: Uint8Array) => {
+          this.#inCallback = true;
+          try { userFn(bytes); }
+          finally { this.#inCallback = false; }
+        };
+        const t = makeWritePtyCallback(guarded);
         registered.push(t);
         this.#writePtyCb = t.jsCallback;
         const r = lib.symbols.ghostty_terminal_set(
@@ -787,7 +943,13 @@ Inside `Terminal.constructor`, AFTER the `this.#handle = Number(handleBig) as Po
         checkResult(r, "ghostty_terminal_set(WRITE_PTY)");
       }
       if (opts.onBell !== undefined) {
-        const t = makeBellCallback(opts.onBell);
+        const userFn = opts.onBell;
+        const guarded = () => {
+          this.#inCallback = true;
+          try { userFn(); }
+          finally { this.#inCallback = false; }
+        };
+        const t = makeBellCallback(guarded);
         registered.push(t);
         this.#bellCb = t.jsCallback;
         const r = lib.symbols.ghostty_terminal_set(
@@ -799,8 +961,13 @@ Inside `Terminal.constructor`, AFTER the `this.#handle = Number(handleBig) as Po
       }
       if (opts.onTitleChanged !== undefined) {
         const userFn = opts.onTitleChanged;
+        const guarded = (title: string) => {
+          this.#inCallback = true;
+          try { userFn(title); }
+          finally { this.#inCallback = false; }
+        };
         const readTitle = () => this.#readTitle();
-        const t = makeTitleCallback(userFn, readTitle);
+        const t = makeTitleCallback(guarded, readTitle);
         registered.push(t);
         this.#titleCb = t.jsCallback;
         const r = lib.symbols.ghostty_terminal_set(
@@ -831,19 +998,74 @@ Inside `Terminal.constructor`, AFTER the `this.#handle = Number(handleBig) as Po
     }
 ```
 
-- [ ] **Step 4: Verify no side effects to existing snapshot() / vtWrite() paths.**
+- [ ] **Step 4: Add `#assertNotInCallback` and wire it into mutating methods.**
+
+Insert immediately before `#assertOpen()`:
+
+```typescript
+  /**
+   * Guard against user code invoking a mutating Terminal method from inside
+   * an effect callback. libghostty is mid-parse at callback time; mutating
+   * the same Terminal corrupts or frees state the parser still references.
+   *
+   * The list of banned methods: vtWrite, reset, resize, setMode, close. The
+   * list of explicitly-allowed methods: snapshot, mode (read-only).
+   *
+   * Violations throw GhosttyError with code "invalid_value" naming the
+   * method and advising queueMicrotask / setTimeout deferral.
+   */
+  #assertNotInCallback(method: string): void {
+    if (!this.#inCallback) return;
+    throw new GhosttyError(
+      `Terminal.${method} may not be called from inside an effect callback. ` +
+      `Defer with queueMicrotask or setTimeout.`,
+      {
+        code: "invalid_value",
+        functionName: `Terminal.${method}`,
+      },
+    );
+  }
+```
+
+Add `this.#assertNotInCallback("<name>")` as the FIRST line of each mutating method. The set of methods to guard, at the end of Pass 2, is:
+
+- `vtWrite` — directly forbidden by the C header
+- `resize` — mutates internal grid state
+- `reset` — wipes the screen; libghostty is mid-parse
+- `setMode` — mutates mode state the parser may be reading
+- `close` — frees the handle under libghostty's feet
+
+Snapshot, `mode(name)`, and Symbol.dispose (which delegates to close and inherits its guard) do NOT need assertions added directly — dispose delegates, snapshot/mode are read-only.
+
+Example — for `vtWrite`:
+
+```typescript
+  vtWrite(bytes: Uint8Array): void {
+    this.#assertNotInCallback("vtWrite");
+    this.#assertOpen();
+    if (bytes.length === 0) return;
+    // ... existing body ...
+  }
+```
+
+Apply the same first-line insertion to `resize`, `reset`, `setMode`. `close` handles the guard inline (see Task 6 Step 1).
+
+- [ ] **Step 5: Verify no side effects to existing snapshot() / vtWrite() paths.**
 
 ```bash
 bun run typecheck
-# Expected: clean. Note: `JSCallback` is imported as a type for the field
-# annotations; `makeBellCallback` etc. are imported as values.
+# Expected: clean. `JSCallback` is imported as a type for the field
+# annotations; `makeBellCallback` etc. are imported as values;
+# `GhosttyTerminalOptionValues` is imported as a value.
 
 bun test test/smoke
 # Expected: all prior tests green. No new tests in Task 5 yet — Task 8-11
-# cover callback behavior.
+# cover callback behavior, and Task 11 covers the #inCallback guard via the
+# "subsequent callbacks fire normally after one threw" test plus dedicated
+# re-entry-rejection tests.
 ```
 
-- [ ] **Step 5: Commit.**
+- [ ] **Step 6: Commit.**
 
 Commit message:
 
@@ -871,10 +1093,11 @@ and copies the GhosttyString into a JS string for the title trampoline.
 
 - [ ] **Step 1: Rewrite `close()` to handle callback teardown.**
 
-Replace the existing `close()` method (currently lines ~163-168 of `src/terminal.ts`):
+Replace the existing `close()` method (grep for `close(): void` in `src/terminal.ts` to locate — line numbers shift across the Pass-1-fix branch):
 
 ```typescript
   close(): void {
+    this.#assertNotInCallback("close");
     if (this.#handle === null) return;
     const lib = getLib();
     const h = this.#handle;
@@ -991,9 +1214,13 @@ export interface TerminalOptions {
    * to retain past the callback's return.
    *
    * Constraints:
-   * - MUST NOT re-enter `vtWrite()` on this Terminal. libghostty is mid-parse
-   *   and re-entry is undefined behavior. Defer work with `queueMicrotask`
-   *   or similar if you need to write back to this Terminal in response.
+   * - MUST NOT call any mutating method on the same Terminal: `vtWrite`,
+   *   `resize`, `reset`, `setMode`, `close`, or `[Symbol.dispose]`. libghostty
+   *   is mid-parse; mutating the same Terminal corrupts or frees state the
+   *   parser still references. `snapshot()` and `mode(name)` are read-only
+   *   and are allowed. Doing any banned call throws a typed `GhosttyError`
+   *   with code `"invalid_value"` — defer with `queueMicrotask` or
+   *   `setTimeout` to perform the mutation after `vtWrite()` returns.
    * - MUST NOT throw. Exceptions are caught at the FFI boundary and logged
    *   via `console.error`; they cannot cross the C frame.
    * - SHOULD NOT block. The callback runs synchronously inside `vtWrite()`
@@ -1004,7 +1231,9 @@ export interface TerminalOptions {
   /**
    * Invoked when libghostty processes a BEL character (0x07).
    *
-   * Same constraints as onWritePty (no re-entry, no throw, no blocking).
+   * Same constraints as `onWritePty` — no mutating calls on this Terminal
+   * (vtWrite/resize/reset/setMode/close/Symbol.dispose are runtime-rejected),
+   * no throwing, no blocking.
    */
   onBell?: () => void;
 
@@ -1013,7 +1242,8 @@ export interface TerminalOptions {
    * the terminal title. The `title` string is a JS-owned copy — safe to
    * retain past the callback's return.
    *
-   * Same constraints as onWritePty (no re-entry, no throw, no blocking).
+   * Same constraints as `onWritePty` — no mutating calls on this Terminal,
+   * no throwing, no blocking.
    */
   onTitleChanged?: (title: string) => void;
 }
@@ -1249,34 +1479,22 @@ bun test test/smoke/callbacks.test.ts
 # of vtWrite(). See Step 3 below.
 ```
 
-- [ ] **Step 3: (conditional) If the synchronous title read returns stale, implement the queue fallback.**
+- [ ] **Step 3: (conditional) If the synchronous title read returns stale, HALT AND ESCALATE.**
 
-Only execute this step if Step 2 fails with a stale title. Skip if tests pass.
+Only execute this step if the tests in Step 2 fail with a stale-title signature — i.e. the "fires on OSC 0 title change with the new title" test receives `""` instead of `"hello"`, or the "multi-title stream" test receives the final title for every element.
 
-Modify `src/internal/callbacks.ts` `makeTitleCallback` to accept an event queue, and modify `src/terminal.ts` to drain the queue at the end of `vtWrite`:
+**Do NOT implement a queue-and-drain fallback.** It cannot preserve the spec's semantics: by the time we drain the queue after `vt_write` returns, only the final title is readable, so every queued `onTitleChanged` invocation reads the same value. The per-change titles in a burst are not recoverable from post-hoc queries. Advertising a fallback that silently delivers wrong values would be worse than having no callback at all.
 
-**Sketch only (not a finished snippet — implementer adapts to the observed failure mode):**
+Actual halt-and-escalate procedure:
 
-```typescript
-// callbacks.ts — alternate signature if the default fails:
-export function makeTitleCallback(
-  userFn: (title: string) => void,
-  pushEvent: () => void,   // schedules a deferred read+dispatch
-): TrampolineResult { /* ... */ }
+1. Capture the Task 2 probe's `tag=title_read_during_callback` line and the Task 9 test output. Paste them into a new "Pass 2 Open Question #1 resolution" block in `CONFIRM_WITH_MATT.md`.
+2. Re-read the pinned Ghostty header (`vendor/ghostty/include/ghostty/vt/terminal.h`) for any title-change accessor we missed — an event cursor, a `ghostty_terminal_title_change_event`, anything that might expose the per-change title via a different API.
+3. Present Matt with two options:
+   - **Option A:** narrow `onTitleChanged` semantics to "fires once at the end of `vtWrite` with the final title" (lossy but reflects what's actually available). Needs a spec amendment.
+   - **Option B:** defer `onTitleChanged` out of Pass 2 entirely; ship only `onWritePty` and `onBell`. Pass 3 revisits once render-state work surfaces a title-change cursor.
+4. Stop Pass 2 work until Matt picks. Do not merge Task 9 without resolution.
 
-// terminal.ts — vtWrite drains after libghostty returns:
-vtWrite(bytes: Uint8Array): void {
-  // ... existing call ...
-  lib.symbols.ghostty_terminal_vt_write(this.#handle, ptr(bytes), BigInt(bytes.length));
-  while (this.#titleEventQueue.length > 0) {
-    this.#titleEventQueue.shift();
-    try { this.#titleUserFn(this.#readTitle()); }
-    catch (e) { console.error("ts-libghostty-vt: onTitleChanged callback threw:", e); }
-  }
-}
-```
-
-Document the fallback in `CONFIRM_WITH_MATT.md` under "Pass 2 notes" with the observed behavior. Update the plan header's Open Question #1 to reflect the resolution.
+If Step 2 passes, this step is a no-op — delete this block from the commit or leave as documentation.
 
 - [ ] **Step 4: Commit.**
 
@@ -1516,26 +1734,161 @@ describe("Terminal effect callbacks — error paths", () => {
     expect(count).toBe(1);
   });
 });
+
+describe("Terminal effect callbacks — re-entry guard", () => {
+  // The #inCallback guard rejects mutating calls on the same Terminal from
+  // inside a callback. Banned: vtWrite, resize, reset, setMode, close,
+  // Symbol.dispose. Allowed: snapshot, mode (read-only).
+
+  it("rejects vtWrite re-entry from onBell", () => {
+    let guardThrew: Error | null = null;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        try { term.vtWrite(new Uint8Array([0x41])); }
+        catch (e) { guardThrew = e as Error; }
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(guardThrew).not.toBeNull();
+    expect(guardThrew!.message).toMatch(/may not be called from inside/i);
+    expect(guardThrew!.message).toMatch(/vtWrite/);
+  });
+
+  it("rejects resize from onBell", () => {
+    let guardThrew: Error | null = null;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        try { term.resize(20, 5); }
+        catch (e) { guardThrew = e as Error; }
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(guardThrew).not.toBeNull();
+    expect(guardThrew!.message).toMatch(/resize/);
+  });
+
+  it("rejects reset from onBell", () => {
+    let guardThrew: Error | null = null;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        try { term.reset(); }
+        catch (e) { guardThrew = e as Error; }
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(guardThrew).not.toBeNull();
+    expect(guardThrew!.message).toMatch(/reset/);
+  });
+
+  it("rejects setMode from onBell", () => {
+    let guardThrew: Error | null = null;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        try { term.setMode("insert", true); }
+        catch (e) { guardThrew = e as Error; }
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(guardThrew).not.toBeNull();
+    expect(guardThrew!.message).toMatch(/setMode/);
+  });
+
+  it("rejects close from onBell", () => {
+    let guardThrew: Error | null = null;
+    const term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        try { term.close(); }
+        catch (e) { guardThrew = e as Error; }
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(guardThrew).not.toBeNull();
+    expect(guardThrew!.message).toMatch(/close/);
+    term.close(); // still closable from outside
+  });
+
+  it("allows snapshot() from inside a callback (read-only)", () => {
+    let snapshotWorked = false;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        const s = term.snapshot();
+        snapshotWorked = s.cols === 10 && s.rows === 3;
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(snapshotWorked).toBe(true);
+  });
+
+  it("allows mode() from inside a callback (read-only)", () => {
+    let modeReadOk = false;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {
+        // `mode` returns boolean — no throw means the guard allowed it.
+        term.mode("insert");
+        modeReadOk = true;
+      },
+    });
+    term.vtWrite(new Uint8Array([0x07]));
+    expect(modeReadOk).toBe(true);
+  });
+
+  it("clears #inCallback after the callback returns — subsequent vtWrite works", () => {
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => {},  // no-op
+    });
+    term.vtWrite(new Uint8Array([0x07])); // fires callback
+    // If the guard failed to clear, the next vtWrite would throw.
+    expect(() => term.vtWrite(new Uint8Array([0x41, 0x42]))).not.toThrow();
+  });
+
+  it("clears #inCallback after the callback THREW — subsequent mutating ops still allowed", () => {
+    const originalErr = console.error;
+    console.error = () => {};
+    try {
+      using term = new Terminal({
+        cols: 10, rows: 3,
+        onBell: () => { throw new Error("boom"); },
+      });
+      term.vtWrite(new Uint8Array([0x07])); // callback throws; trampoline swallows
+      // After the throw, #inCallback must have been reset via the finally
+      // block — a subsequent call must NOT be falsely rejected.
+      expect(() => term.resize(15, 4)).not.toThrow();
+    } finally {
+      console.error = originalErr;
+    }
+  });
+});
 ```
 
 - [ ] **Step 2: Run and verify.**
 
 ```bash
 bun test test/smoke/callbacks.test.ts
-# Expected: 6 new tests pass, plus the prior 13. Total 19 passing tests.
+# Expected: 15 new tests pass (6 error-path + 9 re-entry-guard), plus the
+# prior 13. Total 28 passing tests.
 ```
 
 - [ ] **Step 3: Commit.**
 
 ```
-test(callbacks): smoke tests for error paths
+test(callbacks): smoke tests for error paths and re-entry guard
 
 Pass 2 Task 11 — six tests covering throw-swallow for all three effects,
-throw-then-recover (subsequent callbacks still fire), use-after-close
-semantics with callbacks registered, and cross-Terminal isolation.
+throw-then-recover, use-after-close semantics, cross-Terminal isolation;
+plus nine tests for the #inCallback guard covering each banned mutating
+method (vtWrite/resize/reset/setMode/close), allowed read-only methods
+(snapshot, mode), and guard-clearing after both normal return and throw.
 ```
 
-**Expected outcome of Task 11:** 6 new tests, all passing. Full callback behavior contract is verified: fires when expected, swallows throws, tears down cleanly, isolates across instances.
+**Expected outcome of Task 11:** 15 new tests, all passing. Full callback behavior contract is verified: fires when expected, swallows throws, tears down cleanly, isolates across instances, and rejects re-entry with a typed error naming the forbidden method.
 
 ---
 
@@ -1572,11 +1925,16 @@ using term = new Terminal({
 });
 ```
 
-**Constraints** — violating any of these is undefined behavior:
+**Constraints:**
 
-- Callbacks MUST NOT re-enter `vtWrite()` on the same Terminal. libghostty
-  is mid-parse; re-entry is undefined. Defer with `queueMicrotask` if you
-  need to write back to this Terminal.
+- Callbacks MUST NOT call any **mutating** method on the same Terminal from
+  inside the callback: `vtWrite`, `resize`, `reset`, `setMode`, `close`,
+  `[Symbol.dispose]`. libghostty is mid-parse; mutating the same Terminal
+  corrupts or frees state the parser still references. The binding detects
+  this and throws a typed `GhosttyError` with code `"invalid_value"` naming
+  the forbidden method — defer with `queueMicrotask` or `setTimeout` to
+  perform the mutation after `vtWrite()` returns. Read-only methods
+  (`snapshot`, `mode`) are explicitly allowed.
 - Callbacks MUST NOT throw. Exceptions are caught at the FFI boundary and
   logged via `console.error`; they cannot cross the C frame.
 - Callbacks SHOULD NOT block. The call is synchronous inside `vtWrite()`.
@@ -1721,15 +2079,32 @@ Do NOT push the tag — Matt reviews, Matt pushes.
 
 ---
 
-## Self-review TODOs before the Codex loop
+## Revision history
 
-Before sending this plan for external review, the author (current: Murderbot) will:
+### First draft — 2026-04-23 (Murderbot)
+Initial 12-task plan, 1735 lines. Architecture sketch committed pre-review.
 
-1. Re-read the spec §5.4 paragraph-for-paragraph against each task's snippet, confirming no claim is made that the spec doesn't authorize.
-2. Verify every cited line number in the header and ABI doc still resolves after any Pass-1-fix commits that land before review.
-3. Double-check Bun's `JSCallback` docs for any version-specific quirks relative to the pinned `bun >= 1.3.13` (especially: `u64` arg arriving as bigint vs number; `Pointer | null` handling for detach).
-4. Walk the teardown sequence on paper with a sample trace (user callback throws during the registration loop → what happens?) and patch the error-path snippets if any leak is found.
+### Codex review pass 1 — 2026-04-23 reconciliation (Murderbot)
+
+Codex returned 6 findings. All applied. Tracking log:
+
+1. **Task 1 preconditions block Pass 2 against current tree.** Plan said "assumed landed"; Codex caught that `types.ts`, `terminal.ts:113`, `terminal.ts:329` still carry the Pass-1 bugs. Reframed the "Status at start of Pass 2" paragraph to be explicit that Pass 2 starts blocked until the Pass-1-fix Bob lands, with a fallback option (fold fixes into Pass 2 as Tasks 0.1–0.3) that requires a Matt-decision before striking Task 1.
+2. **Task 2 probe was weak.** Only covered BELL, claimed to cover all three. Rewrote the probe to register/detach all three callbacks, fire each via the appropriate VT sequence (BEL, DA1, OSC 0), compare the C-supplied `terminal` arg to the stored handle, include the Open-Question-#1 title-read-inside-callback probe, and assert ownership on the received `Uint8Array`.
+3. **Callback safety contract too narrow.** Spec §5.4 + v1 plan header only forbade `vtWrite` re-entry. Codex noted `reset`/`resize`/`setMode`/`close` are equally unsafe. Expanded "Concurrency and re-entry" section to cover the full mutating-method ban. Added `#inCallback` boolean field to Terminal; added `#assertNotInCallback(method)` guard helper; wired it into all five mutating methods; added 9 new smoke tests in Task 11 covering each banned method plus allowed read-only ones plus guard-clearing after throw. Updated `TerminalOptions` JSDoc (Task 7) and README (Task 12) to name every banned method explicitly.
+4. **Title queue-fallback was broken.** Codex was correct: a post-vtWrite drain reads only the final title, so the "multiple titles in one stream" test cannot pass under the fallback. Replaced Open Question #1 resolution path and Task 9 Step 3 with a hard halt-and-escalate procedure — if synchronous title reads are stale, stop Pass 2 and present Matt two options (narrow semantics or defer `onTitleChanged`).
+5. **Task 6 import hole.** `close()` used `GhosttyTerminalOptionValues` without a corresponding import addition. Fixed in Task 5 Step 1's import edit.
+6. **File-delta self-contradiction.** Plan said "No changes to scripts/" then Task 2 creates one. Reworded to "No changes to existing generator/build scripts. Task 2 adds one new diagnostic script."
+
+**Net delta from first draft:** ~250 lines added. Bigger Task 2 probe (~110 lines), new #inCallback guard pattern in Tasks 5/6 (~40 lines), 9 new re-entry-guard smoke tests in Task 11 (~100 lines), tightened framing throughout.
+
+### Self-review TODOs before Codex pass 2 (author: Murderbot)
+
+1. Re-read spec §5.4 paragraph-for-paragraph against each task's snippet after the reconciliation — confirm no claim is made that the spec doesn't authorize.
+2. Verify every cited line number in the header and ABI doc still resolves after the Pass-1-fix commits land.
+3. Double-check Bun's `JSCallback` docs for version-specific quirks relative to `bun >= 1.3.13` (especially: `u64` arg arriving as bigint vs number; `Pointer | null` handling for detach).
+4. Walk the teardown sequence on paper with a sample trace (user callback throws during the registration loop → what happens?) and patch error-path snippets if any leak is found.
 5. Audit every `expect(first[0]).toBe(0x1b)` style test for platform/version fragility — libghostty's exact reply bytes for DA1/DSR may shift across pins; the assertions should check structure (CSI prefix + terminator), not full byte sequences.
-6. Sanity-check that `ghostty_terminal_set` is called with the correct value kind for callbacks (function pointer directly, not pointer-to-function-pointer). The ABI doc's §4 table shows `size_t*` for APC options and `GhosttyString*` for TITLE/PWD — the pattern for callbacks is **function pointer directly**, and only the probe script in Task 2 currently verifies this. Make sure the Task 5 snippet reads `jsCallback.ptr`, not `ptr(new BigUint64Array([...]))`.
+6. Sanity-check that `ghostty_terminal_set` is called with the correct value kind for callbacks (function pointer directly, not pointer-to-function-pointer). Task 5 snippet reads `jsCallback.ptr`; Task 2 probe verifies the path works end-to-end.
+7. Cross-check the `#inCallback` guard code path for the mid-registration-throw scenario: if `ghostty_terminal_set` throws while the constructor is wiring, we fall into the catch block that detaches everything and rethrows — but `#inCallback` is never set during registration (user fns are wrapped but not invoked), so no residual state.
 
-Once Codex review is done and reconciled, this plan gets the same "twice-reviewed" badge Pass 1 earned.
+Once Codex pass 2 is done and reconciled, this plan gets the "twice-reviewed" badge Pass 1 earned.
