@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Terminal } from "../../src/terminal";
-import { UseAfterCloseError } from "../../src/errors";
+import { GhosttyError, UseAfterCloseError } from "../../src/errors";
+import type { TerminalSnapshot } from "../../src/types";
 import * as ffi from "../../src/ffi";
 
 describe("Terminal lifecycle", () => {
@@ -44,6 +45,109 @@ describe("Terminal lifecycle", () => {
     expect(() => new Terminal({ cols: 0, rows: 24 })).toThrow();
     expect(() => new Terminal({ cols: 80, rows: 0 })).toThrow();
     expect(() => new Terminal({ cols: -1, rows: 24 })).toThrow();
+  });
+});
+
+// Regression tests for Codex-flagged contract bugs (Pass 1 fix-up).
+// Each repro must throw at the JS boundary, naming the offending field, with
+// code "invalid_value" — silent FFI coercion (u16 wrap, sign-extension into
+// uint32, BigInt-encoding of negatives as huge size_t) is not acceptable.
+describe("Terminal input validation (Codex bug 2)", () => {
+  it("rejects cols above uint16_t max (cols: 70000 used to wrap to 4464)", () => {
+    expect(() => new Terminal({ cols: 70000, rows: 24 })).toThrow(/cols/);
+    try {
+      new Terminal({ cols: 70000, rows: 24 });
+    } catch (e) {
+      expect(e).toBeInstanceOf(GhosttyError);
+      expect((e as GhosttyError).code).toBe("invalid_value");
+      expect((e as Error).message).toContain("cols");
+      expect((e as Error).message).toContain("70000");
+    }
+  });
+
+  it("rejects rows above uint16_t max", () => {
+    expect(() => new Terminal({ cols: 80, rows: 70000 })).toThrow(/rows/);
+  });
+
+  it("rejects negative cellPx.width (used to yield pixelWidth: -80)", () => {
+    expect(
+      () => new Terminal({ cols: 80, rows: 24, cellPx: { width: -1, height: 2 } }),
+    ).toThrow(/cellPx\.width/);
+    try {
+      new Terminal({ cols: 80, rows: 24, cellPx: { width: -1, height: 2 } });
+    } catch (e) {
+      expect(e).toBeInstanceOf(GhosttyError);
+      expect((e as GhosttyError).code).toBe("invalid_value");
+      expect((e as Error).message).toContain("cellPx.width");
+    }
+  });
+
+  it("rejects negative cellPx.height", () => {
+    expect(
+      () => new Terminal({ cols: 80, rows: 24, cellPx: { width: 2, height: -1 } }),
+    ).toThrow(/cellPx\.height/);
+  });
+
+  it("rejects non-integer cellPx values", () => {
+    expect(
+      () => new Terminal({ cols: 80, rows: 24, cellPx: { width: 1.5, height: 2 } }),
+    ).toThrow(/cellPx\.width/);
+  });
+
+  it("rejects maxScrollback: -1 (used to be marshaled as huge size_t)", () => {
+    expect(() => new Terminal({ cols: 80, rows: 24, maxScrollback: -1 })).toThrow(
+      /maxScrollback/,
+    );
+    try {
+      new Terminal({ cols: 80, rows: 24, maxScrollback: -1 });
+    } catch (e) {
+      expect(e).toBeInstanceOf(GhosttyError);
+      expect((e as GhosttyError).code).toBe("invalid_value");
+      expect((e as Error).message).toContain("maxScrollback");
+    }
+  });
+
+  it("accepts cols/rows at the uint16_t boundary", () => {
+    using term = new Terminal({ cols: 65535, rows: 65535 });
+    // Construction should succeed; we don't snapshot because allocating a
+    // 65535x65535 grid is wasteful. Just exercise construction.
+    expect(term).toBeDefined();
+  });
+
+  it("resize() rejects cols above uint16_t max", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    expect(() => term.resize(70000, 24)).toThrow(/cols/);
+  });
+
+  it("resize() rejects negative cellPx.width", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    expect(() => term.resize(80, 24, { width: -1, height: 2 })).toThrow(/cellPx\.width/);
+  });
+});
+
+describe("TerminalSnapshot shape (Codex bug 3, narrow path)", () => {
+  // Pass 1 narrowed TerminalSnapshot: `cursor.style` and `mouseTracking` are
+  // removed because the C side either returns a 72-byte struct we don't
+  // decode (CURSOR_STYLE) or a single bool that does not map cleanly to the
+  // 5-variant MouseTracking union (MOUSE_TRACKING). See CONFIRM_WITH_MATT.md
+  // "Known plan/code drift" for the rationale.
+  it("snapshot does not have cursor.style or mouseTracking fields (runtime)", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    const snap = term.snapshot();
+    expect("style" in (snap.cursor as object)).toBe(false);
+    expect("mouseTracking" in (snap as object)).toBe(false);
+  });
+
+  it("TerminalSnapshot type does not declare cursor.style or mouseTracking (compile-time)", () => {
+    // This is a structural type-level test: if either field were re-added to
+    // TerminalSnapshot, these `@ts-expect-error` lines would no longer error
+    // and `bun run typecheck` would fail.
+    using term = new Terminal({ cols: 80, rows: 24 });
+    const snap: TerminalSnapshot = term.snapshot();
+    // @ts-expect-error — cursor.style is intentionally absent in Pass 1.
+    void snap.cursor.style;
+    // @ts-expect-error — mouseTracking is intentionally absent in Pass 1.
+    void snap.mouseTracking;
   });
 });
 

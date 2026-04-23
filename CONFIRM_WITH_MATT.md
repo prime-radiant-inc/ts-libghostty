@@ -33,6 +33,26 @@
 
 ---
 
+## Pass 1 contract fix-up (2026-04-23, Hilbert)
+
+Codex reviewed Pass 1 and surfaced three contract bugs. All three landed before Pass 2 starts. Summary:
+
+1. **HIGH 1 — `apcMaxBytes` / `apcMaxBytesKitty` silently dropped.** Removed both fields from `TerminalOptions` in `src/types.ts`. README already documented these as Pass-2-deferred; the type was the lie. Behavior unchanged (constructor was ignoring them anyway), but callers that explicitly passed them now get a TS compile error instead of silent fallthrough.
+
+2. **HIGH 2 — Missing ABI-range input validation.** Added `assertU16` / `assertU32` / `assertSizeT` helpers in `src/terminal.ts` and wired them into `Terminal.constructor` and `Terminal.resize`. Bounds cited from `docs/abi/2026-04-22-abi-discovery.md`: cols/rows are `uint16_t` (1..65535), `cell_width_px`/`cell_height_px` are `uint32_t`, `max_scrollback` is `size_t` (capped at `Number.MAX_SAFE_INTEGER` so BigInt encoding stays lossless and negatives can't sneak through). All three Codex repros (`cols: 70000`, `cellPx: { width: -1, ... }`, `maxScrollback: -1`) now throw `GhosttyError` with code `"invalid_value"` and a message naming the offending field + received value.
+
+3. **MEDIUM 3 — Stub snapshot fields → narrow path chosen.** Removed `cursor.style` and `mouseTracking` from `TerminalSnapshot` in `src/types.ts`. Decision rationale: `MOUSE_TRACKING` returns just a bool ("any tracking active") which doesn't map honestly to the 5-variant `MouseTracking` union — wiring it as `"none"` vs `"normal"` would trade one footgun for another. `CURSOR_STYLE` is a 72-byte `GhosttyStyle` struct decode that warrants real Pass-2-or-later work. The `CursorStyle` and `MouseTracking` *types* remain exported for future passes that wire them properly. README's `snapshot` description was high-level and didn't enumerate fields, so no README change needed.
+
+**Tests added** (`test/smoke/terminal.test.ts`, +11 cases, 67 → 78 pass):
+- `Terminal input validation` describe block: each Codex repro asserts both throw + `GhosttyError.code === "invalid_value"` + offending field name in message; boundary case `cols: 65535` constructs cleanly; `resize()` repros covered too.
+- `TerminalSnapshot shape` describe block: runtime `in` check that `cursor.style` and `mouseTracking` are absent; compile-time `@ts-expect-error` test that fails typecheck if either field is re-added to the interface.
+
+**Decision deferred to Matt:** version bump policy. Default is to NOT retag `v0.1.0` and let the next bump (probably `v0.2.0` after Pass 2) carry these forward. Matt hasn't pushed/published `v0.1.0` yet, so a retag is also viable — Matt's call.
+
+**Pass 2 Task 1 preflight gate:** all four checks (apc grep, u16 bounds grep, repro-line grep, snapshot-shape grep) evaluate to OK against this tree. Pass 2 is unblocked.
+
+---
+
 ## Known plan/code drift (low priority — does not block publish)
 
 These are small inconsistencies between the plan's snippets and the actually-committed code. They don't affect runtime behavior; a future Bob re-regenerating files from the plan would hit them. Optional cleanup for a quiet afternoon.

@@ -28,6 +28,58 @@ export function checkResult(result: number, functionName: string): void {
   );
 }
 
+// ---- input validation -----------------------------------------------------
+//
+// Bounds come from the ABI doc (docs/abi/2026-04-22-abi-discovery.md):
+//   - cols, rows                       -> uint16_t   (1..65535)
+//   - cell_width_px, cell_height_px    -> uint32_t   (0..4_294_967_295)
+//   - max_scrollback                   -> size_t     (0..MAX_SAFE_INTEGER)
+//
+// Without these checks, invalid values silently coerce/wrap at the FFI
+// boundary: cols=70000 wraps to 4464; cellPx.width=-1 sign-extends to a huge
+// uint32 and yields nonsense pixel dims; maxScrollback=-1 is BigInt-encoded
+// as 2^64-1 and is happily accepted as a "huge" size_t. Codex flagged all
+// three reproductions; this block makes them throw with a named field.
+
+const U16_MAX = 0xFFFF;          // 65_535
+const U32_MAX = 0xFFFF_FFFF;     // 4_294_967_295
+
+function assertU16(name: string, value: number, functionName: string, opts: { min?: number } = {}): void {
+  const min = opts.min ?? 0;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < min || value > U16_MAX) {
+    throw new GhosttyError(
+      `${name} must be an integer in [${min}..${U16_MAX}] (uint16_t), got ${value}`,
+      { code: "invalid_value", functionName },
+    );
+  }
+}
+
+function assertU32(name: string, value: number, functionName: string): void {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > U32_MAX) {
+    throw new GhosttyError(
+      `${name} must be an integer in [0..${U32_MAX}] (uint32_t), got ${value}`,
+      { code: "invalid_value", functionName },
+    );
+  }
+}
+
+function assertSizeT(name: string, value: number, functionName: string): void {
+  // size_t on 64-bit darwin-arm64 is 8 bytes; we cap at MAX_SAFE_INTEGER so
+  // BigInt encoding is lossless and so callers can't sneak negatives through
+  // by relying on BigInt's two's-complement-ish behavior.
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > Number.MAX_SAFE_INTEGER
+  ) {
+    throw new GhosttyError(
+      `${name} must be an integer in [0..${Number.MAX_SAFE_INTEGER}] (size_t), got ${value}`,
+      { code: "invalid_value", functionName },
+    );
+  }
+}
+
 /**
  * Resolve a ModeName string to its packed u16 tag. Throws a typed
  * GhosttyError with code "invalid_value" when the name is not present in
@@ -83,17 +135,19 @@ export class Terminal {
   #cellPx: { width: number; height: number };
 
   constructor(opts: TerminalOptions) {
-    if (!Number.isInteger(opts.cols) || opts.cols <= 0) {
-      throw new GhosttyError("cols must be a positive integer", {
-        code: "invalid_value",
-        functionName: "Terminal.constructor",
-      });
+    const fn = "Terminal.constructor";
+    // cols/rows are uint16_t per ABI §4 + §11 (struct field types). They must
+    // be >= 1 (a 0-cell terminal has no meaning, and Ghostty's terminal_new
+    // rejects it anyway) and <= 65535. Without this check, large values wrap
+    // silently at the FFI boundary (e.g. cols=70000 -> 4464).
+    assertU16("cols", opts.cols, fn, { min: 1 });
+    assertU16("rows", opts.rows, fn, { min: 1 });
+    if (opts.maxScrollback !== undefined) {
+      assertSizeT("maxScrollback", opts.maxScrollback, fn);
     }
-    if (!Number.isInteger(opts.rows) || opts.rows <= 0) {
-      throw new GhosttyError("rows must be a positive integer", {
-        code: "invalid_value",
-        functionName: "Terminal.constructor",
-      });
+    if (opts.cellPx !== undefined) {
+      assertU32("cellPx.width", opts.cellPx.width, fn);
+      assertU32("cellPx.height", opts.cellPx.height, fn);
     }
 
     this.#cellPx = {
@@ -189,19 +243,13 @@ export class Terminal {
 
   resize(cols: number, rows: number, cellPx?: { width: number; height: number }): void {
     this.#assertOpen();
-    if (!Number.isInteger(cols) || cols <= 0) {
-      throw new GhosttyError("cols must be a positive integer", {
-        code: "invalid_value",
-        functionName: "Terminal.resize",
-      });
-    }
-    if (!Number.isInteger(rows) || rows <= 0) {
-      throw new GhosttyError("rows must be a positive integer", {
-        code: "invalid_value",
-        functionName: "Terminal.resize",
-      });
-    }
+    const fn = "Terminal.resize";
+    // Same ABI bounds as the constructor — see §4 in the ABI doc.
+    assertU16("cols", cols, fn, { min: 1 });
+    assertU16("rows", rows, fn, { min: 1 });
     if (cellPx !== undefined) {
+      assertU32("cellPx.width", cellPx.width, fn);
+      assertU32("cellPx.height", cellPx.height, fn);
       this.#cellPx = { width: cellPx.width, height: cellPx.height };
     }
     const lib = getLib();
@@ -317,6 +365,10 @@ export class Terminal {
     // Under exactOptionalPropertyTypes, optional fields cannot be assigned
     // `undefined` explicitly — we only include them when the C side returned
     // a non-empty borrowed pointer.
+    // `cursor.style` and `mouseTracking` are intentionally omitted from
+    // TerminalSnapshot in Pass 1 (see src/types.ts comments). CURSOR_STYLE is
+    // a 72-byte GhosttyStyle struct decode (Pass 2+); MOUSE_TRACKING is a
+    // bool that does not map cleanly to the 5-variant `MouseTracking` union.
     const snap: TerminalSnapshot = {
       cols: raw.cols as number,
       rows: raw.rows as number,
@@ -326,11 +378,9 @@ export class Terminal {
         x: raw.cursorX as number,
         y: raw.cursorY as number,
         visible: raw.cursorVisible as boolean,
-        style: "block",  // CURSOR_STYLE returns a 72 B GhosttyStyle struct; Pass 2+.
       },
       activeScreen,
       scrollbackRows: raw.scrollbackRows as number,
-      mouseTracking: "none",  // MOUSE_TRACKING returns a bool; richer reporting is Pass 2+.
     };
     if (typeof raw.title === "string") snap.title = raw.title;
     if (typeof raw.pwd === "string") snap.pwd = raw.pwd;
