@@ -480,6 +480,16 @@ outer: for await (const frame of runner.frames()) {
 ### 4.1 State
 
 ```ts
+interface Deferred<T = void> {
+  promise: Promise<T>;
+  resolve: () => void;
+}
+function makeDeferred(): Deferred {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => { resolve = r; });
+  return { promise, resolve };
+}
+
 interface SchedulerState {
   lastYieldAt: number;                  // ms of last consumer-observed frame
   pendingReasons: Set<FrameReason>;     // accumulated across events
@@ -489,9 +499,45 @@ interface SchedulerState {
   heartbeatTimer: Timer;                // fires at lastYieldAt + maxIntervalMs
   minIntervalWait: Promise<void> | null;
   readyToYield: boolean;                // scheduler decided a yield is warranted
-  consumerWaiter: Promise<void>;        // resolved when readyToYield flips true
+  yieldSignal: Deferred;                // one-shot, recreated each consume cycle
   exitCode?: number;                    // latched when child exits
   signal?: NodeJS.Signals;              // latched when child dies by signal
+}
+```
+
+`yieldSignal` is a one-shot deferred, **not a long-lived Promise**.
+A plain `Promise` that resolves on `readyToYield = true` would remain
+resolved forever — every subsequent `await` would return immediately,
+causing the iterator to tight-loop instead of waiting for the next
+scheduler wake-up. The deferred is recreated in `scheduler.consume()`
+(below) after each finalize, so the iterator's next `await` sees a
+fresh pending promise.
+
+The scheduler exposes three methods the iterator uses:
+
+```ts
+class Scheduler {
+  awaitReady(): Promise<void> {
+    return this.state.readyToYield
+      ? Promise.resolve()
+      : this.state.yieldSignal.promise;
+  }
+
+  markReady(): void {
+    if (this.state.readyToYield) return;   // idempotent
+    this.state.readyToYield = true;
+    this.state.yieldSignal.resolve();
+  }
+
+  consume(): void {                        // called by iterator after finalize
+    this.state.readyToYield = false;
+    this.state.yieldSignal = makeDeferred();
+    this.state.pendingReasons.clear();
+    this.state.bellsSinceLast = 0;
+    this.state.titleChangesSinceLast = [];
+    this.state.lastYieldAt = clock.now();
+    this.restartHeartbeat();
+  }
 }
 ```
 
@@ -524,7 +570,7 @@ scheduler.maybeYield()          // evaluates "is now a good time to yield?"
   │     • if pendingReasons contains a terminal  → bypass yieldOn filter
   │     • else if pendingReasons ∩ yieldOn is empty → skip
   │     • else → proceed
-  └── mark readyToYield = true; signal waiting consumer (if any)
+  └── scheduler.markReady()          // sets readyToYield + resolves one-shot signal
 
 heartbeatTimer fires (maxIntervalMs elapsed with no yield)
   └── pendingReasons += "heartbeat" → scheduler.maybeYield()
@@ -546,8 +592,11 @@ ready to receive it.** Scheduler keeps:
 - `bellsSinceLast: number` — accumulates
 - `titleChangesSinceLast: string[]` — accumulates
 - `readyToYield: boolean` — scheduler's "now is a good time" decision
-- `consumerWaiter: Promise<void>` — consumer awaits this when no frame is ready
-- `closed: boolean` — set once a terminal reason has been delivered
+- `yieldSignal: Deferred` — one-shot, awaited by the iterator when
+  `readyToYield` is false; recreated by `scheduler.consume()` each
+  finalize cycle (see below)
+- `closed: boolean` — iterator-local flag set after a terminal reason
+  has been delivered; next `next()` returns `{done: true}`
 
 The iterator looks like this:
 
@@ -558,27 +607,25 @@ class FrameIterator implements AsyncIterator<Frame> {
   async next(): Promise<IteratorResult<Frame>> {
     if (this.closed) return { done: true, value: undefined };
 
-    while (!scheduler.readyToYield) await scheduler.consumerWaiter();
+    while (!scheduler.state.readyToYield) {
+      await scheduler.awaitReady();   // one-shot; recreated after each consume
+    }
 
     // FINALIZE — atomic, no intervening await
     renderState.update(terminal);
     const snap = buildFrozenSnapshot(terminal, renderState,
-                                     scheduler.bellsSinceLast,
-                                     scheduler.titleChangesSinceLast);
-    const reason = priorityPick(scheduler.pendingReasons);
+                                     scheduler.state.bellsSinceLast,
+                                     scheduler.state.titleChangesSinceLast);
+    const reason = priorityPick(scheduler.state.pendingReasons);
     const frame: Frame = {
       reason,
       snapshot: snap,
-      exitCode:  isTerminal(reason) ? scheduler.exitCode  : undefined,
-      signal:    isTerminal(reason) ? scheduler.signal    : undefined,
+      exitCode:  isTerminal(reason) ? scheduler.state.exitCode : undefined,
+      signal:    isTerminal(reason) ? scheduler.state.signal   : undefined,
     };
     renderState.markClean();
-    scheduler.pendingReasons.clear();
-    scheduler.bellsSinceLast = 0;
-    scheduler.titleChangesSinceLast = [];
-    scheduler.readyToYield = false;
-    scheduler.lastYieldAt = clock.now();
-    scheduler.restartHeartbeat();
+    scheduler.consume();              // clears accumulators, recreates yieldSignal,
+                                      // resets lastYieldAt, restarts heartbeat
 
     if (isTerminal(reason)) this.closed = true;
     return { done: false, value: frame };
@@ -604,7 +651,7 @@ Key properties:
   consumer takes the frame, not when the scheduler decides one is
   ready. `minIntervalMs` bounds observed frame delivery.
 - **No generator semantics.** `next()` executes finalization steps
-  synchronously after `consumerWaiter()` resolves — the bug with
+  synchronously after `awaitReady()` resolves — the bug with
   `yield frame; cleanup()` (where cleanup runs only on resume) is
   avoided by not using a generator at all.
 
