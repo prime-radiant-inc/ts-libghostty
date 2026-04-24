@@ -90,4 +90,20 @@ describe("Terminal.colors", () => {
     term.vtWrite(new TextEncoder().encode("\x1b]0;x\x1b\\"));
     expect(caught).toBeDefined();
   });
+
+  test("Codex P2: setColors({ palette }) writes all 256 entries", () => {
+    using term = new Terminal({ cols: 10, rows: 4 });
+    const before = term.colors().palette;
+    const next = before.map(([r, g, b]) => [(r + 1) & 0xff, (g + 2) & 0xff, (b + 3) & 0xff] as const);
+    term.setColors({ palette: next });
+    const after = term.colors().palette;
+    for (let i = 0; i < 256; i += 1) {
+      expect(after[i]).toEqual(next[i]!);
+    }
+  });
+
+  test("Codex P2: setColors({ palette }) with wrong length throws invalid_value", () => {
+    using term = new Terminal({ cols: 10, rows: 4 });
+    expect(() => term.setColors({ palette: [[0, 0, 0]] })).toThrow(/invalid/i);
+  });
 });

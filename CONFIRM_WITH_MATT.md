@@ -151,6 +151,15 @@ Also added two SYMBOLS loads to `src/ffi.ts`: `ghostty_row_get` and `ghostty_ren
 
 All 203 smoke tests pass (198 pre-review + 5 new regression tests). The `v0.3.0` tag was moved forward to include this fix — no intermediate `v0.3.0-rc` / `v0.3.1` to avoid cluttering the timeline. Per Matt's direction (mark-in-the-sand only, no push/publish), moving a local tag is safe.
 
+### Pass 3 Codex review pass 2 (2026-04-24, second review after round 1)
+
+Codex re-reviewed after the round-1 fix and surfaced two more "don't silently drop a promised field" issues:
+
+- **P1 — `RenderState` dropped `hyperlinkUri` even though `RenderCell` publicly declares it.** The row-cells iterator at this pin has no HYPERLINK_URI data key, so the previous fix left it undefined. Consumers of `RenderState.forEachCell` saw `cell.hyperlinkUri === undefined` even on OSC 8 cells where `Terminal.cellAt` correctly returned the URI. **Fix:** during `#rebuildCache`, check `ghostty_row_get(ROW_DATA_HYPERLINK)` per row. Only for rows that advertise hyperlinks, run `#resolveRowHyperlinks` which delegates per cell to `term.cellAt({coord: "viewport"})` and copies over the resolved URI. Bounded — zero extra FFI calls on rows without hyperlinks. Covered by `"Codex P1 pass 2: OSC 8 hyperlink on a cell is visible via RenderState.forEachCell"` in `test/smoke/render-state.test.ts`.
+- **P2 — `setColors({ palette })` was silently ignored.** The `TerminalColors` interface exposes `palette: readonly RGB[]` and `Partial<TerminalColors>` type-accepts a palette patch; libghostty also exposes `GHOSTTY_TERMINAL_OPT_COLOR_PALETTE` (=14) as a writable option. But the previous `setColors` only handled `defaults.fg/bg/cursor`. **Fix:** `setColors` now (a) widens its declared type from the narrow `{defaults: Partial<...>}` to the public `Partial<TerminalColors>` and (b) handles `patch.palette`: validates length is exactly 256 (throws `invalid_value` otherwise) and packs the 256×3-byte buffer, then `ghostty_terminal_set(OPT_COLOR_PALETTE, &buf)`. Covered by two new tests in `test/smoke/colors.test.ts`.
+
+206 smoke tests pass (203 + 3 new regression tests). `v0.3.0` tag moved again to include both fixes.
+
 ### Pass 3 commit timeline
 
 - `e71885a` `c9a7489` `93b4451` Pass 3 spec + two Codex review reconciliation rounds

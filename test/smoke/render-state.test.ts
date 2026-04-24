@@ -167,6 +167,21 @@ describe("Codex P2: RenderState.colors mirrors Terminal.colors snapshot", () => 
   });
 });
 
+describe("Codex P1 pass 2: RenderState populates hyperlinkUri", () => {
+  test("OSC 8 hyperlink on a cell is visible via RenderState.forEachCell", () => {
+    using term = new Terminal({ cols: 10, rows: 2 });
+    // OSC 8 ; params ; uri ST X OSC 8 ; ; ST — sets hyperlink on cell X.
+    const seq = "\x1b]8;;https://example.com\x1b\\X\x1b]8;;\x1b\\";
+    term.vtWrite(new TextEncoder().encode(seq));
+    using rs = new RenderState();
+    rs.update(term);
+    const rowsArr = [...rs.rows()];
+    const cells = [...rowsArr[0]!.cells()];
+    expect(cells[0]!.text).toBe("X");
+    expect(cells[0]!.hyperlinkUri).toBe("https://example.com");
+  });
+});
+
 describe("Codex P1: RenderState decodes wrapped, wide, isWideContinuation", () => {
   test("wide grapheme sets wide on primary, isWideContinuation on trailing", () => {
     using term = new Terminal({ cols: 10, rows: 4 });

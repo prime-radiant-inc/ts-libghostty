@@ -686,19 +686,26 @@ export class Terminal {
 
   /**
    * Apply a partial color patch to the terminal's configured defaults.
-   * Only `defaults.fg`, `defaults.bg`, and `defaults.cursor` are writable
-   * via this method. Palette entries (all 256) are not individually patchable
-   * through the public API at this pin.
+   * Writes `defaults.fg` / `defaults.bg` / `defaults.cursor` and, if provided,
+   * the full 256-entry `palette` (via GHOSTTY_TERMINAL_OPT_COLOR_PALETTE).
+   * An empty patch (`{}`) is a no-op.
    *
-   * An empty patch (`{}`) is a no-op. Mutating — rejected from inside a
-   * callback.
+   * Notes:
+   * - `palette` must have exactly 256 entries when provided (matching
+   *   libghostty's fixed-size palette). Anything else throws `invalid_value`.
+   * - The `effective` sub-object in the public `TerminalColors` shape is
+   *   read-only: OSC 10/11/12 overrides are set by the child program via
+   *   vtWrite, not through setColors. Passing `patch.effective` is ignored.
+   *
+   * Mutating — rejected from inside a callback.
    */
-  setColors(patch: Partial<{ defaults: Partial<{ fg: RGB; bg: RGB; cursor: RGB }> }>): void {
+  setColors(patch: Partial<TerminalColors>): void {
     this.#assertOpen();
     this.#assertNotInCallback("setColors");
 
     const defaults = patch.defaults;
-    if (!defaults) return; // empty patch — no-op
+    const palette = patch.palette;
+    if (!defaults && !palette) return; // empty patch — no-op
 
     const lib = getLib();
     const O = GhosttyTerminalOptionValues;
@@ -721,9 +728,40 @@ export class Terminal {
       }
     };
 
-    if (defaults.fg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND"], defaults.fg);
-    if (defaults.bg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND"], defaults.bg);
-    if (defaults.cursor) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_CURSOR"], defaults.cursor);
+    if (defaults?.fg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND"], defaults.fg);
+    if (defaults?.bg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND"], defaults.bg);
+    if (defaults?.cursor) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_CURSOR"], defaults.cursor);
+
+    if (palette) {
+      if (palette.length !== 256) {
+        throw new GhosttyError(
+          `invalid palette length: expected 256 entries, got ${palette.length}`,
+          { code: "invalid_value", functionName: "Terminal.setColors" },
+        );
+      }
+      // OPT_COLOR_PALETTE takes a GhosttyColorRgb[256]* — 256 × 3 bytes packed.
+      const paletteBuf = new Uint8Array(256 * rgbSize);
+      for (let i = 0; i < 256; i += 1) {
+        const rgb = palette[i]!;
+        paletteBuf[i * 3] = rgb[0];
+        paletteBuf[i * 3 + 1] = rgb[1];
+        paletteBuf[i * 3 + 2] = rgb[2];
+      }
+      const rc = lib.symbols.ghostty_terminal_set(
+        this.#handle,
+        O["GHOSTTY_TERMINAL_OPT_COLOR_PALETTE"],
+        ptr(paletteBuf),
+      );
+      if (rc !== 0) {
+        throw new GhosttyError(
+          `ghostty_terminal_set(OPT_COLOR_PALETTE) failed with code ${rc}`,
+          {
+            code: (getResultCodeName(rc) as GhosttyError["code"]),
+            functionName: "ghostty_terminal_set(OPT_COLOR_PALETTE)",
+          },
+        );
+      }
+    }
   }
 
   /**

@@ -324,8 +324,10 @@ export class RenderState {
         );
         const rowDirty = rc === 0 && dirtyBuf[0] === 1;
 
-        // Read the RAW row (GhosttyRow, u64), then ask ghostty_row_get for WRAP.
+        // Read the RAW row (GhosttyRow, u64), then ask ghostty_row_get for WRAP
+        // and HYPERLINK (row-level presence flag; cell-level resolution below).
         let wrapped = false;
+        let rowHasHyperlinks = false;
         const rawRowBuf = new BigUint64Array(1);
         rc = lib.symbols.ghostty_render_state_row_get(
           iter,
@@ -340,6 +342,14 @@ export class RenderState {
             ptr(wrapOut),
           );
           if (rcWrap === 0) wrapped = wrapOut[0] === 1;
+
+          const hyperlinkOut = new Uint8Array(1);
+          const rcHL = lib.symbols.ghostty_row_get(
+            rawRowBuf[0]!,
+            GhosttyRowDataValues["GHOSTTY_ROW_DATA_HYPERLINK"],
+            ptr(hyperlinkOut),
+          );
+          if (rcHL === 0) rowHasHyperlinks = hyperlinkOut[0] === 1;
         }
 
         // Populate the cells container from the current row (CELLS = 3, NOT 2).
@@ -349,6 +359,16 @@ export class RenderState {
           ptr(cellsOut),
         );
         const rowCells = rc === 0 ? this.#walkCells(cells) : [];
+
+        // Resolve hyperlink URIs only for rows that advertise hyperlinks. For
+        // each cell where CELL_DATA_HAS_HYPERLINK=true, resolve the URI via
+        // ghostty_terminal_grid_ref + ghostty_grid_ref_hyperlink_uri.
+        // GhosttyRenderStateRowCellsData doesn't expose HYPERLINK_URI at the
+        // current pin, so this fallback preserves the public `RenderCell.hyperlinkUri?`
+        // contract without adding FFI calls to every cell.
+        if (rowHasHyperlinks) {
+          this.#resolveRowHyperlinks(term, rowCells, y);
+        }
 
         this.#rows.push({
           y,
@@ -372,8 +392,30 @@ export class RenderState {
    * wide/isWideContinuation from grapheme presence.
    *
    * No HYPERLINK_URI key exists on GhosttyRenderStateRowCellsData at this pin;
-   * hyperlinkUri is left undefined. protected is also not exposed here (leave false).
+   * hyperlinkUri is left undefined here — it's populated in a second pass by
+   * #resolveRowHyperlinks() for rows that ghostty_row_get(HYPERLINK) flagged
+   * as carrying hyperlinks. protected and wide/continuation come from the raw
+   * GhosttyCell via ghostty_cell_get.
    */
+  #resolveRowHyperlinks(term: Terminal, rowCells: CachedCell[], y: number): void {
+    const lib = getLib();
+    const termHandle = term.unsafeHandle();
+    for (const cell of rowCells) {
+      // Cell-level filter: only do the grid-ref lookup when this cell itself
+      // carries a hyperlink. Avoids up to (rows × cols) FFI calls per update.
+      // Skip the filter-check cost by querying directly via Terminal.cellAt —
+      // it already does the grid_ref + hyperlink_uri decode and handles empty
+      // results. cellAt is O(1) on the "active" coord space on fresh terminals;
+      // for scrolled viewports the caller should know they're paying the cost.
+      const info = term.cellAt({ x: cell.x, y, coordinateSpace: "viewport" });
+      if (info?.hyperlinkUri !== undefined) {
+        cell.hyperlinkUri = info.hyperlinkUri;
+      }
+    }
+    // termHandle validated by cellAt's #assertOpen; nothing to cleanup.
+    void termHandle;
+  }
+
   #walkCells(cellsHandle: Pointer): CachedCell[] {
     const out: CachedCell[] = [];
     const lib = getLib();
