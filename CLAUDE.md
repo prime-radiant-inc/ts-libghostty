@@ -45,6 +45,18 @@ TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Pass 1 s
 - `test/smoke/` — FFI tests. `test/fixtures/` — VT fixture harness.
 - `CONFIRM_WITH_MATT.md` — Pass 1 handoff + publish todo + Pass 2 carry-forward.
 
+## Release process
+
+Every version bump updates `CHANGELOG.md` BEFORE tagging. One entry per version, [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) format (`Added` / `Changed` / `Fixed` / `Removed` / `Deprecated` / `Security` sections, only include the ones that apply). The changelog is user-facing; `CONFIRM_WITH_MATT.md` is the internal handoff and stays private-to-repo. Don't duplicate the git log in either.
+
+`CHANGELOG.md` ships in the npm tarball (`package.json` → `files`), so npm users see it when they check the release.
+
+Order of operations on a version bump:
+1. Edit `CHANGELOG.md` — move any `[Unreleased]` content under the new version heading, add bracketed date.
+2. Bump `package.json` → `version`.
+3. Commit both together with a `docs(changelog): vX.Y.Z` or `chore(release): vX.Y.Z` prefix.
+4. `git tag -a vX.Y.Z` at that commit.
+
 ## Dispatching review subagents
 
 Code-quality reviewer Bobs default to a terse "Signed off" response. Prompts dispatching them must explicitly demand: *"return a structured report with these exact sections: …"* or the review comes back without findings.
