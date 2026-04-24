@@ -341,6 +341,23 @@ Pass 1's Terminal constructor already uses the correct 16-byte layout (no `size`
 
 Plan's Task 3 Step 2 lists `ghostty_render_state_get` in the SYMBOLS additions. No amendment needed — just confirming it's there.
 
+### Global API conventions (plan → real)
+
+The plan was written with several API name/shape guesses that diverged from the Pass 1/2 codebase. Downstream Bobs **MUST** apply these substitutions when copying plan snippets into `src/`:
+
+| Plan writes | Real code expects |
+|---|---|
+| `import { ffi } from "./ffi"` | `import { getLib } from "./ffi"` |
+| `ffi.symbols.X(...)` | `const lib = getLib(); lib.symbols.X(...)` (get at top of each method) |
+| `new GhosttyError({ code: "X", functionName: "f", message: "m" })` | `new GhosttyError("m", { code: "X", functionName: "f" })` — message is first arg, opts object is second |
+| `new GhosttyError({ code: "X", functionName: "f" })` (no message) | `new GhosttyError("<something descriptive>", { code: "X", functionName: "f" })` — always include message |
+| `this.#assertNotClosed("methodName")` | `this.#assertOpen()` (no arg) — already renamed plan-wide, but verify in your edits |
+| `this.#assertNotInCallback(method)` | same — correct as written in plan |
+| `generated.sizedStructs.X` | `structLayouts["X"]!` (top-level export from generated.ts, Record type) |
+| `generated.enumValues.GhosttyX` | `GhosttyXValues` (individual exports from generated.ts, one per enum) |
+
+Error messages referenced by tests via `/invalid/i` regex **must contain the literal word "invalid"** (case-insensitive). Some plan-provided error messages used phrasings like "expected X; received Y" without "invalid" — fix by rephrasing to "invalid argument: expected X; received Y" or similar.
+
 ### Summary of downstream task amendments
 
 | Task | Amendment |
