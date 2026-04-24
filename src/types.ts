@@ -9,6 +9,23 @@ export { modeNames, type ModeName } from "./internal/generated";
 export type RGB = readonly [r: number, g: number, b: number];
 export type PaletteIndex = { palette: number };
 
+export interface TerminalColors {
+  /** Colors currently displayed after any OSC 10/11/12 overrides. */
+  effective: {
+    fg?: RGB;
+    bg?: RGB;
+    cursor?: RGB;
+  };
+  /** Configured defaults the terminal would use absent OSC override. */
+  defaults: {
+    fg?: RGB;
+    bg?: RGB;
+    cursor?: RGB;
+  };
+  /** The 256-entry palette. Indices are semantic; order is preserved. */
+  palette: readonly RGB[];
+}
+
 // CursorStyle / MouseTracking are kept here for future passes that wire the
 // real `GhosttyStyle` cursor decode and a richer mouse-tracking surface than
 // the current "any tracking active" bool. They are intentionally NOT used by

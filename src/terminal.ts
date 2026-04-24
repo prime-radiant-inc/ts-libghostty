@@ -1,6 +1,6 @@
 import { ptr, toArrayBuffer, type JSCallback, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
-import { GhosttyError, UseAfterCloseError } from "./errors";
+import { GhosttyError, UseAfterCloseError, getResultCodeName } from "./errors";
 import {
   GhosttyTerminalDataValues,
   GhosttyTerminalOptionValues,
@@ -15,9 +15,11 @@ import {
   makeWritePtyCallback,
   type TrampolineResult,
 } from "./internal/callbacks";
-import { writeScrollViewport } from "./internal/marshal";
+import { writeScrollViewport, readRgb, readPalette256 } from "./internal/marshal";
 import type {
   ModeName,
+  RGB,
+  TerminalColors,
   TerminalOptions,
   TerminalSnapshot,
 } from "./types";
@@ -574,6 +576,124 @@ export class Terminal {
     const buf = writeScrollViewport(tag, delta);
     const lib = getLib();
     lib.symbols.ghostty_terminal_scroll_viewport(this.#handle, ptr(buf));
+  }
+
+  /**
+   * Read the current color state: effective colors (after OSC 10/11/12
+   * overrides), configured defaults, and the full 256-entry palette.
+   *
+   * "effective" values are `undefined` when no OSC override is active (the
+   * terminal uses its built-in defaults). "defaults" values are `undefined`
+   * when no explicit default has been configured.
+   *
+   * Read-only — safe to call from inside a callback.
+   */
+  colors(): TerminalColors {
+    this.#assertOpen();
+
+    const lib = getLib();
+    const rgbSize = structLayouts["GhosttyColorRgb"]!.size; // 3 bytes
+    const paletteSize = rgbSize * 256; // 768 bytes
+    const scratch = new Uint8Array(Math.max(rgbSize, paletteSize));
+
+    const D = GhosttyTerminalDataValues;
+
+    const readColor = (dataKey: number): RGB | undefined => {
+      scratch.fill(0, 0, rgbSize);
+      const rc = lib.symbols.ghostty_terminal_get(this.#handle, dataKey, ptr(scratch));
+      if (rc === 0) return readRgb(scratch, 0);
+      // GHOSTTY_NO_VALUE (-4) means "no override set".
+      if (getResultCodeName(rc) === "no_value") return undefined;
+      throw new GhosttyError(
+        `ghostty_terminal_get(DATA=${dataKey}) failed with code ${rc}`,
+        {
+          code: (getResultCodeName(rc) as GhosttyError["code"]),
+          functionName: `ghostty_terminal_get(DATA=${dataKey})`,
+        },
+      );
+    };
+
+    const readPalette = (dataKey: number): readonly RGB[] => {
+      scratch.fill(0);
+      const rc = lib.symbols.ghostty_terminal_get(this.#handle, dataKey, ptr(scratch));
+      if (rc !== 0) {
+        throw new GhosttyError(
+          `ghostty_terminal_get(DATA=${dataKey}) failed with code ${rc}`,
+          {
+            code: (getResultCodeName(rc) as GhosttyError["code"]),
+            functionName: `ghostty_terminal_get(DATA=${dataKey})`,
+          },
+        );
+      }
+      return readPalette256(scratch, 0);
+    };
+
+    // Build effective/defaults without assigning undefined explicitly —
+    // exactOptionalPropertyTypes rejects `{ fg: undefined }` for `{ fg?: RGB }`.
+    const effectiveFg = readColor(D["GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND"]);
+    const effectiveBg = readColor(D["GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND"]);
+    const effectiveCursor = readColor(D["GHOSTTY_TERMINAL_DATA_COLOR_CURSOR"]);
+    const defaultsFg = readColor(D["GHOSTTY_TERMINAL_DATA_COLOR_FOREGROUND_DEFAULT"]);
+    const defaultsBg = readColor(D["GHOSTTY_TERMINAL_DATA_COLOR_BACKGROUND_DEFAULT"]);
+    const defaultsCursor = readColor(D["GHOSTTY_TERMINAL_DATA_COLOR_CURSOR_DEFAULT"]);
+
+    const effective: TerminalColors["effective"] = {};
+    if (effectiveFg !== undefined) effective.fg = effectiveFg;
+    if (effectiveBg !== undefined) effective.bg = effectiveBg;
+    if (effectiveCursor !== undefined) effective.cursor = effectiveCursor;
+
+    const defaults: TerminalColors["defaults"] = {};
+    if (defaultsFg !== undefined) defaults.fg = defaultsFg;
+    if (defaultsBg !== undefined) defaults.bg = defaultsBg;
+    if (defaultsCursor !== undefined) defaults.cursor = defaultsCursor;
+
+    return {
+      effective,
+      defaults,
+      palette: readPalette(D["GHOSTTY_TERMINAL_DATA_COLOR_PALETTE"]),
+    };
+  }
+
+  /**
+   * Apply a partial color patch to the terminal's configured defaults.
+   * Only `defaults.fg`, `defaults.bg`, and `defaults.cursor` are writable
+   * via this method. Palette entries (all 256) are not individually patchable
+   * through the public API at this pin.
+   *
+   * An empty patch (`{}`) is a no-op. Mutating — rejected from inside a
+   * callback.
+   */
+  setColors(patch: Partial<{ defaults: Partial<{ fg: RGB; bg: RGB; cursor: RGB }> }>): void {
+    this.#assertOpen();
+    this.#assertNotInCallback("setColors");
+
+    const defaults = patch.defaults;
+    if (!defaults) return; // empty patch — no-op
+
+    const lib = getLib();
+    const O = GhosttyTerminalOptionValues;
+    const rgbSize = structLayouts["GhosttyColorRgb"]!.size; // 3 bytes
+    const scratch = new Uint8Array(rgbSize);
+
+    const writeColor = (optKey: number, rgb: RGB): void => {
+      scratch[0] = rgb[0];
+      scratch[1] = rgb[1];
+      scratch[2] = rgb[2];
+      const rc = lib.symbols.ghostty_terminal_set(this.#handle, optKey, ptr(scratch));
+      if (rc !== 0) {
+        throw new GhosttyError(
+          `ghostty_terminal_set(OPT=${optKey}) failed with code ${rc}`,
+          {
+            code: (getResultCodeName(rc) as GhosttyError["code"]),
+            functionName: `ghostty_terminal_set(OPT=${optKey})`,
+          },
+        );
+      }
+    };
+
+    if (defaults.fg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND"], defaults.fg);
+    if (defaults.bg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND"], defaults.bg);
+    if (defaults.cursor) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_CURSOR"], defaults.cursor);
   }
 
   /**

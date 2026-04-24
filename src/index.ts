@@ -23,6 +23,7 @@ export type {
   CursorStyle,
   MouseTracking,
   ModeName,
+  TerminalColors,
   TerminalOptions,
   TerminalSnapshot,
   FormatterOptions,
