@@ -171,6 +171,16 @@ export class Terminal {
       assertU32("cellPx.height", opts.cellPx.height, fn);
     }
 
+    // APC bounds: applied post-construction via ghostty_terminal_set.
+    // Validate eagerly so bad values throw before any FFI call is made.
+    // Defaults: apcMaxBytes=1 MiB, apcMaxBytesKitty=0 (Kitty APC not retained
+    // at v0). KITTY_IMAGE_STORAGE_LIMIT is wired as an internal safety default
+    // of 0 — not user-configurable at v0 (binding design §5.9).
+    const apcMaxBytes = opts.apcMaxBytes ?? 1_048_576;
+    assertSizeT("apcMaxBytes", apcMaxBytes, fn);
+    const apcMaxBytesKitty = opts.apcMaxBytesKitty ?? 0;
+    assertSizeT("apcMaxBytesKitty", apcMaxBytesKitty, fn);
+
     this.#cellPx = {
       width: opts.cellPx?.width ?? 0,
       height: opts.cellPx?.height ?? 0,
@@ -186,10 +196,8 @@ export class Terminal {
     }
 
     // APC tuning (apc_max_bytes / apc_max_bytes_kitty) is NOT a field on
-    // GhosttyTerminalOptions at this pin — it is set post-construction via
-    // ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, ...).
-    // Pass 1 does not expose APC tuning (deferred to Pass 2+); the library
-    // uses its upstream defaults. See Task 21 README APC footnote.
+    // GhosttyTerminalOptions at this pin — it is applied post-construction via
+    // ghostty_terminal_set (see #applyApcBounds call below after terminal_new).
     const fields: Record<string, number | bigint | boolean> = {
       cols: opts.cols,
       rows: opts.rows,
@@ -222,6 +230,11 @@ export class Terminal {
       });
     }
     this.#handle = Number(handleBig) as Pointer;
+
+    // ---- Apply APC bounds + Kitty image-storage internal default -----------
+    // Must run BEFORE callback registration so that if a set call fails we free
+    // the handle without needing to detach partially-registered callbacks.
+    this.#applyApcBounds(apcMaxBytes, apcMaxBytesKitty);
 
     // ---- Register effect callbacks ------------------------------------------
     // Each user fn is wrapped in an #inCallback-flipping closure BEFORE going
@@ -694,6 +707,49 @@ export class Terminal {
     if (defaults.fg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND"], defaults.fg);
     if (defaults.bg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND"], defaults.bg);
     if (defaults.cursor) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_CURSOR"], defaults.cursor);
+  }
+
+  /**
+   * Apply APC byte-limit bounds and the internal Kitty-image-storage-limit
+   * default via ghostty_terminal_set. Called once at construction, immediately
+   * after ghostty_terminal_new succeeds, before any callback registration.
+   *
+   * On failure the handle is freed and #handle nulled so the constructor's
+   * catch block does not attempt to detach callbacks that were never registered.
+   * The original GhosttyError is then re-thrown.
+   *
+   * APC read-back is not supported by libghostty (Task 2 probe confirmed), so
+   * correctness is verified via no-crash on construction + assertSizeT guards.
+   */
+  #applyApcBounds(apcMaxBytes: number, apcMaxBytesKitty: number): void {
+    const lib = getLib();
+    const O = GhosttyTerminalOptionValues;
+    const scratch = new BigUint64Array(1);
+
+    const setSizeT = (opt: number, value: number, fieldName: string): void => {
+      scratch[0] = BigInt(value);
+      const rc = lib.symbols.ghostty_terminal_set(this.#handle, opt, ptr(scratch));
+      if (rc !== 0) {
+        // Roll back: the terminal handle is live but partially configured.
+        // Free it to avoid leaking, then clear the field so the constructor
+        // catch block (which tries to detach callbacks) does not run.
+        const h = this.#handle;
+        this.#handle = null;
+        try { lib.symbols.ghostty_terminal_free(h); } catch {}
+        throw new GhosttyError(
+          `ghostty_terminal_set(${fieldName}) failed with code ${rc}`,
+          {
+            code: getResultCodeName(rc) as GhosttyError["code"],
+            functionName: `ghostty_terminal_set(${fieldName})`,
+          },
+        );
+      }
+    };
+
+    setSizeT(O["GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES"], apcMaxBytes, "APC_MAX_BYTES");
+    setSizeT(O["GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY"], apcMaxBytesKitty, "APC_MAX_BYTES_KITTY");
+    // Internal safety default — binding design §5.9. Not user-configurable at v0.
+    setSizeT(O["GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT"], 0, "KITTY_IMAGE_STORAGE_LIMIT");
   }
 
   /**

@@ -39,10 +39,24 @@ export interface TerminalOptions {
   rows: number;
   maxScrollback?: number;
   cellPx?: { width: number; height: number };
-  // APC tuning (apc_max_bytes / apc_max_bytes_kitty) is NOT a constructor
-  // option at the pinned Ghostty commit — it is set post-construction via
-  // ghostty_terminal_set(...). Pass 1 does not expose APC tuning; the library
-  // uses its upstream defaults. See README "APC tuning (Pass 1)".
+
+  /**
+   * Bound on the per-sequence byte limit libghostty's VT parser retains
+   * for APC (Application Program Command) escape payloads. Generic APC.
+   * Defaults to 1 MiB (1_048_576). Applied post-construction via
+   * `ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES)`.
+   */
+  apcMaxBytes?: number;
+
+  /**
+   * Bound on the per-sequence byte limit for Kitty-graphics APC payloads
+   * specifically. Defaults to 0 — Kitty-graphics APC sequences are not
+   * retained at v0. Distinct from Kitty keyboard protocol (Pass 4) and
+   * from Kitty image storage limit (internal default, not user-settable).
+   * Applied post-construction via
+   * `ghostty_terminal_set(GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY)`.
+   */
+  apcMaxBytesKitty?: number;
 
   /**
    * Invoked when libghostty needs to write data back to the pty in response
