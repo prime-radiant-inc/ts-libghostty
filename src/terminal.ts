@@ -1,13 +1,20 @@
-import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
+import { ptr, toArrayBuffer, type JSCallback, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
 import { GhosttyError, UseAfterCloseError } from "./errors";
 import {
   GhosttyTerminalDataValues,
+  GhosttyTerminalOptionValues,
   modeTagByName,
   resultCodeByValue,
   structLayouts,
 } from "./internal/generated";
 import { writeStruct } from "./internal/sized-struct";
+import {
+  makeBellCallback,
+  makeTitleCallback,
+  makeWritePtyCallback,
+  type TrampolineResult,
+} from "./internal/callbacks";
 import type {
   ModeName,
   TerminalOptions,
@@ -134,6 +141,17 @@ export class Terminal {
   #handle: Pointer | null = null;
   #cellPx: { width: number; height: number };
 
+  // One JSCallback per enabled effect, created in the constructor and closed
+  // in close(). When null, that effect is not registered on the C side.
+  #writePtyCb: JSCallback | null = null;
+  #bellCb: JSCallback | null = null;
+  #titleCb: JSCallback | null = null;
+
+  // Re-entry guard. Set to true by each trampoline for the duration of the
+  // user callback; checked by mutating public methods to reject calls made
+  // from inside a callback. Spec §5.4 + Pass-2 plan "Concurrency and re-entry".
+  #inCallback = false;
+
   constructor(opts: TerminalOptions) {
     const fn = "Terminal.constructor";
     // cols/rows are uint16_t per ABI §4 + §11 (struct field types). They must
@@ -201,6 +219,86 @@ export class Terminal {
       });
     }
     this.#handle = Number(handleBig) as Pointer;
+
+    // ---- Register effect callbacks ------------------------------------------
+    // Each user fn is wrapped in an #inCallback-flipping closure BEFORE going
+    // to the factory so mutating methods invoked from inside the callback can
+    // detect and reject re-entry (see #assertNotInCallback).
+    //
+    // Registration via ghostty_terminal_set; failure here is rare (indicates
+    // an ABI mismatch) but we must unwind cleanly: detach anything already
+    // set, close any JSCallbacks already created, free the handle, rethrow.
+    const registered: TrampolineResult[] = [];
+    try {
+      if (opts.onWritePty !== undefined) {
+        const userFn = opts.onWritePty;
+        const guarded = (bytes: Uint8Array) => {
+          this.#inCallback = true;
+          try { userFn(bytes); }
+          finally { this.#inCallback = false; }
+        };
+        const t = makeWritePtyCallback(guarded);
+        registered.push(t);
+        this.#writePtyCb = t.jsCallback;
+        const r = lib.symbols.ghostty_terminal_set(
+          this.#handle,
+          t.optionValue,
+          t.jsCallback.ptr,
+        );
+        checkResult(r, "ghostty_terminal_set(WRITE_PTY)");
+      }
+      if (opts.onBell !== undefined) {
+        const userFn = opts.onBell;
+        const guarded = () => {
+          this.#inCallback = true;
+          try { userFn(); }
+          finally { this.#inCallback = false; }
+        };
+        const t = makeBellCallback(guarded);
+        registered.push(t);
+        this.#bellCb = t.jsCallback;
+        const r = lib.symbols.ghostty_terminal_set(
+          this.#handle,
+          t.optionValue,
+          t.jsCallback.ptr,
+        );
+        checkResult(r, "ghostty_terminal_set(BELL)");
+      }
+      if (opts.onTitleChanged !== undefined) {
+        const userFn = opts.onTitleChanged;
+        const guarded = (title: string) => {
+          this.#inCallback = true;
+          try { userFn(title); }
+          finally { this.#inCallback = false; }
+        };
+        const readTitle = () => this.#readTitle();
+        const t = makeTitleCallback(guarded, readTitle);
+        registered.push(t);
+        this.#titleCb = t.jsCallback;
+        const r = lib.symbols.ghostty_terminal_set(
+          this.#handle,
+          t.optionValue,
+          t.jsCallback.ptr,
+        );
+        checkResult(r, "ghostty_terminal_set(TITLE_CHANGED)");
+      }
+    } catch (e) {
+      const h = this.#handle;
+      if (h !== null) {
+        for (const t of registered) {
+          try { lib.symbols.ghostty_terminal_set(h, t.optionValue, null); } catch {}
+        }
+        for (const t of registered) {
+          try { t.jsCallback.close(); } catch {}
+        }
+        try { lib.symbols.ghostty_terminal_free(h); } catch {}
+      }
+      this.#writePtyCb = null;
+      this.#bellCb = null;
+      this.#titleCb = null;
+      this.#handle = null;
+      throw e;
+    }
   }
 
   /** @internal — for use by other classes in the package (e.g. Formatter). */
@@ -228,6 +326,7 @@ export class Terminal {
   // ---- Methods stubbed — real implementations in Tasks 12-15 ------------
 
   vtWrite(bytes: Uint8Array): void {
+    this.#assertNotInCallback("vtWrite");
     this.#assertOpen();
     if (bytes.length === 0) return;
     const lib = getLib();
@@ -242,6 +341,7 @@ export class Terminal {
   }
 
   resize(cols: number, rows: number, cellPx?: { width: number; height: number }): void {
+    this.#assertNotInCallback("resize");
     this.#assertOpen();
     const fn = "Terminal.resize";
     // Same ABI bounds as the constructor — see §4 in the ABI doc.
@@ -267,6 +367,7 @@ export class Terminal {
   }
 
   reset(): void {
+    this.#assertNotInCallback("reset");
     this.#assertOpen();
     const lib = getLib();
     // Returns void (ABI §4).
@@ -402,11 +503,58 @@ export class Terminal {
   }
 
   setMode(name: ModeName, value: boolean): void {
+    this.#assertNotInCallback("setMode");
     this.#assertOpen();
     const tag = modeTagFromName(name);
     const lib = getLib();
     const result = lib.symbols.ghostty_terminal_mode_set(this.#handle, tag, value);
     checkResult(result, "ghostty_terminal_mode_set");
+  }
+
+  /**
+   * Read the terminal's current title via ghostty_terminal_get(TITLE). The
+   * GhosttyString ptr aliases into terminal-owned memory valid only until the
+   * next mutating call, so we copy immediately. Returns "" when no title is
+   * set or on any get-error — full-fidelity error reporting is not useful
+   * inside a callback.
+   */
+  #readTitle(): string {
+    if (this.#handle === null) return "";
+    const lib = getLib();
+    const slot = new ArrayBuffer(16); // GhosttyString: {uint8_t* ptr@0, size_t len@8}
+    const result = lib.symbols.ghostty_terminal_get(
+      this.#handle,
+      GhosttyTerminalDataValues["GHOSTTY_TERMINAL_DATA_TITLE"],
+      ptr(new Uint8Array(slot)),
+    );
+    if (result !== 0) return "";
+    const view = new DataView(slot);
+    const strPtr = Number(view.getBigUint64(0, true));
+    const strLen = Number(view.getBigUint64(8, true));
+    if (strPtr === 0 || strLen === 0) return "";
+    const borrowed = new Uint8Array(
+      toArrayBuffer(strPtr as unknown as Pointer, 0, strLen),
+    );
+    const copy = new Uint8Array(strLen);
+    copy.set(borrowed);
+    return new TextDecoder("utf-8").decode(copy);
+  }
+
+  /**
+   * Guard against user code invoking a mutating Terminal method from inside
+   * an effect callback. libghostty is mid-parse at callback time; mutating
+   * the same Terminal corrupts or frees state the parser still references.
+   */
+  #assertNotInCallback(method: string): void {
+    if (!this.#inCallback) return;
+    throw new GhosttyError(
+      `Terminal.${method} may not be called from inside an effect callback. ` +
+      `Defer with queueMicrotask or setTimeout.`,
+      {
+        code: "invalid_value",
+        functionName: `Terminal.${method}`,
+      },
+    );
   }
 
   #assertOpen(): void {
