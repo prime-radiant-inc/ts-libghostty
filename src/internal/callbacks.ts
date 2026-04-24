@@ -30,19 +30,21 @@ export function makeWritePtyCallback(
   const jsCallback = new JSCallback(
     (_term: Pointer | null, _userdata: Pointer | null, data: Pointer | null, len: bigint | number) => {
       const lenN = typeof len === "bigint" ? Number(len) : len;
-      if (data === null || lenN === 0) {
-        try { userFn(new Uint8Array(0)); }
-        catch (e) { console.error("ts-libghostty-vt: onWritePty callback threw:", e); }
-        return;
-      }
-      // Copy the borrowed buffer immediately. toArrayBuffer aliases the C
-      // memory; we .set() it into a fresh JS-owned Uint8Array so the user
-      // receives a stable, retainable reference even if the C buffer is
-      // reused for the next call.
-      const borrowed = new Uint8Array(toArrayBuffer(data, 0, lenN));
-      const owned = new Uint8Array(lenN);
-      owned.set(borrowed);
+      // Wrap the entire non-empty branch, not just the user call. toArrayBuffer,
+      // allocation, and set() can all throw (bad len, OOM) — letting any of
+      // those escape the JSCallback frame aborts the Bun process.
       try {
+        if (data === null || lenN === 0) {
+          userFn(new Uint8Array(0));
+          return;
+        }
+        // Copy the borrowed buffer immediately. toArrayBuffer aliases the C
+        // memory; we .set() it into a fresh JS-owned Uint8Array so the user
+        // receives a stable, retainable reference even if the C buffer is
+        // reused for the next call.
+        const borrowed = new Uint8Array(toArrayBuffer(data, 0, lenN));
+        const owned = new Uint8Array(lenN);
+        owned.set(borrowed);
         userFn(owned);
       } catch (e) {
         console.error("ts-libghostty-vt: onWritePty callback threw:", e);
