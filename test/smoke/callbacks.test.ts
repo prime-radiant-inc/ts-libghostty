@@ -121,3 +121,79 @@ describe("Terminal effect callbacks — onTitleChanged", () => {
     expect(titles).toEqual(["тайтл 🦀"]);
   });
 });
+
+describe("Terminal effect callbacks — onWritePty", () => {
+  it("fires with plausible bytes when DA1 (CSI c) is received", () => {
+    const responses: Uint8Array[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onWritePty: (bytes) => { responses.push(bytes); },
+    });
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63]));
+    expect(responses.length).toBeGreaterThan(0);
+    const first = responses[0]!;
+    expect(first.length).toBeGreaterThan(0);
+    expect(first[0]).toBe(0x1b);
+  });
+
+  it("delivers a retainable Uint8Array — bytes survive later vtWrite calls", () => {
+    const responses: Uint8Array[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onWritePty: (bytes) => { responses.push(bytes); },
+    });
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63]));
+    expect(responses.length).toBeGreaterThan(0);
+    const retained = responses[0]!;
+    const snapshot = Array.from(retained);
+
+    term.vtWrite(new TextEncoder().encode("ABCDEFG"));
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63]));
+
+    expect(Array.from(retained)).toEqual(snapshot);
+  });
+
+  it("user mutation of the received Uint8Array does not affect libghostty's next reply", () => {
+    const responses: Uint8Array[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onWritePty: (bytes) => { responses.push(bytes); },
+    });
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63]));
+    expect(responses.length).toBeGreaterThan(0);
+    const r1 = responses[0]!;
+    const lenBefore = responses.length;
+    r1.fill(0xff);
+
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x63]));
+    const fresh = responses.slice(lenBefore);
+    expect(fresh.length).toBeGreaterThan(0);
+    for (const r of fresh) {
+      expect(r[0]).toBe(0x1b);
+    }
+  });
+
+  it("does not fire on plain printable input", () => {
+    let count = 0;
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onWritePty: () => { count++; },
+    });
+    term.vtWrite(new TextEncoder().encode("hello"));
+    expect(count).toBe(0);
+  });
+
+  it("fires for DSR cursor-position query (CSI 6 n)", () => {
+    const responses: Uint8Array[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onWritePty: (bytes) => { responses.push(bytes); },
+    });
+    term.vtWrite(new Uint8Array([0x1b, 0x5b, 0x36, 0x6e]));
+    expect(responses.length).toBeGreaterThan(0);
+    const r = responses[0]!;
+    expect(r[0]).toBe(0x1b);
+    expect(r[1]).toBe(0x5b);
+    expect(r[r.length - 1]).toBe(0x52);
+  });
+});
