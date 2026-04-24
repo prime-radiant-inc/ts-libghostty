@@ -10,6 +10,14 @@ export interface FixtureResult {
   actual: string;
 }
 
+export async function loadFixtureManifest(
+  fixturesDir: string,
+): Promise<Record<string, { cols: number; rows: number }>> {
+  const path = join(fixturesDir, "fixtures.json");
+  const raw = await readFile(path, "utf8");
+  return JSON.parse(raw);
+}
+
 export async function runFixture(
   fixturesDir: string,
   name: string,
@@ -21,7 +29,10 @@ export async function runFixture(
   const bin = new Uint8Array(await readFile(binPath));
   const expected = await readFile(txtPath, "utf8").catch(() => "");
 
-  using term = new Terminal({ cols: 80, rows: 24 });
+  const manifest = await loadFixtureManifest(fixturesDir);
+  const geom = manifest[name] ?? { cols: 80, rows: 24 };
+
+  using term = new Terminal({ cols: geom.cols, rows: geom.rows });
   term.vtWrite(bin);
   using fmt = new Formatter({ format: "plain" });
   const actual = fmt.formatString(term);
