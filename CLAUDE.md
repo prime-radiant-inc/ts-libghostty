@@ -28,7 +28,7 @@ TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Shipped:
 
 ## Commands
 
-- `bun test test/smoke` — 207 FFI tests against the real libghostty-vt (no mocks at the FFI boundary). Fast.
+- `bun test test/smoke` — FFI tests against the real libghostty-vt (no mocks at the FFI boundary). Fast.
 - `bun run test` — smoke + tarball. Slow (packs + installs into a temp project).
 - `bun run verify:generated` — ABI trip-wire.
 - `bun run build` — full native + ts rebuild. ~25s clean.
