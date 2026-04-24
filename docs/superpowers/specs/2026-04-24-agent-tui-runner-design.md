@@ -481,16 +481,23 @@ outer: for await (const frame of runner.frames()) {
 
 ```ts
 interface SchedulerState {
-  lastYieldAt: number;
-  lastRenderDigest: string | null;
-  pendingReasons: Set<FrameReason>;
-  bellsSinceLast: number;
-  titleChangesSinceLast: string[];
-  quiesceTimer: Timer | null;
-  heartbeatTimer: Timer;
+  lastYieldAt: number;                  // ms of last consumer-observed frame
+  pendingReasons: Set<FrameReason>;     // accumulated across events
+  bellsSinceLast: number;               // accumulated across events
+  titleChangesSinceLast: string[];      // accumulated across events
+  quiesceTimer: Timer | null;           // restarts on each pty write
+  heartbeatTimer: Timer;                // fires at lastYieldAt + maxIntervalMs
   minIntervalWait: Promise<void> | null;
+  readyToYield: boolean;                // scheduler decided a yield is warranted
+  consumerWaiter: Promise<void>;        // resolved when readyToYield flips true
+  exitCode?: number;                    // latched when child exits
+  signal?: NodeJS.Signals;              // latched when child dies by signal
 }
 ```
+
+Key contrast with an earlier design: there is no `pendingFrame` slot.
+The Frame is constructed by the iterator's `next()` from live scheduler
+state when the consumer calls for it — see §4.2.1.
 
 ### 4.2 Event flow
 
@@ -507,85 +514,121 @@ quiesceTimer fires
         └── if dirty() !== "none": pendingReasons += "cellChange"
   └── scheduler.maybeYield()
 
-scheduler.maybeYield()
-  ├── if exitSignal resolved → publish terminal frame (iterator closes)
-  ├── if now - lastYieldAt < minIntervalMs → defer to boundary
+scheduler.maybeYield()          // evaluates "is now a good time to yield?"
+  ├── if exitSignal resolved → force finalize-on-consume path with
+  │     a terminal reason pre-queued; signal consumer.
+  ├── if now - lastYieldAt < minIntervalMs → defer; schedule re-eval at boundary
   ├── determine trigger:
-  │     • if pendingReasons contains "heartbeat" → bypass yieldOn filter (always publishes)
-  │     • else if pendingReasons ∩ yieldOn is empty → skip (no publish)
-  │     • else → proceed with pendingReasons ∩ yieldOn
-  └── publish path (executes atomically, see §4.2.1):
-        1. renderState.update(terminal)                   // refresh cache
-        2. construct frozen FrameSnapshot (copy of current state)
-        3. snapshot accumulator counters into the Frame:
-              bellsSinceLast, titleChangesSinceLast
-        4. renderState.markClean()                        // clear dirty flags
-        5. reset scheduler accumulators:
-              pendingReasons = ∅
-              bellsSinceLast = 0
-              titleChangesSinceLast = []
-        6. lastYieldAt = now
-        7. restart heartbeatTimer(maxIntervalMs)
-        8. publish Frame to pending slot, signal waiting consumer
+  │     • if pendingReasons contains "heartbeat" → bypass yieldOn filter
+  │     • if pendingReasons contains "initial"   → bypass yieldOn filter
+  │     • if pendingReasons contains a terminal  → bypass yieldOn filter
+  │     • else if pendingReasons ∩ yieldOn is empty → skip
+  │     • else → proceed
+  └── mark readyToYield = true; signal waiting consumer (if any)
 
-heartbeatTimer fires (maxIntervalMs elapsed with no publish)
+heartbeatTimer fires (maxIntervalMs elapsed with no yield)
   └── pendingReasons += "heartbeat" → scheduler.maybeYield()
 ```
 
-### 4.2.1 The publish-then-clear ordering is load-bearing
+### 4.2.1 Finalize-on-consume
 
-Runner's `frames()` iterator is **NOT** implemented as an async generator
-that literally does `yield frame; cleanup();`. That pattern is wrong
-here: an async generator suspends *at* `yield` and runs statements after
-the `yield` only when the consumer calls `.next()` again. Events
-arriving during agent-think time would accumulate, then be wiped by
-the post-yield cleanup before ever being observed.
+A strictly earlier design that published a materialized `pendingFrame`
+and cleared accumulators at publish time had a correctness bug: if the
+consumer was slow and multiple publishes occurred during think-time,
+the accumulators got reset on each — either the pending frame went
+stale, or a later publish overwrote it and dropped the earlier
+window's bell/title/reason counts. This contradicted §4.4's guarantee.
 
-Instead, Runner uses an explicit slot-and-signal handoff:
+The design therefore **finalizes the frame only when the consumer is
+ready to receive it.** Scheduler keeps:
 
-- Scheduler owns a single `pendingFrame: Frame | null` slot and a
-  `consumerWaiter` (a Promise the iterator's `next()` awaits).
-- The publish path above executes **steps 1–8 synchronously, in
-  order, with no intervening await**. Snapshot capture and accumulator
-  reset happen *before* the consumer can observe the frame. Steps 3
-  copies the current accumulator values onto the Frame; step 5
-  resets the live accumulators to their zero state.
-- Any pty events that arrive between step 8 (publish) and the
-  consumer's next invocation of `next()` land in the fresh
-  accumulators and are counted toward the *next* frame — never
-  silently dropped.
+- `pendingReasons: Set<FrameReason>` — accumulates across events
+- `bellsSinceLast: number` — accumulates
+- `titleChangesSinceLast: string[]` — accumulates
+- `readyToYield: boolean` — scheduler's "now is a good time" decision
+- `consumerWaiter: Promise<void>` — consumer awaits this when no frame is ready
+- `closed: boolean` — set once a terminal reason has been delivered
 
-The consumer-facing `AsyncIterable<Frame>` implementation wraps this:
+The iterator looks like this:
 
 ```ts
 class FrameIterator implements AsyncIterator<Frame> {
+  private closed = false;
+
   async next(): Promise<IteratorResult<Frame>> {
-    if (scheduler.pendingFrame) {
-      const f = scheduler.pendingFrame;
-      scheduler.pendingFrame = null;
-      if (isTerminal(f.reason)) return { done: true, value: undefined };
-      return { done: false, value: f };
-    }
-    await scheduler.consumerWaiter();  // resolved by publish step 8
-    return this.next();                 // recheck
+    if (this.closed) return { done: true, value: undefined };
+
+    while (!scheduler.readyToYield) await scheduler.consumerWaiter();
+
+    // FINALIZE — atomic, no intervening await
+    renderState.update(terminal);
+    const snap = buildFrozenSnapshot(terminal, renderState,
+                                     scheduler.bellsSinceLast,
+                                     scheduler.titleChangesSinceLast);
+    const reason = priorityPick(scheduler.pendingReasons);
+    const frame: Frame = {
+      reason,
+      snapshot: snap,
+      exitCode:  isTerminal(reason) ? scheduler.exitCode  : undefined,
+      signal:    isTerminal(reason) ? scheduler.signal    : undefined,
+    };
+    renderState.markClean();
+    scheduler.pendingReasons.clear();
+    scheduler.bellsSinceLast = 0;
+    scheduler.titleChangesSinceLast = [];
+    scheduler.readyToYield = false;
+    scheduler.lastYieldAt = clock.now();
+    scheduler.restartHeartbeat();
+
+    if (isTerminal(reason)) this.closed = true;
+    return { done: false, value: frame };
   }
 }
 ```
 
+Key properties:
+
+- **Terminal frames are delivered, not swallowed.** The `isTerminal`
+  branch sets `this.closed = true` and still returns `{done: false,
+  value: frame}`. The *next* call returns `{done: true}`.
+- **Latest-only with complete accumulation.** Between a `maybeYield`
+  setting `readyToYield = true` and the consumer's `next()`,
+  additional events continue accumulating into `pendingReasons` /
+  `bellsSinceLast` / `titleChangesSinceLast`. When the consumer
+  finally calls `next()`, one frame is finalized carrying *all*
+  events accumulated since the last yield. The agent thinks for 5
+  seconds, the child paints 17 times — the next frame reflects the
+  current state plus every bell, title, and reason from the whole
+  5-second window.
+- **Rate limit is consumer-facing.** `lastYieldAt` resets when the
+  consumer takes the frame, not when the scheduler decides one is
+  ready. `minIntervalMs` bounds observed frame delivery.
+- **No generator semantics.** `next()` executes finalization steps
+  synchronously after `consumerWaiter()` resolves — the bug with
+  `yield frame; cleanup()` (where cleanup runs only on resume) is
+  avoided by not using a generator at all.
+
 ### 4.2.2 Scheduler notes
 
-- **Heartbeat bypasses `yieldOn`.** Users configure `yieldOn` to silence
-  *change*-driven yields; heartbeat is the "you asked to be poked at
-  least this often" signal and must fire regardless.
-- **Dirty state is cleared at publish**, not at `update()`. Per the Pass
-  3 `RenderState` contract (§Pass 3 Codex round 1 fix), `update()`
-  refreshes but does not clear; `markClean()` clears. Without
-  `markClean` after publishing, every subsequent quiesce would continue
-  to report `"cellChange"` and defeat the change gate.
-- **All accumulators reset atomically at publish.** `pendingReasons`,
-  `bellsSinceLast`, `titleChangesSinceLast` — copied into the Frame
-  first, then reset. Events arriving post-publish populate the fresh
-  set and surface in the next frame.
+- **`initial`, `heartbeat`, and terminal reasons bypass `yieldOn`.**
+  `yieldOn` exists to silence *change*-driven noise. Initial ("the
+  first frame after spawn"), heartbeat ("poke me at least every N ms"),
+  and terminal ("the child is gone") are not noise — they're unconditional
+  signals. The scheduler's trigger-determination special-cases them.
+- **`initial` is set once, on the first publish-worthy event after
+  `Runner.spawn`.** Whatever combination of `cellChange`/`bell`/
+  `titleChange` triggered the first wake-up, `initial` is OR'd in so
+  priorityPick yields `reason: "initial"`. After the first consumer
+  `next()`, `initial` is cleared along with the other pending reasons.
+- **Dirty state is cleared at consume**, not at `update()`. Per the
+  Pass 3 `RenderState` contract (§Pass 3 Codex round 1 fix),
+  `update()` refreshes but does not clear; `markClean()` clears.
+  Without `markClean` in the finalize block, every subsequent quiesce
+  would continue to report `"cellChange"` and defeat the change gate.
+- **Exit info is captured onto the Frame at finalize.** The scheduler
+  latches `exitCode` / `signal` from the pty's child-exit event onto
+  its own fields as soon as it sees them; finalize copies them onto
+  the Frame for terminal reasons.
 
 ### 4.3 Reason priority
 
@@ -612,10 +655,12 @@ that window. It does not yield 17 stale frames.
 
 ### 4.5 Guarantees
 
-1. `Frame.snapshot` is frozen at yield time; values do not shift under the
-   agent across await points.
+1. `Frame.snapshot` is frozen at finalize time (i.e., when the consumer
+   receives the frame); values do not shift under the agent across
+   await points.
 2. Between frame yields, no pty bytes are dropped.
-3. Exactly one terminal frame closes the iterator.
+3. Exactly one terminal frame is delivered to the consumer. The next
+   `next()` call after a terminal frame returns `{done: true}`.
 4. `sendText`/`sendKey` during agent-think time is safe — bytes go
    through the pty immediately; responses surface in the next frame.
 5. **Write serialization.** Concurrent calls to `sendText`/`sendKey`/
