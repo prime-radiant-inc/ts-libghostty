@@ -247,15 +247,15 @@ typedef struct {
 - `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS = 3` (plan originally said `2`; value `2` is `ROW_DATA_RAW`)
 - `GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES = 19`, confirmed
 
-These will be available via `generated.enumValues.*` after Task 3 regenerates `generated.ts`. Prefer the generated constants in code; use literal values only for the probe script.
+These will be available via named enum constants in `generated.ts` after Task 3 regenerates — exports are named `GhosttyXxxValues` (e.g., `GhosttyRenderStateDataValues`, `GhosttyTerminalOptionValues`), NOT a single `enumValues` namespace. Import the specific enum constant(s) each file needs. Struct layouts are available via the top-level `structLayouts` export (use `structLayouts["StructName"]!` — it's a `Record<string, StructLayout>`). Prefer these over literal values.
 
 ### Row iteration requires a populate step
 
 The plan's Task 10 `#rebuildCache` calls `ghostty_render_state_row_iterator_next` immediately after `_new`. That iterates zero rows. **Corrected pattern** (bake this into Task 10's `#rebuildCache`):
 
 ```typescript
-const D = generated.enumValues.GhosttyRenderStateData;
-const R = generated.enumValues.GhosttyRenderStateRowData;
+const D = GhosttyRenderStateDataValues;
+const R = GhosttyRenderStateRowDataValues;
 
 // 1. Create empty iterator object.
 const iterOut = new BigUint64Array(1);
@@ -307,7 +307,7 @@ Replaces the Task 10 `#rebuildCache` body and the Task 10 `#walkCells` stub's si
 
 ### `GhosttyPoint` is 24 bytes, not 16
 
-Task 3's `writePoint` helper uses `generated.sizedStructs.GhosttyPoint.size` (populated by Task 3 Step 5's `bun run verify:generated`), so it self-corrects. But Task 3 Bobs should verify the generated size is 24 before proceeding — if the probe layout reports something else, re-check `vendor/ghostty/include/ghostty/vt/point.h`.
+Task 3's `writePoint` helper uses `structLayouts["GhosttyPoint"]!.size` (populated by Task 3 Step 5's `bun run verify:generated`), so it self-corrects. But Task 3 Bobs should verify the generated size is 24 before proceeding — if the probe layout reports something else, re-check `vendor/ghostty/include/ghostty/vt/point.h`.
 
 Layout reference:
 ```
@@ -345,7 +345,7 @@ Plan's Task 3 Step 2 lists `ghostty_render_state_get` in the SYMBOLS additions. 
 
 | Task | Amendment |
 |---|---|
-| 3 | No functional amendment; confirm `generated.sizedStructs.GhosttyPoint.size === 24` after verify:generated |
+| 3 | No functional amendment; confirm `structLayouts["GhosttyPoint"]!.size === 24` after verify:generated |
 | 8 | None (grapheme SUCCESS+0 already handled) |
 | 10 | Replace `#rebuildCache` body per the corrected pattern above |
 | 11 | `#walkCells(cellsHandle: Pointer)` — iterate until `row_cells_next` returns false; use per-cell accessors via `row_cells_get` with correct data-key enum values (confirm `GRAPHEMES_LEN`, `GRAPHEMES_BUF`, `STYLE` values in `generated.ts` after Task 3) |
@@ -954,7 +954,7 @@ Add to `src/internal/marshal.ts` (append at end):
 ```typescript
 // --- Pass 3 helpers ---
 
-import { generated } from "./generated";
+import { structLayouts } from "./generated";
 
 /**
  * Read a 3-byte GhosttyColorRgb at `offset` in `buf`. Returns a tuple.
@@ -979,10 +979,10 @@ export function readPalette256(buf: Uint8Array, offset: number): readonly (reado
 /**
  * Write a GhosttyTerminalScrollViewport tagged union into a fresh Uint8Array.
  * Layout per probe output: tag (i32) + 4-byte pad + union (16 bytes) = 24 bytes.
- * Exact offsets come from `generated.sizedStructs.GhosttyTerminalScrollViewport`.
+ * Exact offsets come from `structLayouts["GhosttyTerminalScrollViewport"]!`.
  */
 export function writeScrollViewport(tag: 0 | 1 | 2, delta: number): Uint8Array {
-  const layout = generated.sizedStructs.GhosttyTerminalScrollViewport;
+  const layout = structLayouts["GhosttyTerminalScrollViewport"]!;
   const buf = new Uint8Array(layout.size);
   const view = new DataView(buf.buffer);
   view.setInt32(layout.fields.tag.offset, tag, true);
@@ -998,12 +998,12 @@ export function writeScrollViewport(tag: 0 | 1 | 2, delta: number): Uint8Array {
  * Layout: tag (i32) + 4-byte pad + value.coordinate { x: u16, _pad: u16, y: u32 }.
  */
 export function writePoint(tag: 0 | 1 | 2 | 3, x: number, y: number): Uint8Array {
-  const layout = generated.sizedStructs.GhosttyPoint;
+  const layout = structLayouts["GhosttyPoint"]!;
   const buf = new Uint8Array(layout.size);
   const view = new DataView(buf.buffer);
   view.setInt32(layout.fields.tag.offset, tag, true);
   const valueOffset = layout.fields.value.offset;
-  const coord = generated.sizedStructs.GhosttyPointCoordinate;
+  const coord = structLayouts["GhosttyPointCoordinate"]!;
   view.setUint16(valueOffset + coord.fields.x.offset, x, true);
   view.setUint32(valueOffset + coord.fields.y.offset, y, true);
   return buf;
@@ -1015,7 +1015,7 @@ Add to `src/internal/sized-struct.ts` (append at end):
 ```typescript
 // --- Pass 3 sized-struct readers ---
 
-import { generated } from "./generated";
+import { structLayouts } from "./generated";
 import { readRgb, readPalette256 } from "./marshal";
 import type { RGB } from "../types";
 
@@ -1029,12 +1029,12 @@ export interface RawRenderStateColors {
 
 /**
  * Read a GhosttyRenderStateColors struct. The caller allocates a buffer
- * matching `generated.sizedStructs.GhosttyRenderStateColors.size`, writes
+ * matching `structLayouts["GhosttyRenderStateColors"]!.size`, writes
  * the size prefix, and hands it to ghostty_render_state_colors_get; this
  * helper decodes the resulting buffer.
  */
 export function readRenderStateColors(buf: Uint8Array): RawRenderStateColors {
-  const layout = generated.sizedStructs.GhosttyRenderStateColors;
+  const layout = structLayouts["GhosttyRenderStateColors"]!;
   return {
     background: readRgb(buf, layout.fields.background.offset),
     foreground: readRgb(buf, layout.fields.foreground.offset),
@@ -1065,11 +1065,11 @@ export interface RawStyle {
  * `UnderlineStyle` string union using generated enum lookup.
  */
 export function readStyle(buf: Uint8Array): RawStyle {
-  const layout = generated.sizedStructs.GhosttyStyle;
+  const layout = structLayouts["GhosttyStyle"]!;
   const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
 
   const readColor = (offset: number): RGB | { palette: number } | undefined => {
-    const colorLayout = generated.sizedStructs.GhosttyStyleColor;
+    const colorLayout = structLayouts["GhosttyStyleColor"]!;
     const tag = view.getInt32(offset + colorLayout.fields.tag.offset, true);
     const valueOffset = offset + colorLayout.fields.value.offset;
     if (tag === 0) return undefined; // NONE
@@ -1592,7 +1592,7 @@ colors(): TerminalColors {
   this.#assertNotClosed("colors");
 
   // Generated layout sizes/offsets for a single GhosttyColorRgb = 3 bytes.
-  const rgbSize = generated.sizedStructs.GhosttyColorRgb.size;
+  const rgbSize = structLayouts["GhosttyColorRgb"]!.size;
   const paletteSize = rgbSize * 256;
   const scratch = new Uint8Array(Math.max(rgbSize, paletteSize));
 
@@ -1619,7 +1619,7 @@ colors(): TerminalColors {
     return readPalette256(scratch, 0);
   };
 
-  const D = generated.enumValues.GhosttyTerminalData;
+  const D = GhosttyTerminalDataValues;
   return {
     effective: {
       fg: readColor(D.COLOR_FOREGROUND),
@@ -1641,8 +1641,8 @@ setColors(patch: Partial<TerminalColors>): void {
 
   if (!patch.defaults) return; // empty patch or palette-only — no-op for defaults
 
-  const O = generated.enumValues.GhosttyTerminalOption;
-  const rgbSize = generated.sizedStructs.GhosttyColorRgb.size;
+  const O = GhosttyTerminalOptionValues;
+  const rgbSize = structLayouts["GhosttyColorRgb"]!.size;
   const scratch = new Uint8Array(rgbSize);
 
   const writeColor = (opt: number, rgb: RGB): void => {
@@ -1666,12 +1666,12 @@ Add imports at the top of `src/terminal.ts`:
 ```typescript
 import type { RGB, TerminalColors } from "./types";
 import { readRgb, readPalette256 } from "./internal/marshal";
-import { generated } from "./internal/generated";
+import { structLayouts, GhosttyTerminalDataValues, GhosttyTerminalOptionValues } from "./internal/generated";
 ```
 
 **Notes for implementer:**
 - `GhosttyTerminalOption.COLOR_*_DEFAULT` enum values must exist in `generated.ts`. If the header at pin does NOT expose writeable options for `COLOR_FOREGROUND_DEFAULT` etc. (only read-only keys), then `setColors` writes fall back to writing the non-default `COLOR_FOREGROUND` etc. Document the observed behavior and update the spec if libghostty's surface differs.
-- If the probe at Task 2 showed a different enum-value naming (e.g., `FOREGROUND` vs `COLOR_FOREGROUND`), use whatever `generated.enumValues.GhosttyTerminalOption` actually has.
+- If the probe at Task 2 showed a different enum-value naming (e.g., `FOREGROUND` vs `COLOR_FOREGROUND`), use whatever `GhosttyTerminalOptionValues` actually has.
 
 - [ ] **Step 5: Run the test, verify it passes.**
 
@@ -1865,7 +1865,7 @@ Add the private helper below the constructor body:
 
 ```typescript
 #applyApcBounds(apcMaxBytes: number, apcMaxBytesKitty: number): void {
-  const O = generated.enumValues.GhosttyTerminalOption;
+  const O = GhosttyTerminalOptionValues;
   const scratch = new BigUint64Array(1);
 
   const setSizeT = (opt: number, value: number, fieldName: string): void => {
@@ -2122,7 +2122,7 @@ cellAt(pt: CellAtPoint): CellInfo | undefined {
 }
 
 #pointTag(space: "active" | "viewport" | "screen" | "history"): 0 | 1 | 2 | 3 {
-  const T = generated.enumValues.GhosttyPointTag;
+  const T = GhosttyPointTagValues;
   switch (space) {
     case "active":   return T.ACTIVE as 0 | 1 | 2 | 3;
     case "viewport": return T.VIEWPORT as 0 | 1 | 2 | 3;
@@ -2138,7 +2138,7 @@ cellAt(pt: CellAtPoint): CellInfo | undefined {
 }
 
 #freshGridRefBuffer(): Uint8Array {
-  const layout = generated.sizedStructs.GhosttyGridRef;
+  const layout = structLayouts["GhosttyGridRef"]!;
   const buf = new Uint8Array(layout.size);
   new DataView(buf.buffer).setBigUint64(layout.fields.size.offset, BigInt(layout.size), true);
   return buf;
@@ -2188,14 +2188,14 @@ cellAt(pt: CellAtPoint): CellInfo | undefined {
   // accessor works; the specific data-key enum values come from generated.ts.
   const cellPtr = Number(cellBuf[0]);
   // Read wide + protected via generated accessors:
-  wide = this.#cellBool(cellPtr, generated.enumValues.GhosttyCellData.WIDE);
-  const protectedFlag = this.#cellBool(cellPtr, generated.enumValues.GhosttyCellData.PROTECTED);
+  wide = this.#cellBool(cellPtr, GhosttyCellDataValues.WIDE);
+  const protectedFlag = this.#cellBool(cellPtr, GhosttyCellDataValues.PROTECTED);
 
   // 3) Style — may be default (rc == NO_VALUE treated as no style).
-  const styleSize = generated.sizedStructs.GhosttyStyle.size;
+  const styleSize = structLayouts["GhosttyStyle"]!.size;
   const styleBuf = new Uint8Array(styleSize);
   new DataView(styleBuf.buffer).setBigUint64(
-    generated.sizedStructs.GhosttyStyle.fields.size.offset,
+    structLayouts["GhosttyStyle"]!.fields.size.offset,
     BigInt(styleSize),
     true,
   );
@@ -2466,10 +2466,17 @@ export interface RenderCell {
 ```typescript
 import { ptr, type Pointer } from "bun:ffi";
 import { ffi } from "./ffi";
-import { generated } from "./internal/generated";
+import {
+  structLayouts,
+  GhosttyRenderStateDataValues,
+  GhosttyRenderStateDirtyValues,
+  GhosttyRenderStateOptionValues,
+  GhosttyRenderStateRowDataValues,
+  GhosttyRenderStateRowCellsDataValues,
+} from "./internal/generated";
 import { GhosttyError, getResultCodeName } from "./errors";
-import { readRenderStateColors } from "./internal/sized-struct";
-import type { RGB, TerminalColors, ViewportCursor, RenderRow, RenderCell, CellStyle } from "./types";
+import { readRenderStateColors, readStyle, type RawStyle } from "./internal/sized-struct";
+import type { RGB, TerminalColors, ViewportCursor, RenderRow, RenderCell, CellStyle, UnderlineStyle } from "./types";
 import type { Terminal } from "./terminal";
 
 type DirtyState = "none" | "rows" | "all";
@@ -2535,12 +2542,12 @@ export class RenderState {
     const dirtyValBuf = new Uint8Array(4);
     new DataView(dirtyValBuf.buffer).setInt32(
       0,
-      generated.enumValues.GhosttyRenderStateDirty.FALSE,
+      GhosttyRenderStateDirtyValues.FALSE,
       true,
     );
     const rc = ffi.symbols.ghostty_render_state_set(
       this.#handle!,
-      generated.enumValues.GhosttyRenderStateOption.DIRTY,
+      GhosttyRenderStateOptionValues.DIRTY,
       ptr(dirtyValBuf),
     );
     if (rc !== 0) {
@@ -2612,7 +2619,7 @@ export class RenderState {
         const dirtyBuf = new Uint8Array(1);
         rc = ffi.symbols.ghostty_render_state_row_get(
           iter,
-          generated.enumValues.GhosttyRenderStateRowData.DIRTY,
+          GhosttyRenderStateRowDataValues.DIRTY,
           ptr(dirtyBuf),
         );
         const rowDirty = rc === 0 && dirtyBuf[0] === 1;
@@ -2621,7 +2628,7 @@ export class RenderState {
         const cellsIterOut = new BigUint64Array(1);
         rc = ffi.symbols.ghostty_render_state_row_get(
           iter,
-          generated.enumValues.GhosttyRenderStateRowData.CELLS,
+          GhosttyRenderStateRowDataValues.CELLS,
           ptr(cellsIterOut),
         );
         let cells: CachedCell[] = [];
@@ -2665,7 +2672,7 @@ export class RenderState {
     const buf = new Uint8Array(4);
     const rc = ffi.symbols.ghostty_render_state_get(
       this.#handle!,
-      generated.enumValues.GhosttyRenderStateData.DIRTY,
+      GhosttyRenderStateDataValues.DIRTY,
       ptr(buf),
     );
     if (rc !== 0) {
@@ -2673,7 +2680,7 @@ export class RenderState {
       return;
     }
     const v = new DataView(buf.buffer).getInt32(0, true);
-    const E = generated.enumValues.GhosttyRenderStateDirty;
+    const E = GhosttyRenderStateDirtyValues;
     if (v === E.FULL) this.#globalDirty = "all";
     else if (v === E.PARTIAL) this.#globalDirty = "rows";
     else this.#globalDirty = "none";
@@ -2681,7 +2688,7 @@ export class RenderState {
 
   #readViewportCursor(): void {
     const hasBuf = new Uint8Array(1);
-    const D = generated.enumValues.GhosttyRenderStateData;
+    const D = GhosttyRenderStateDataValues;
     let rc = ffi.symbols.ghostty_render_state_get(this.#handle!, D.CURSOR_VIEWPORT_HAS_VALUE, ptr(hasBuf));
     if (rc !== 0 || hasBuf[0] !== 1) {
       this.#viewportCursor = undefined;
@@ -2699,7 +2706,7 @@ export class RenderState {
   }
 
   #readColors(): void {
-    const layout = generated.sizedStructs.GhosttyRenderStateColors;
+    const layout = structLayouts["GhosttyRenderStateColors"]!;
     const buf = new Uint8Array(layout.size);
     new DataView(buf.buffer).setBigUint64(layout.fields.size.offset, BigInt(layout.size), true);
     const rc = ffi.symbols.ghostty_render_state_colors_get(this.#handle!, ptr(buf));
@@ -2795,7 +2802,7 @@ Replace the Task 10 stub `#walkCells` with the real decoder. Reuse the grid-ref 
 #walkCells(cellsIter: Pointer): CachedCell[] {
   const out: CachedCell[] = [];
   let x = 0;
-  const D = generated.enumValues.GhosttyRenderStateRowCellsData;
+  const D = GhosttyRenderStateRowCellsDataValues;
 
   while (ffi.symbols.ghostty_render_state_row_cells_next(cellsIter)) {
     // Grapheme — probe-size-first via DATA_GRAPHEMES_LEN then GRAPHEMES_BUF.
@@ -2817,10 +2824,10 @@ Replace the Task 10 stub `#walkCells` with the real decoder. Reuse the grid-ref 
     }
 
     // Style — RAW + STYLE data.
-    const styleSize = generated.sizedStructs.GhosttyStyle.size;
+    const styleSize = structLayouts["GhosttyStyle"]!.size;
     const styleBuf = new Uint8Array(styleSize);
     new DataView(styleBuf.buffer).setBigUint64(
-      generated.sizedStructs.GhosttyStyle.fields.size.offset,
+      structLayouts["GhosttyStyle"]!.fields.size.offset,
       BigInt(styleSize),
       true,
     );
@@ -4206,7 +4213,7 @@ Names used across tasks:
 - `CellInfo` / `CellStyle` / `UnderlineStyle` / `RenderRow` / `RenderCell` / `ViewportCursor` / `CellAtPoint` / `TerminalColors` / `RGB` / `PaletteIndex` — all defined in `src/types.ts` at Task 6 / 8 / 10. No late renames.
 - `RawStyle` — internal in `src/internal/sized-struct.ts`; used in `rawStyleToCellStyle` (Task 11).
 - `Terminal.unsafeHandle` — added in Task 10, used by `RenderState.update` in same task.
-- `generated.enumValues.*` — Task 3 regenerates; all downstream tasks reference by enum-member name (`ACTIVE`, `VIEWPORT`, etc.), not numeric literals.
+- `GhosttyXxxValues` enum constants — Task 3 regenerates; all downstream tasks import them individually and reference by enum-member name (`ACTIVE`, `VIEWPORT`, etc.), not numeric literals. `structLayouts` is the top-level Record used for `structLayouts["StructName"]!.size` / `.fields`.
 
 ### Task ordering
 
