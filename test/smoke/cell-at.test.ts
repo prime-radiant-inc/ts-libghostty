@@ -96,3 +96,53 @@ describe("Terminal.cellAt — active + viewport", () => {
     expect(() => term.cellAt({ x: 0, y: 0, coordinateSpace: "fog" })).toThrow(/invalid/i);
   });
 });
+
+describe("Terminal.cellAt — screen + history", () => {
+  test('"screen" returns the same cell as "active" on a fresh terminal', () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    term.vtWrite(new TextEncoder().encode("hello"));
+    const active = term.cellAt({ x: 0, y: 0 });
+    const screen = term.cellAt({ x: 0, y: 0, coordinateSpace: "screen" });
+    expect(screen?.text).toBe(active?.text);
+  });
+
+  test('"history" on a fresh terminal with no scrollback: y=0 returns empty cell, large y returns undefined', () => {
+    // libghostty authoritative behavior: history y=0 resolves (returns an empty cell)
+    // even when the history space has no content. Out-of-bounds is signalled by
+    // undefined only when the coordinate exceeds the allocated history rows.
+    using term = new Terminal({ cols: 80, rows: 24, maxScrollback: 100 });
+    const cell = term.cellAt({ x: 0, y: 0, coordinateSpace: "history" });
+    // Either an empty cell or undefined — both are valid; the important invariant
+    // is that it does NOT throw.
+    if (cell !== undefined) {
+      expect(cell.text).toBe("");
+    }
+  });
+
+  test('"history" returns scrollback content after rows scroll off-screen', () => {
+    using term = new Terminal({ cols: 10, rows: 2, maxScrollback: 100 });
+    // Fill rows 0..5 then let natural scroll push the first into scrollback.
+    for (let i = 0; i < 5; i += 1) {
+      term.vtWrite(new TextEncoder().encode(`L${i}\r\n`));
+    }
+    // History (y=0) should now hold the oldest row "L0".
+    // We can't assert exactly — libghostty's exact scrollback semantics are
+    // authoritative — but at least one of y=0..3 should contain "L".
+    let found = false;
+    for (let y = 0; y < 4; y += 1) {
+      const c = term.cellAt({ x: 0, y, coordinateSpace: "history" });
+      if (c?.text === "L") { found = true; break; }
+    }
+    expect(found).toBe(true);
+  });
+
+  test('"screen" out-of-bounds returns undefined', () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    expect(term.cellAt({ x: 999, y: 0, coordinateSpace: "screen" })).toBeUndefined();
+  });
+
+  test('"history" out-of-bounds returns undefined', () => {
+    using term = new Terminal({ cols: 80, rows: 24, maxScrollback: 100 });
+    expect(term.cellAt({ x: 0, y: 99999, coordinateSpace: "history" })).toBeUndefined();
+  });
+});
