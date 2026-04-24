@@ -1216,7 +1216,7 @@ Open `src/terminal.ts`. Find the section near `close()` where public methods liv
 
 ```typescript
 scrollViewport(pos: "top" | "bottom" | number): void {
-  this.#assertNotClosed("scrollViewport");
+  this.#assertOpen();
   this.#assertNotInCallback("scrollViewport");
 
   let tag: 0 | 1 | 2;
@@ -1244,7 +1244,7 @@ Add imports at the top of the file if not already present:
 import { writeScrollViewport } from "./internal/marshal";
 ```
 
-(Existing imports for `ptr`, `ffi`, `GhosttyError`, `#assertNotClosed`, `#assertNotInCallback` are already in scope from Pass 1/2.)
+(Existing imports for `ptr`, `ffi`, `GhosttyError`, `#assertOpen`, `#assertNotInCallback` are already in scope from Pass 1/2.)
 
 - [ ] **Step 4: Run the test, verify it passes.**
 
@@ -1589,7 +1589,7 @@ Open `src/terminal.ts`. Add the two methods in the public-method section. Above 
 
 ```typescript
 colors(): TerminalColors {
-  this.#assertNotClosed("colors");
+  this.#assertOpen();
 
   // Generated layout sizes/offsets for a single GhosttyColorRgb = 3 bytes.
   const rgbSize = structLayouts["GhosttyColorRgb"]!.size;
@@ -1636,7 +1636,7 @@ colors(): TerminalColors {
 }
 
 setColors(patch: Partial<TerminalColors>): void {
-  this.#assertNotClosed("setColors");
+  this.#assertOpen();
   this.#assertNotInCallback("setColors");
 
   if (!patch.defaults) return; // empty patch or palette-only — no-op for defaults
@@ -2096,7 +2096,7 @@ In `src/terminal.ts`, add:
 
 ```typescript
 cellAt(pt: CellAtPoint): CellInfo | undefined {
-  this.#assertNotClosed("cellAt");
+  this.#assertOpen();
 
   const { x, y, coordinateSpace = "active" } = pt;
   const tag = this.#pointTag(coordinateSpace);
@@ -2520,7 +2520,7 @@ export class RenderState {
   }
 
   update(term: Terminal): void {
-    this.#assertNotClosed("update");
+    this.#assertOpen();
     const termHandle = term.unsafeHandle(); // Pass 3 adds an internal-use getter; see below
     const rc = ffi.symbols.ghostty_render_state_update(this.#handle!, termHandle);
     if (rc !== 0) {
@@ -2537,7 +2537,7 @@ export class RenderState {
   }
 
   markClean(): void {
-    this.#assertNotClosed("markClean");
+    this.#assertOpen();
     // 1) Native clear — one call, clears both global and per-row layers.
     const dirtyValBuf = new Uint8Array(4);
     new DataView(dirtyValBuf.buffer).setInt32(
@@ -2562,13 +2562,13 @@ export class RenderState {
   }
 
   colors(): TerminalColors {
-    this.#assertNotClosed("colors");
+    this.#assertOpen();
     if (!this.#colors) this.#readColors();
     return this.#colors!;
   }
 
   cursor(): ViewportCursor | undefined {
-    this.#assertNotClosed("cursor");
+    this.#assertOpen();
     return this.#viewportCursor;
   }
 
@@ -2587,7 +2587,7 @@ export class RenderState {
 
   // --- Internals (Tasks 11/12 add iterator-facing helpers) ---
 
-  #assertNotClosed(op: string): void {
+  #assertOpen(op: string): void {
     if (this.#handle === null) {
       throw new GhosttyError({
         code: "use_after_close",
@@ -2744,7 +2744,7 @@ Open `src/terminal.ts`. Add a method deliberately named to discourage external u
  * public API; do not call from consumer code.
  */
 unsafeHandle(): Pointer {
-  this.#assertNotClosed("unsafeHandle");
+  this.#assertOpen();
   return this.#handle;
 }
 ```
@@ -2906,14 +2906,14 @@ Append to `RenderState`:
 
 ```typescript
 *rows(): IterableIterator<RenderRow> {
-  this.#assertNotClosed("rows");
+  this.#assertOpen();
   for (const cached of this.#rows) {
     yield this.#toRenderRow(cached);
   }
 }
 
 forEachDirtyRow(cb: (row: RenderRow) => void): void {
-  this.#assertNotClosed("forEachDirtyRow");
+  this.#assertOpen();
   for (const cached of this.#rows) {
     if (cached.dirty) cb(this.#toRenderRow(cached));
   }
@@ -2996,7 +2996,7 @@ Append to `RenderState`:
 };
 
 forEachCell(row: RenderRow | number, cb: (cell: RenderCell) => void): void {
-  this.#assertNotClosed("forEachCell");
+  this.#assertOpen();
   const y = typeof row === "number" ? row : row.y;
   const cached = this.#rows[y];
   if (!cached) return;
@@ -3004,7 +3004,7 @@ forEachCell(row: RenderRow | number, cb: (cell: RenderCell) => void): void {
 }
 
 forEachDirtyCell(cb: (row: RenderRow, cell: RenderCell) => void): void {
-  this.#assertNotClosed("forEachDirtyCell");
+  this.#assertOpen();
   for (const cached of this.#rows) {
     if (!cached.dirty) continue;
     const rowSnap = this.#toRenderRow(cached);
