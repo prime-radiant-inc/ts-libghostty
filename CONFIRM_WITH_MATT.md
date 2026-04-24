@@ -160,6 +160,14 @@ Codex re-reviewed after the round-1 fix and surfaced two more "don't silently dr
 
 206 smoke tests pass (203 + 3 new regression tests). `v0.3.0` tag moved again to include both fixes.
 
+### Pass 3 Codex review pass 3 (2026-04-24)
+
+Codex found one more issue in the just-landed palette code:
+
+- **P2 — `setColors` validated palette length *after* applying defaults.** A compound patch like `setColors({defaults: {fg: [9,9,9]}, palette: [[0,0,0]]})` wrote defaults.fg first, then threw `invalid_value` on the palette — leaving terminal state partially mutated. **Fix:** move the palette length check to the top of `setColors`, before any `ghostty_terminal_set` call. Compound patches now either fully apply or fully reject. Test `"Codex P2 round 3: setColors rejects compound patches atomically"` added.
+
+207 smoke tests pass. `v0.3.0` tag moved forward again.
+
 ### Pass 3 commit timeline
 
 - `e71885a` `c9a7489` `93b4451` Pass 3 spec + two Codex review reconciliation rounds

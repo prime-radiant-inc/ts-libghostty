@@ -106,4 +106,19 @@ describe("Terminal.colors", () => {
     using term = new Terminal({ cols: 10, rows: 4 });
     expect(() => term.setColors({ palette: [[0, 0, 0]] })).toThrow(/invalid/i);
   });
+
+  test("Codex P2 round 3: setColors rejects compound patches atomically", () => {
+    // Invalid palette length must not leave a partial defaults mutation behind.
+    using term = new Terminal({ cols: 10, rows: 4 });
+    term.setColors({ defaults: { fg: [1, 2, 3] } });
+    const beforeFg = term.colors().defaults.fg;
+    expect(beforeFg).toEqual([1, 2, 3]);
+    expect(() =>
+      term.setColors({
+        defaults: { fg: [9, 9, 9] },
+        palette: [[0, 0, 0]], // wrong length — should reject the whole patch
+      }),
+    ).toThrow(/invalid/i);
+    expect(term.colors().defaults.fg).toEqual([1, 2, 3]);
+  });
 });

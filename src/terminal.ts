@@ -707,6 +707,16 @@ export class Terminal {
     const palette = patch.palette;
     if (!defaults && !palette) return; // empty patch — no-op
 
+    // Validate the WHOLE patch before any ghostty_terminal_set call, so a
+    // mixed patch (e.g. valid defaults + invalid palette length) is rejected
+    // atomically instead of partially applying. Codex round-3 P2.
+    if (palette && palette.length !== 256) {
+      throw new GhosttyError(
+        `invalid palette length: expected 256 entries, got ${palette.length}`,
+        { code: "invalid_value", functionName: "Terminal.setColors" },
+      );
+    }
+
     const lib = getLib();
     const O = GhosttyTerminalOptionValues;
     const rgbSize = structLayouts["GhosttyColorRgb"]!.size; // 3 bytes
@@ -733,12 +743,6 @@ export class Terminal {
     if (defaults?.cursor) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_CURSOR"], defaults.cursor);
 
     if (palette) {
-      if (palette.length !== 256) {
-        throw new GhosttyError(
-          `invalid palette length: expected 256 entries, got ${palette.length}`,
-          { code: "invalid_value", functionName: "Terminal.setColors" },
-        );
-      }
       // OPT_COLOR_PALETTE takes a GhosttyColorRgb[256]* — 256 × 3 bytes packed.
       const paletteBuf = new Uint8Array(256 * rgbSize);
       for (let i = 0; i < 256; i += 1) {
