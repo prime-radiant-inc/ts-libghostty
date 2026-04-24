@@ -96,6 +96,21 @@ All 12 tasks landed. Final state: 112 smoke tests pass (78 pre-Pass-2 baseline +
 
 ---
 
+## Pass 3 notes
+
+### Pass 3 start-state (2026-04-23, Ekaterin)
+
+Pass 3 starts from HEAD of `main` at commit `fcf5494ac5e0915c265f101687fcc9574e32ef76` (the Pass 3 plan commit, following the Pass 3 spec commits and Pass 2's v0.2.0 tag). Baseline captured at Task 1:
+
+- `bun run typecheck` — clean
+- `bun test test/smoke` — **112 pass / 0 fail / 390 expect() calls across 10 files** (the Pass-3 target after all new smoke tests lands is ~180: 112 baseline + ~53 Pass-3 additions + ~15 RenderState tests)
+- `bun run verify:generated` — green; `generated.ts` matches the pin (141 declared symbols, 49 enums, 4 structs, 41 modes)
+- Tree clean; Pass 2's `v0.2.0` tag is local-only, unpushed; 4 commits ahead of `origin/main` (spec + plan for Pass 3)
+
+Pass 3 is unblocked.
+
+---
+
 ## Known plan/code drift (low priority — does not block publish)
 
 These are small inconsistencies between the plan's snippets and the actually-committed code. They don't affect runtime behavior; a future Bob re-regenerating files from the plan would hit them. Optional cleanup for a quiet afternoon.
