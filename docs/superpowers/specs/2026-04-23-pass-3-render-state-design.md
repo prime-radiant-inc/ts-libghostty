@@ -105,21 +105,32 @@ Entries are `undefined` when libghostty reports the color as unset, not a placeh
 
 The observed behavior is documented in README verbatim. If upstream offers a preservation API, we expose it; if not, the README notes "`setColors` clears OSC overrides" and we move on. This decision is *not* blocking Pass 3 — both outcomes are acceptable; we document what libghostty does.
 
-### 4.4 APC bounds (constructor wiring)
+### 4.4 APC bounds (post-construct wiring)
 
-`apcMaxBytes` and `apcMaxBytesKitty` return to `TerminalOptions` in Pass 3. Both bound the per-sequence byte limit that libghostty's VT parser retains for APC / Kitty-graphics escape payloads (see binding design §5.9). Defaults match the binding design:
+`apcMaxBytes` and `apcMaxBytesKitty` return to `TerminalOptions` in Pass 3. Both bound the per-sequence byte limit that libghostty's VT parser retains for APC escape payloads (see binding design §5.9). Defaults match the binding design:
 
-- `apcMaxBytes`: `1048576` (1 MiB).
-- `apcMaxBytesKitty`: `0` (Kitty image store disabled; distinct from the Kitty *keyboard* protocol, which is a Pass 4 concern).
+- `apcMaxBytes`: `1048576` (1 MiB) — bound on generic APC payloads.
+- `apcMaxBytesKitty`: `0` — bound on Kitty-graphics APC payloads specifically. Distinct from the Kitty *keyboard* protocol (Pass 4 concern) and from Kitty *image storage* (a separate libghostty option; see below).
 
-Wiring: `Terminal.constructor` passes both values into libghostty via the relevant constructor-options field (exact C surface confirmed at Task 2). Bounds validation reuses the `assertU32` / `assertSizeT` helpers Hilbert added during the Pass-1 contract fix: negatives and oversized values throw `GhosttyError{code: "invalid_value"}` with the offending field and value in the message.
+**Wiring is post-construct, not in the constructor options struct.** The pinned `GhosttyTerminalOptions` struct carries only `cols` / `rows` / `max_scrollback`. APC bounds and Kitty knobs are `GhosttyTerminalOption` enum values applied via `ghostty_terminal_set` after the handle exists. `Terminal.constructor` therefore runs in order:
 
-Test coverage (`test/smoke/apc-bounds.test.ts`):
-- **Default path** — construct without the options; behavior matches the large-APC resilience test in §4.8 (10 MiB payload handled cleanly under the 1 MiB default).
-- **Custom path** — construct with `apcMaxBytes: 2 * 1024 * 1024`; feed a 1.5 MiB APC payload, observe no crash and post-write RSS stays bounded. Feed a 3 MiB APC payload, observe truncation behavior (same signal: no crash, bounded RSS).
-- **Invalid path** — construct with `apcMaxBytes: -1` throws `GhosttyError{code: "invalid_value"}`; `apcMaxBytes: Number.MAX_SAFE_INTEGER + 1` throws; same for `apcMaxBytesKitty`.
+1. Build the `GhosttyTerminalOptions` struct (cols, rows, maxScrollback) and call `ghostty_terminal_new`.
+2. `ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, apcMaxBytes)`.
+3. `ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES_KITTY, apcMaxBytesKitty)`.
+4. `ghostty_terminal_set(handle, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, 0)` — internal safety default, *not* user-configurable at v0. Binding design §5.9 documents the intent (Kitty image storage disabled until Tranche 3 exposes a public surface). Pass 3 is where that internal wiring lands.
+5. Register effect callbacks (Pass 2 logic, unchanged).
 
-This closes the contract that Hilbert's Pass-1 fix left open: the options now exist on the type *and* are wired, rather than being silently dropped. Consumers who passed them under Pass 1 saw a TS compile error after the fix; after Pass 3 they work.
+Exact enum names above are illustrative; Task 2 confirms them from `vt.h`.
+
+Bounds validation at the TS boundary reuses `assertU32` / `assertSizeT` (Hilbert's Pass-1 helpers): negatives and oversized values throw `GhosttyError{code: "invalid_value"}` before any FFI call.
+
+**Test coverage** (`test/smoke/apc-bounds.test.ts`) — **wiring verification strategy depends on Task 2's read-back discovery**:
+
+- **Preferred (round-trip)** — if `ghostty_terminal_get` supports these option keys: construct with `apcMaxBytes: 2 * 1024 * 1024`, then `get` the key and assert the returned value matches. Same for `apcMaxBytesKitty`. Same for the internal image-storage-limit default (get it, assert zero). This proves each non-default / default value actually reached libghostty.
+- **Fallback (no-crash only)** — if `get` is not supported for these keys: soften to "custom construction with non-default bounds does not throw and does not crash on subsequent APC payloads." Explicitly note in the test comment that this does **not** verify the bound was honored, and open a plan-level follow-up to revisit when a future Ghostty bump exposes introspection. The default-path behavior still gets meaningful coverage via the large-APC resilience test in §4.8 (10 MiB payload cleanly handled under the 1 MiB default).
+- **Invalid path** — `apcMaxBytes: -1` throws `GhosttyError{code: "invalid_value"}` from the TS-side assertion before any FFI call; `apcMaxBytes: Number.MAX_SAFE_INTEGER + 1` throws; same for `apcMaxBytesKitty`. These paths don't depend on `get` support.
+
+This closes the contract that Hilbert's Pass-1 fix left open: the options exist on the type *and* are wired through, rather than being silently dropped. Consumers who passed them under Pass 1 saw a TS compile error after the fix; after Pass 3 they reach libghostty.
 
 ### 4.5 `Terminal.cellAt`
 
@@ -156,7 +167,7 @@ Standalone smoke test: `encodeFocus("in")` returns non-empty bytes starting with
 {
   "geometry": { "cols": 80, "rows": 24 },
   "terminal": {
-    "cursor": { "x": 0, "y": 0, "visible": true, "style": "block" },
+    "cursor": { "x": 0, "y": 0, "visible": true },
     "activeScreen": "primary",
     "title": "bash",
     "pwd": "/home/matt",
@@ -184,6 +195,8 @@ Standalone smoke test: `encodeFocus("in")` returns non-empty bytes starting with
 Fields are omitted when they take their default values (cells with `isWideContinuation: false`, `protected: false`, undefined `style`, etc.) to keep the JSON readable. The harness normalizes before compare: fills in defaults, canonicalizes RGB tuple representation (always `[r, g, b]`), and truncates rows to the declared geometry. **Palette index order is preserved** — indices are semantic (`palette[1]` and `palette[2]` are different colors), so any sort or reorder would hide index-swap bugs.
 
 **Dirty flags are not captured** in fixtures. Dirty state depends on observer cadence (a fixture captured on a fresh terminal is "all dirty"), which is not a useful invariant to assert.
+
+**`cursor.style` is deliberately omitted** from the schema at Pass 3. Hilbert's Pass-1 contract fix removed `cursor.style` from `TerminalSnapshot` because the underlying `CURSOR_STYLE` payload is a 72-byte `GhosttyStyle` struct decode that warrants proper Pass-3-or-later work, and a placeholder value would be misleading. Pass 3 does not re-add cursor-style decoding to `TerminalSnapshot`; if the §5.2 viewport-cursor resolution lands `RenderState.cursor()` and libghostty's render surface gives us cursor style for cheap there, the fixture schema gets extended in the same task. Otherwise the schema stays as shown above and cursor-style decoding is Pass 5 / later work.
 
 **Harness** lives alongside the existing `test/fixtures/` replay harness. Flow:
 1. Read `<scenario>.bin` and the declared geometry from the existing fixture manifest (or a per-fixture header; detail decided at plan time).
@@ -233,7 +246,7 @@ Pass 3 follows the Pass 1 / Pass 2 subagent-driven model:
 1. **Task 1 — preflight baseline.** Capture `bun test`, `bun run typecheck`, `bun run verify:generated` state. Record commit hash. Ensure tree is clean off `main` at v0.2.0.
 2. **Task 2 — FFI discovery.** Read `vendor/ghostty/include/ghostty/vt.h` at pin; enumerate symbols needed for render-state, scroll-viewport, colors, cell-at, focus-encode, APC-bounds options, and dirty-clear operations. Extend `SYMBOLS` in `src/ffi.ts`, update `generated.ts` via `bun run build:bindings`, commit. This is the Pass 3 equivalent of Pass 2 Task 3.
 3. **Task 3 — struct-layout probe extension.** If any new structs are touched (render cell layout, style field additions, etc.), extend `scripts/probe-layout.c` and regenerate. `bun run verify:generated` must stay green.
-4. **Tasks 4–7 — small Terminal methods.** `scrollViewport`, `encodeFocus`, `colors`/`setColors`, then APC bounds wiring (§4.4). Each is a small commit with a smoke test. These establish the FFI patterns new to Pass 3 (single scalar call, array return for palette, partial-struct update, constructor-options field) before the bigger RenderState work.
+4. **Tasks 4–7 — small Terminal methods.** `scrollViewport`, `encodeFocus`, `colors`/`setColors`, then APC bounds wiring (§4.4). Each is a small commit with a smoke test. These establish the FFI patterns new to Pass 3 (single scalar call, standalone call with no terminal handle, array return for palette, partial-struct update, post-construct `ghostty_terminal_set` with option enum) before the bigger RenderState work.
 5. **Tasks 8–9 — `Terminal.cellAt`.** One task per "half" if the 4 coord spaces split cleanly into (active/viewport) and (screen/history); otherwise one task. Smoke tests cover all four spaces and the out-of-bounds → `undefined` case.
 6. **Tasks 10–13 — `RenderState`.** Split: (a) class skeleton + `update()` + `colors()` + `dirty()` + `markClean()` (native + JS mirror, per §4.1) + `close()`; (b) ergonomic iterators (`rows()`, `row.cells()`, `forEachDirtyRow`); (c) hot-path iterators (`forEachCell`, `forEachDirtyCell`) with the reused mutable `RenderCell`; (d) smoke tests for all three paths + dirty lifecycle. Dispatched Bob for (b) through (d) if the orchestrator wants parallelism; sequential is fine too.
 7. **Tasks 14–15 — metadata fixture infrastructure.** (a) Harness (normalize, compare, `--update-fixtures`). (b) Generate `.expected.json` companions for existing fixtures; any fixtures where libghostty produces unstable output across runs get flagged for later investigation (but don't block Pass 3 — just skip with a documented reason).
@@ -247,7 +260,7 @@ Estimated: 18 tasks. (Earlier rough-count was 20, then 17 before the APC scope-b
 
 - Exact libghostty symbol names for render-state extraction. `ghostty_render_state_*` is speculative. Resolved at Task 2 by reading `vt.h`.
 - Exact libghostty symbol(s) for clearing native dirty state (both global and per-row layers, per §4.1). Unknown whether this is one call or two. Resolved at Task 2.
-- Exact libghostty constructor-options field names for `apc_max_bytes` and `apc_max_bytes_kitty` (spec §5.9 of binding design documents the intent; C field names confirmed at Task 2).
+- Exact `GhosttyTerminalOption` enum values for APC bounds (`GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES*`) and Kitty image-storage limit (`GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT`), and whether `ghostty_terminal_get` supports read-back on them. Read-back support determines whether §4.4's wiring-verification test uses round-trip `set` + `get` (preferred) or softens to a no-crash check. Resolved at Task 2.
 - Whether `Terminal.colors()` can be satisfied by `ghostty_terminal_get` keys or needs a dedicated accessor. Resolved at Task 2.
 - Whether OSC 10/11 overrides survive `setColors` (see §4.3). Resolved by the test at Task 6.
 - **Whether libghostty's render-state surface exposes a viewport cursor distinct from `Terminal.snapshot().cursor`.** For scrolled views (where the viewport may not contain the terminal's live cursor), a viewport-local cursor position is useful for consumers rendering the current view. Resolved at Task 2: if the C API exposes it naturally, add `RenderState.cursor()` to Pass 3 scope (a small additive API surface), extend the fixture schema to record it, and add a smoke test that scrolls the viewport and confirms `RenderState.cursor()` tracks the viewport rather than the terminal. If the C API does not expose it, document the manual computation (`Terminal.snapshot().cursor` minus viewport scroll offset) in the README and leave the method out of Pass 3. Either outcome is acceptable; Codex flagged this as an explicit open question on the Pass 3 spec.
@@ -261,7 +274,7 @@ Estimated: 18 tasks. (Earlier rough-count was 20, then 17 before the APC scope-b
 - `test/smoke/colors.test.ts` — read defaults; `setColors` patch; OSC 10/11 overrides; OSC-override survival test (records observed behavior).
 - `test/smoke/cell-at.test.ts` — positive lookup in each of the four coord spaces; out-of-bounds returns `undefined`; wide-grapheme cell returns `wide: true`, continuation returns `isWideContinuation: true`.
 - `test/smoke/focus.test.ts` — both directions encode non-empty bytes starting with ESC.
-- `test/smoke/apc-bounds.test.ts` — default-path (default bound wires through), custom-path (`apcMaxBytes: 2 MiB` accepts 1.5 MiB payload, 3 MiB payload truncates without crash), invalid-path (`-1` and `Number.MAX_SAFE_INTEGER + 1` throw `GhosttyError{code: "invalid_value"}`).
+- `test/smoke/apc-bounds.test.ts` — wiring verification per §4.4 (round-trip `set`+`get` preferred, no-crash fallback if `get` unsupported), plus the invalid-path cases (`-1` and `Number.MAX_SAFE_INTEGER + 1` throw `GhosttyError{code: "invalid_value"}` from the TS assertion).
 - `test/smoke/render-state.test.ts` — lifecycle (construct + close + dispose); `update()` on fresh terminal produces rows matching geometry; ergonomic path (`rows()` + `row.cells()`, `forEachDirtyRow`); hot path (`forEachCell`, `forEachDirtyCell`); dirty lifecycle — `update()` does not clear native or JS dirty; after `markClean()`, `dirty()` returns `"none"` and a follow-up `update()` with no terminal activity keeps it at `"none"` (proves native dirty was actually cleared, not just the JS mirror); alt-screen swap sets `dirty() === "all"`; resize rebuilds cached layout.
 - `test/smoke/resilience-fuzz.test.ts` — seeded random bytes (×20 seeds); large APC payload; both post-conditions (no exception, snapshot works).
 
@@ -319,3 +332,7 @@ What Pass 4 needs from Pass 3:
   - Palette normalization rule corrected: preserve index order (indices are semantic), only canonicalize tuple representation. Sorting would hide index-swap bugs. (§4.7)
   - Viewport-cursor exposure added to §5.2 known unknowns; resolved at Task 2 based on what libghostty's render-state surface offers.
   - Task count revised from 17 → 18 to include APC bounds wiring task.
+- **2026-04-23 (revision 2)** — Codex review pass 2 (three P2s):
+  - §4.4 rewritten: APC bounds are *not* `GhosttyTerminalOptions` struct fields. The pinned struct carries only `cols` / `rows` / `max_scrollback`; APC knobs are `GhosttyTerminalOption` enum values applied via `ghostty_terminal_set` after construction. Constructor now runs a 5-step sequence (build options struct → `terminal_new` → set APC bounds → set Kitty image-storage limit to 0 → register callbacks). Also separated `apcMaxBytesKitty` (APC-payload bound for Kitty-graphics sequences) from the distinct `GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT` option (internal default, wired but not user-configurable at v0 per binding design §5.9).
+  - §4.4 test description tightened: verification strategy now branches on Task 2's discovery of `ghostty_terminal_get` support for APC keys. Preferred path is round-trip `set` + `get` (proves wiring reached libghostty). Fallback is an explicit "no-crash only" softening with a documented follow-up. Previous test description was a false-positive — it would have passed even if `apcMaxBytes` were silently ignored.
+  - §4.7 fixture schema: `cursor.style` removed from the JSON example. Hilbert's Pass-1 contract fix explicitly deferred the 72-byte `GhosttyStyle` decode for cursor style, and Pass 3 does not re-add it to `TerminalSnapshot`. If the §5.2 viewport-cursor resolution lands `RenderState.cursor()` with cheap style access, the schema gets extended in that same task; otherwise cursor-style decoding is Pass 5 / later work.
