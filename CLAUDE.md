@@ -1,6 +1,6 @@
 # ts-libghostty-vt — agent notes
 
-TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Pass 1 shipped as v0.1.0 on 2026-04-23 (Terminal + Formatter + lifecycle + ABI safety). Passes 2–5 are unplanned. For status and carry-forward notes see `CONFIRM_WITH_MATT.md`; for the full v0 surface see `docs/superpowers/specs/2026-04-22-ts-libghostty-design.md`.
+TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Pass 1 shipped as v0.1.0 on 2026-04-23 (Terminal + Formatter + lifecycle + ABI safety). Pass 2 shipped as v0.2.0 on 2026-04-23 (effect callbacks — `onWritePty`, `onBell`, `onTitleChanged`). Passes 3–5 are unplanned. For status and carry-forward notes see `CONFIRM_WITH_MATT.md`; for the full v0 surface see `docs/superpowers/specs/2026-04-22-ts-libghostty-design.md`.
 
 ## Load-bearing gotchas
 
@@ -21,6 +21,8 @@ TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Pass 1 s
 8. **`ghostty_build_info(VERSION_STRING)` returns semver (`"0.1.0-dev"`), not a commit SHA.** Override-library compatibility is best-effort — a library from a compatible-seeming commit can still diverge on enum values with undefined runtime behavior.
 
 9. **FFI loading is lazy.** `setLibraryPath(path)` must be called *before* first Terminal/Formatter construction. `GHOSTTY_VT_LIB=""` is normalized to `undefined` (falls through to the bundled dylib).
+
+10. **Effect-callback trampolines copy before invoking.** `onWritePty`'s `Uint8Array` and `onTitleChanged`'s `title` are JS-owned copies of libghostty's borrowed memory — mutating them does not affect libghostty. If you change the trampolines in `src/internal/callbacks.ts`, preserve the copy-before-invoke; breaking it creates use-after-free bugs in consumer code that retains the values. Also: `#assertNotInCallback` rejects mutating calls (`vtWrite`/`resize`/`reset`/`setMode`/`close`) from inside a callback — libghostty is mid-parse.
 
 ## Commands
 

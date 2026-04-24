@@ -29,14 +29,43 @@ using fmt = new Formatter({ format: "plain" });
 console.log(fmt.formatString(term));
 ```
 
-## Pass 1 surface
+## Effect callbacks
 
-- `Terminal` — construction, `vtWrite`, `resize`, `reset`, `snapshot`, `mode`/`setMode`, lifecycle (`close`, `using`).
+Pass 2 adds three synchronous effect callbacks as `Terminal` constructor options. They are invoked inside `vtWrite()` when libghostty processes the corresponding VT sequence.
+
+```typescript
+import { Terminal } from "ts-libghostty-vt";
+
+using term = new Terminal({
+  cols: 80,
+  rows: 24,
+  onWritePty: (bytes) => { /* query responses to send back to the pty */ },
+  onBell: () => { /* BEL (0x07) */ },
+  onTitleChanged: (title) => { /* OSC 0 / OSC 2 */ },
+});
+```
+
+**Constraints:**
+
+- Callbacks MUST NOT call any **mutating** method on the same Terminal from inside the callback: `vtWrite`, `resize`, `reset`, `setMode`, `close`, `[Symbol.dispose]`. libghostty is mid-parse; mutating the same Terminal corrupts or frees state the parser still references. The binding detects this and throws a typed `GhosttyError` with code `"invalid_value"` naming the forbidden method — defer with `queueMicrotask` or `setTimeout` to perform the mutation after `vtWrite()` returns. Read-only methods (`snapshot`, `mode`) are explicitly allowed. If your callback doesn't catch this throw, it's logged via `console.error` and swallowed like any other uncaught callback exception, and `vtWrite` returns normally. Catch it in your callback if you want a hard failure instead.
+- Callbacks MUST NOT throw. Exceptions are caught at the FFI boundary and logged via `console.error`; they cannot cross the C frame.
+- Callbacks SHOULD NOT block. The call is synchronous inside `vtWrite()`.
+
+**Data ownership** — values handed to your callback are JS-owned copies:
+
+- `onWritePty`: the `bytes` Uint8Array is a fresh copy of libghostty's borrowed buffer. Safe to retain.
+- `onTitleChanged`: the `title` string is a JS string. Safe to retain.
+
+The other five effect-shaped callbacks exposed by the C API (`ENQUIRY`, `XTVERSION`, `SIZE`, `COLOR_SCHEME`, `DEVICE_ATTRIBUTES`) are query-response shapes that return data into libghostty's allocator — deferred until the allocator-callback pattern is established.
+
+## API surface (Pass 1 + 2)
+
+- `Terminal` — construction, `vtWrite`, `resize`, `reset`, `snapshot`, `mode`/`setMode`, lifecycle (`close`, `using`), **effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`)**.
 - `Formatter` — `plain`/`vt`/`html` dumps of a Terminal's current screen.
 - `GhosttyError` + subclasses (`LibraryNotFoundError`, `UnsupportedPlatformError`, `LibraryCompatibilityError`, `UseAfterCloseError`).
 - `setLibraryPath` / `isLoaded` / `libraryInfo` for diagnostics and out-of-tree library paths.
 
-Effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`), `RenderState` (per-cell grid reading), `KeyEncoder`, and polish features (modes beyond the simple get/set, color get/set, viewport scroll, `cellAt`) are on the roadmap for Passes 2–5.
+`RenderState` (per-cell grid reading), `KeyEncoder`, and polish features (modes beyond the simple get/set, color get/set, viewport scroll, `cellAt`) are on the roadmap for Passes 3–5.
 
 ## License
 

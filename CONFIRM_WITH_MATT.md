@@ -1,6 +1,6 @@
 # Open items for Matt — ts-libghostty-vt
 
-**Updated 2026-04-23 by Murderbot.** Pass 1 done; Pass-1-fix done (Hilbert); differential testing harness done (separate Bob); Pass 2 in flight. First npm publish targets `v0.2.0` after Pass 2 lands. Pass 2 Bob is actively editing the "Pass 2 notes" section below — leave their content alone.
+**Updated 2026-04-23 by Cazaril.** Pass 1 done; Pass-1-fix done (Hilbert); differential testing harness done (separate Bob); **Pass 2 done** (Cazaril + Turing + Maxwell + Gödel). First npm publish targets `v0.2.0`; local tag created by Task 12, not pushed.
 
 ---
 
@@ -11,7 +11,7 @@
 | Pass 1 (Terminal + Formatter + lifecycle + ABI safety) | ✅ done; `v0.1.0` tag exists locally as a historical marker, **not being published** |
 | Pass-1-fix (Codex contract bugs) | ✅ done — Hilbert, commit `b5c7922`. See "Pass 1 contract fix-up" below. |
 | Differential testing harness v0 | ✅ done — separate Bob, commits `81e5d73`–`6362020` |
-| Pass 2 (effect callbacks: onWritePty/onBell/onTitleChanged) | 🟡 in flight; will land as `v0.2.0` |
+| Pass 2 (effect callbacks: onWritePty/onBell/onTitleChanged) | ✅ done — `v0.2.0` tag local, not pushed. 112 smoke tests pass. |
 
 **Pinned to:** Ghostty `e88c6c099152dd6d2d7e517516e1f3c183c152f7` (tip-of-main as of 2026-04-22). Platforms: `darwin-arm64` only.
 
@@ -23,9 +23,9 @@
 
 ## Before `v0.2.0` publish — your todo
 
-1. **Verify CI green** on main after Pass 2 merges.
+1. **Review** the Pass 2 commit range (`git log b5c7922..v0.2.0`) — 12 new commits, primary diff in `src/terminal.ts`, `src/internal/callbacks.ts` (new), `test/smoke/callbacks.test.ts` (new).
 2. **Update LICENSE copyright** if needed — currently reads `Copyright 2026 Prime Radiant (and contributors)`, matching the `prime-radiant-inc` GitHub org. Change if you prefer different attribution.
-3. **Push `v0.2.0` tag.** Pass 2 plan's Task 12 creates it locally; you push.
+3. **Push main + `v0.2.0` tag.** `git push origin main && git push origin v0.2.0`. First push triggers CI; verify green.
 4. **Publish.** `bun publish` or `npm publish` from a clean tree. The name `ts-libghostty-vt` is unclaimed on npm as of last check.
 
 ---
@@ -66,6 +66,33 @@ All four preflight greps pass. Pass 2 is unblocked.
 ### Task 2 findings (2026-04-23, Turing)
 
 `scripts/probe-callbacks.ts` ran clean on the first pass (exit 0, `tag=probe result=ok`). All three callback options — `WRITE_PTY` (1), `BELL` (2), `TITLE_CHANGED` (5) — bind, fire synchronously from `vt_write`, and detach cleanly when re-set to NULL. JSCallback.ptr passes straight through `ghostty_terminal_set` with no wrapping or shim. The `terminal` argument libghostty passes to each trampoline is bit-identical to the handle returned from `ghostty_terminal_new` (observed three times, all matched) — so JS closures can rely on it for identity and userdata can remain NULL through Pass 2. Post-detach BEL produced no extra callback, and the teardown order (set NULL → jscallback.close → terminal_free) did not crash. **Open Question #1 resolves to the default path:** `ghostty_terminal_get(DATA_TITLE)` invoked from *inside* the title_changed trampoline returned `"probe-title"` — the new title is synchronously readable within the callback. Task 9 Step 3's fallback (HALT AND ESCALATE on empty/stale read) is a no-op; proceed with the default snapshot-inside-callback strategy. No surprises versus the ABI doc. One minor observation worth flagging for Task 9: DA1 (`CSI c`) produced exactly one `write_pty` invocation with an `ESC`-prefixed reply, not a chunked stream — the reply handler can assume whole-sequence delivery per write.
+
+### Pass 2 complete (2026-04-23, Cazaril)
+
+All 12 tasks landed. Final state: 112 smoke tests pass (78 pre-Pass-2 baseline + 34 Pass-2 additions), typecheck clean, tarball smoke green, `verify:generated` green.
+
+**Plan edits.** Tasks 5/6/7 were executed in order 7→5→6 instead of the plan's 5→6→7, because Task 5 references `opts.onWritePty` / `opts.onBell` / `opts.onTitleChanged` — fields that Task 7 adds to `TerminalOptions`. Plan-as-written would typecheck-fail mid-stream. No other plan edits; all commit messages match the plan's templates.
+
+**Open Question #1 verified twice.** Turing's raw-FFI probe (Task 2) and Gödel's end-to-end test in `test/smoke/callbacks.test.ts` (Task 9, `"fires on OSC 0 title change with the new title"`) both confirmed `ghostty_terminal_get(TITLE)` inside the title trampoline returns the post-change title. No HALT-and-escalate triggered.
+
+**Pass 2 Bob run.** Cazaril (orchestrator, Tasks 1/3/5/6/7/12 inline), Turing (Task 2 probe), Maxwell (Task 4 factories), Gödel (Tasks 8–11 smoke tests on a worktree — 29 new tests in `test/smoke/callbacks.test.ts`, merged back fast-forward). Tasks 8–11 ran in a git worktree per the "default to git worktree for dispatched Bobs" feedback memory.
+
+**Carry-forward for Pass 3+.** (a) The `GhosttyTerminal` handle stored as `Number(BigInt) as Pointer` is still safe on darwin-arm64; revisit with platform expansion. (b) Query-response callbacks (`ENQUIRY`, `XTVERSION`, `SIZE`, `COLOR_SCHEME`, `DEVICE_ATTRIBUTES`) need an allocator-callback pattern — the three Pass 2 callbacks are void-returning and can't serve as a template for the response path. (c) The `#inCallback` guard covers the five mutating methods identified; if Pass 3 adds new mutating methods, they need `this.#assertNotInCallback("<name>")` as their first line. (d) `writePtyCb` / `bellCb` / `titleCb` private-field naming convention: one field per effect, keyed by lowercased camelCase of the option name. Follow this pattern for new callbacks.
+
+### Pass 2 commit timeline
+
+- `bc52ded` Task 1: preflight baseline
+- `ccb4acf` Task 2: probe JSCallback + terminal_set compat (Turing)
+- `a04fc2a` Task 3: extend SYMBOLS with ghostty_terminal_set + _get
+- `2383c5d` Task 4: `src/internal/callbacks.ts` trampoline factories (Maxwell)
+- `80aa429` Task 7: TerminalOptions callback fields
+- `542fcd0` Task 5: Terminal.constructor wires callbacks + `#inCallback` guard
+- `6f88394` Task 6: close() callback teardown + idempotency
+- `0ecfeff` Task 8: smoke — onBell (Gödel)
+- `a16fa6a` Task 9: smoke — onTitleChanged (Gödel)
+- `60c29c6` Task 10: smoke — onWritePty (Gödel)
+- `95fd9dc` Task 11: smoke — error paths + re-entry guard (Gödel)
+- (Task 12 commit) docs + `v0.2.0` tag
 
 ---
 
