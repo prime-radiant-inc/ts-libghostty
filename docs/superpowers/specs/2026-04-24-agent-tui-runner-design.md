@@ -31,8 +31,8 @@ Two concrete deliverables:
 **In scope:**
 
 - Binding-layer key encoding (Pass 4)
-- Runner class with `frames()` iterator, `sendText`/`sendKey`/`sendBytes`,
-  two-phase clean quit, async disposal
+- Runner class with `frames()` iterator, `sendText`/`sendKey`/
+  `sendKeyEvent`/`sendBytes`, two-phase clean quit, async disposal
 - Frame scheduler with quiesce debounce, rate limit, change gate, heartbeat
 - Error taxonomy: expected-transitions-as-frames, unexpected-states-as-throws
 - Test strategy with deterministic test children and clock injection
@@ -59,7 +59,7 @@ Two concrete deliverables:
 │  (LLM, test harness, user code)                             │
 └────────────────┬────────────────────────────────────────────┘
                  │ .frames(), .sendText/.sendKey/.sendBytes,
-                 │ .waitExit(), .terminate(), .exited
+                 │ .sendKeyEvent(), .waitExit(), .terminate(), .exited
                  ▼
 ┌─────────────────────────────────────────────────────────────┐
 │  Runner (blinkyterm — Pass 5)                               │
@@ -167,10 +167,25 @@ class. Becomes part of `libghostty-vt@0.4.0`.
 // New exports from libghostty-vt
 
 export interface KeyEvent {
-  key: Key;                         // string union from generated.ts
-  action?: "press" | "release" | "repeat";    // default: "press"
+  // Required
+  key: Key;                         // physical key code (string union from generated.ts,
+                                    // e.g., "KeyA", "Enter", "ArrowUp"); maps to GhosttyKey enum
+  action?: "press" | "release" | "repeat";   // default: "press"
   mods?: Mods;
-  text?: string;                    // literal text the key produces (for printable chars)
+
+  // Text-producing key fields (pass-through to GhosttyKeyEvent's
+  // utf8 / unshifted_codepoint / consumed_mods). Required by the C API
+  // contract for printable-layout keys; Runner computes them from a
+  // US-layout default when consumers use the Runner.sendKey shortcut.
+  //
+  // `utf8`: the unmodified character before any Ctrl/Meta transform.
+  //         MUST NOT be a C0 control (U+0000–U+001F, U+007F) or PUA
+  //         function-key codepoint — omit and let the encoder derive
+  //         bytes from the logical key instead. Enforced at encode time.
+  utf8?: string;
+  unshiftedCodepoint?: number;
+  consumedMods?: Mods;
+  composing?: boolean;
 }
 
 export interface Mods {
@@ -178,8 +193,11 @@ export interface Mods {
   ctrl?: boolean;
   alt?: boolean;
   super?: boolean;                  // Cmd/Win
-  hyper?: boolean;
-  meta?: boolean;
+  // Side info (optional, for platforms that distinguish L/R modifiers):
+  shiftSide?: "left" | "right";
+  ctrlSide?: "left" | "right";
+  altSide?: "left" | "right";
+  superSide?: "left" | "right";
   capsLock?: boolean;
   numLock?: boolean;
 }
@@ -199,13 +217,18 @@ export class KeyEncoder implements Disposable {
 }
 ```
 
+The binding's `encode()` enforces the C-API contract: throws `EncodeError`
+if `utf8` contains a C0 control or PUA codepoint. Consumers constructing
+a `KeyEvent` for Ctrl+C should set `key="KeyC"` + `mods={ctrl:true}` +
+`utf8="c"` (or omit `utf8`); they should **not** try to pass `""`.
+
 ### 2.2 C-API mapping
 
 | TypeScript | C |
 |---|---|
 | `new KeyEncoder({terminal})` | `ghostty_key_encoder_new()` + `ghostty_key_encoder_setopt_from_terminal()` |
 | `new KeyEncoder({options})` | `ghostty_key_encoder_new()` + `ghostty_key_encoder_setopt()` per field |
-| `encoder.encode(event)` | `ghostty_key_event_new(...)` → `ghostty_key_encoder_encode(...)` → buffer → `ghostty_key_event_free()` |
+| `encoder.encode(event)` | `ghostty_key_event_new()` → `_set_action` / `_set_key` / `_set_mods` / `_set_consumed_mods` / `_set_composing` / `_set_unshifted_codepoint` / `_set_utf8` → `ghostty_key_encoder_encode()` → buffer → `ghostty_key_event_free()` |
 | `encoder.syncFromTerminal(t)` | `ghostty_key_encoder_setopt_from_terminal()` |
 | `[Symbol.dispose]` | `ghostty_key_encoder_free()` |
 
@@ -224,13 +247,35 @@ export class KeyEncoder implements Disposable {
 
 Runner owns one encoder bound to its Terminal:
 
-- `sendText(text)` — iterate chars, synthesize `KeyEvent` per char with
-  `text:` field populated, encode each, concatenate bytes, write to pty.
-  Going through the encoder (vs. raw byte write) keeps text correct under
-  Kitty-keyboard mode or other variants that alter plain-text encoding.
-- `sendKey(key, mods?)` — construct `KeyEvent{key, action:"press", mods}`,
-  encode, write.
-- `sendBytes(bytes)` — bypass encoder entirely. Named escape hatch.
+- `sendText(text)` — **raw UTF-8 bytes, no encoder**. Writes the string's
+  UTF-8 encoding to the pty directly. C0 controls (`\r`, `\t`, `\n`)
+  pass through unchanged — they're byte-exact, not key events. This
+  matches what every shell-scripted input-automation tool does and
+  avoids the C API's "no C0 in utf8" restriction entirely. Plain text
+  doesn't need the encoder; modes like DECCKM and Kitty keyboard apply
+  to *keys*, not to typed characters.
+
+- `sendKey(key, mods?)` — through encoder. Runner builds a `KeyEvent`
+  with a US-layout default:
+    - `key` — maps name to `GhosttyKey` enum
+    - `action: "press"`, `mods` from second arg
+    - For printable keys (letters, digits, symbols): compute `utf8` +
+      `unshiftedCodepoint` from the US-layout canonical character,
+      accounting for shift. Example: `sendKey("KeyA", {shift:true})`
+      → `utf8="A"`, `unshiftedCodepoint=0x61`.
+    - For C0/function/navigation keys (Enter, Escape, Arrow*, F1–F25,
+      Backspace, Home, etc.): `utf8` left `undefined` so the encoder
+      derives bytes from the logical key per the C API contract.
+  Non-US layouts or composition cases use `sendKeyEvent(event)` with
+  a fully-specified `KeyEvent`.
+
+- `sendKeyEvent(event: KeyEvent)` — full control escape hatch. Agent
+  passes a complete `KeyEvent`; Runner encodes and writes. For
+  non-US layouts, IME composition, or any case where the US-default
+  `sendKey` is wrong.
+
+- `sendBytes(bytes)` — bypass encoder entirely. Named escape hatch for
+  "I know what I'm doing."
 
 ### 2.5 Explicitly not in Pass 4
 
@@ -257,9 +302,10 @@ class Runner implements AsyncDisposable {
 
   frames(): AsyncIterable<Frame>;
 
-  sendText(text: string): Promise<void>;
-  sendKey(key: Key, mods?: Mods): Promise<void>;
-  sendBytes(bytes: Uint8Array): Promise<void>;
+  sendText(text: string): Promise<void>;               // raw UTF-8 bytes
+  sendKey(key: Key, mods?: Mods): Promise<void>;       // US-layout convenience
+  sendKeyEvent(event: KeyEvent): Promise<void>;        // full KeyEvent control
+  sendBytes(bytes: Uint8Array): Promise<void>;         // raw escape hatch
 
   resize(cols: number, rows: number): Promise<void>;
   waitExit(opts?: { timeoutMs?: number }): Promise<WaitExitResult>;
@@ -317,9 +363,8 @@ type FrameReason =
   | "bell"
   | "cursorMove"                    // opt-in via yieldOn
   | "heartbeat"
-  | "exited"
-  | "crashed"
-  | "quitTimeout";                  // terminal reasons
+  | "exited"                        // terminal — normal child exit
+  | "crashed";                      // terminal — child died by signal
 
 interface Frame {
   readonly reason: FrameReason;
@@ -365,7 +410,7 @@ await using runner = await Runner.spawn(["nethack"], {
 
 outer: for await (const frame of runner.frames()) {
   switch (frame.reason) {
-    case "exited": case "crashed": case "quitTimeout":
+    case "exited": case "crashed":
       console.log(`ended: ${frame.reason}, code=${frame.exitCode}`);
       console.log(frame.snapshot.text);    // final screen
       break outer;
@@ -376,7 +421,8 @@ outer: for await (const frame of runner.frames()) {
     await runner.sendText("#quit\r y\r y\r");
     const r = await runner.waitExit({ timeoutMs: 3000 });
     if (!r.exited) await runner.terminate({ thenAfterMs: 1000 });
-    // loop closes on the child's actual terminal frame
+    // iterator keeps delivering frames until the child actually exits;
+    // the next terminal frame ("exited" or "crashed") closes the loop
   } else {
     await runner.sendText(move);
   }
@@ -397,7 +443,7 @@ outer: for await (const frame of runner.frames()) {
      │                                  │
      │                                  ▼
      │                            yields terminal frame
-     │                            (exited / crashed / quitTimeout)
+     │                            (exited / crashed)
      │                                  │
      │                                  ▼
      │                              [exited]
@@ -443,21 +489,43 @@ quiesceTimer fires
 scheduler.maybeYield()
   ├── if exitSignal resolved → yield terminal frame (iterator closes)
   ├── if now - lastYieldAt < minIntervalMs → defer to boundary
-  ├── if pendingReasons ∩ yieldOn is empty → skip (no yield)
-  └── else:
+  ├── determine trigger:
+  │     • if pendingReasons contains "heartbeat" → bypass yieldOn filter (always yields)
+  │     • else if pendingReasons ∩ yieldOn is empty → skip (no yield)
+  │     • else → proceed with pendingReasons ∩ yieldOn
+  └── yield path:
         ├── renderState.update(terminal)   ← ensure snapshot is current
-        └── yield frame with reason = priorityPick(pendingReasons)
+        ├── construct frozen FrameSnapshot
+        ├── yield Frame with reason = priorityPick(trigger)
+        ├── renderState.markClean()        ← clear dirty flags per Pass 3 contract
+        ├── reset pendingReasons = ∅
+        ├── reset bellsSinceLast = 0, titleChangesSinceLast = []
+        ├── lastYieldAt = now
+        └── restart heartbeatTimer(maxIntervalMs)
 
 heartbeatTimer fires (maxIntervalMs elapsed with no yield)
   └── pendingReasons += "heartbeat" → scheduler.maybeYield()
-        (note: maybeYield always refreshes renderState before snapshotting,
-        so heartbeat frames during continuous-paint never carry stale state)
 ```
+
+Notes on the scheduler semantics:
+
+- **Heartbeat bypasses `yieldOn`.** Users configure `yieldOn` to silence
+  *change*-driven yields; heartbeat is the "you asked to be poked at
+  least this often" signal and must fire regardless. This is enforced
+  by a special-case branch in `maybeYield`, above.
+- **Dirty state is cleared at yield**, not at `update()`. Per the Pass 3
+  `RenderState` contract (§Pass 3 Codex round 1 fix), `update()`
+  refreshes but does not clear; `markClean()` clears. Without the
+  `markClean` step after yielding, every subsequent quiesce would
+  continue to report `"cellChange"` and defeat the change gate.
+- **All accumulators reset at yield.** `pendingReasons`, `bellsSinceLast`,
+  `titleChangesSinceLast` — otherwise counts and reasons carry forward
+  into the next frame's snapshot.
 
 ### 4.3 Reason priority
 
 ```
-crashed > exited > quitTimeout              ← terminal; override everything
+crashed > exited                            ← terminal; override everything
   > initial                                  ← first frame only
   > titleChange                              ← semantic event
   > bell                                     ← alert
@@ -486,20 +554,29 @@ that window. It does not yield 17 stale frames.
 4. `sendText`/`sendKey` during agent-think time is safe — bytes go
    through the pty immediately; responses surface in the next frame.
 5. **Write serialization.** Concurrent calls to `sendText`/`sendKey`/
-   `sendBytes` complete in call order — the N-th call's bytes land on
-   the pty before the (N+1)-th's. No interleaving.
-6. **No write timeout by default.** `sendBytes` awaits until the pty
-   has room. A pathologically non-draining child can cause a send to
-   hang indefinitely; agents that need a bound should wrap in
-   `Promise.race` with their own timer.
+   `sendKeyEvent`/`sendBytes` complete in call order — the N-th call's
+   bytes land on the pty before the (N+1)-th's. No interleaving. Runner
+   enforces this via an internal write mutex.
+6. **Full-buffer drain contract.** Every send method loops over partial
+   writes. `Bun.Terminal.write()` may return a byte count smaller than
+   the requested buffer when the pty's input side is backed up; Runner
+   internally loops, awaiting drain between attempts, until *every*
+   byte of the requested payload has been written. A send only
+   resolves once the full payload is flushed to the pty. Partial writes
+   are never silently dropped.
+7. **No write timeout by default.** A pathologically non-draining child
+   can cause a send to hang indefinitely. Agents that need a bound
+   should wrap in `Promise.race` with their own timer, or call
+   `terminate()` from a watchdog.
 
 ### 4.6 Non-goals (scheduler)
 
 - No priority queue for "urgent" keystrokes — sends are FIFO on the pty.
 - No speculative rendering — the frame reflects actual libghostty state,
   not a predicted post-keystroke state.
-- No backpressure relief — if the pty's input buffer is full, `sendBytes`
-  awaits. TUI programs don't stall input in practice.
+- No backpressure relief (no drop-on-full). Sends drain completely (§4.5 #6);
+  a non-draining child causes `sendBytes` to await indefinitely. TUI
+  programs don't stall input in practice.
 
 ## 5. Lifecycle & error surfaces
 
@@ -518,10 +595,10 @@ Rule: **expected state transitions are frames; unexpected states throw.**
 
 | Error | Thrown by | When |
 |---|---|---|
-| `ExitedError` | `sendText`/`sendKey`/`sendBytes`/`resize` | Child has exited |
+| `ExitedError` | `sendText`/`sendKey`/`sendKeyEvent`/`sendBytes`/`resize` | Child has exited |
 | `DisposedError` | any method | After `[Symbol.asyncDispose]` completed |
 | `IteratorInUseError` | `frames()` | A previous iterator is still active |
-| `EncodeError` | `sendText`/`sendKey` | Encoder returned non-success (rare) |
+| `EncodeError` | `sendKey`/`sendKeyEvent` | Encoder returned non-success, or `utf8` contains a forbidden C0/PUA codepoint |
 
 **Terminal frames (not errors):**
 
@@ -529,7 +606,11 @@ Rule: **expected state transitions are frames; unexpected states throw.**
 |---|---|
 | `"exited"` | Child exited normally (any exit code, including non-zero) |
 | `"crashed"` | Child died by signal (SIGSEGV, external SIGKILL, etc.) |
-| `"quitTimeout"` | `waitExit({timeoutMs})` timeout fired; child still alive |
+
+`waitExit` timeouts are **not** terminal frames. The timeout is signaled
+through `WaitExitResult.exited = false`. The iterator only closes when the
+child actually dies. This keeps the agent's loop able to observe the real
+terminal frame after a subsequent `terminate()` or late self-exit.
 
 **Explicitly not surfaced:**
 
@@ -695,7 +776,7 @@ await using runner = await Runner.spawn(["nethack"], {
 
 outer: for await (const frame of runner.frames()) {
   switch (frame.reason) {
-    case "exited": case "crashed": case "quitTimeout":
+    case "exited": case "crashed":
       console.log(`ended: ${frame.reason}`);
       break outer;
   }
@@ -764,9 +845,12 @@ Areas where the design makes a call but reviewers may push back:
    may argue `bell > titleChange` or that reasons should be a Set
    instead of single value.
 
-5. **`sendText` per-char encoding.** Going through the encoder per char
-   is microseconds-slow but correctness-safe. A "raw text fast path" for
-   known-simple modes is possible if it matters.
+5. **`sendText` as raw UTF-8 bytes.** Plain text skips the encoder —
+   C0 controls pass through as-is, modes like DECCKM / Kitty-keyboard
+   apply to keys, not typed characters. Edge case: under an exotic
+   mode that genuinely re-encodes plain text, consumers should switch
+   to per-character `sendKey(...)`. We can revisit if any real program
+   surfaces this.
 
 6. **One iterator at a time.** Reasonable simplification. Multiplexing
    `frames()` consumers is non-trivial and not a current need.
