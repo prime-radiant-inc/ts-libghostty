@@ -26,6 +26,46 @@ export interface TerminalOptions {
   // option at the pinned Ghostty commit — it is set post-construction via
   // ghostty_terminal_set(...). Pass 1 does not expose APC tuning; the library
   // uses its upstream defaults. See README "APC tuning (Pass 1)".
+
+  /**
+   * Invoked when libghostty needs to write data back to the pty in response
+   * to a VT query sequence (e.g. DA1, DECRQM, device status report). The
+   * `bytes` array is a JS-owned copy of libghostty's borrowed buffer — safe
+   * to retain past the callback's return.
+   *
+   * Constraints:
+   * - MUST NOT call any mutating method on the same Terminal: `vtWrite`,
+   *   `resize`, `reset`, `setMode`, `close`, or `[Symbol.dispose]`. libghostty
+   *   is mid-parse; mutating the same Terminal corrupts or frees state the
+   *   parser still references. `snapshot()` and `mode(name)` are read-only
+   *   and are allowed. Doing any banned call throws a typed `GhosttyError`
+   *   with code `"invalid_value"` — defer with `queueMicrotask` or
+   *   `setTimeout` to perform the mutation after `vtWrite()` returns.
+   * - MUST NOT throw. Exceptions are caught at the FFI boundary and logged
+   *   via `console.error`; they cannot cross the C frame.
+   * - SHOULD NOT block. The callback runs synchronously inside `vtWrite()`
+   *   and blocks further input parsing until it returns.
+   */
+  onWritePty?: (bytes: Uint8Array) => void;
+
+  /**
+   * Invoked when libghostty processes a BEL character (0x07).
+   *
+   * Same constraints as `onWritePty` — no mutating calls on this Terminal
+   * (vtWrite/resize/reset/setMode/close/Symbol.dispose are runtime-rejected),
+   * no throwing, no blocking.
+   */
+  onBell?: () => void;
+
+  /**
+   * Invoked when libghostty processes an OSC 0 or OSC 2 escape that changes
+   * the terminal title. The `title` string is a JS-owned copy — safe to
+   * retain past the callback's return.
+   *
+   * Same constraints as `onWritePty` — no mutating calls on this Terminal,
+   * no throwing, no blocking.
+   */
+  onTitleChanged?: (title: string) => void;
 }
 
 export interface TerminalSnapshot {
