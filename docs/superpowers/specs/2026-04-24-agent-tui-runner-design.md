@@ -109,26 +109,47 @@ ts-libghostty/                       ← repo (renamed from ts-libghostty-vt)
   package.json                       (workspace root, private, no publish)
   tsconfig.base.json
   CLAUDE.md                          (no root CHANGELOG — per-package only)
-  vendor/ghostty/                    shared pin
-  prebuilds/darwin-arm64/            shared dylib
-  scripts/                           shared build/probe tools
   docs/
   packages/
-    libghostty-vt/
-      package.json                   npm: "libghostty-vt"
+    libghostty-vt/                   npm: "libghostty-vt"
+      package.json
       src/  test/  CHANGELOG.md
-    blinkyterm/
-      package.json                   npm: "blinkyterm"
+      vendor/ghostty/                pinned Ghostty tree (headers + source
+                                     for probe/gen-bindings)
+      prebuilds/darwin-arm64/        compiled dylib — MUST live inside the
+                                     package so npm/bun pack includes it
+      scripts/                       binding build, probe, gen-bindings
+    blinkyterm/                      npm: "blinkyterm"
+      package.json
       src/  test/  examples/  CHANGELOG.md
+      scripts/                       blinkyterm-specific (test children, etc.)
 ```
+
+**Nothing FFI-related lives at the workspace root.** `vendor/`,
+`prebuilds/`, and binding-specific `scripts/` stay inside
+`packages/libghostty-vt/` because:
+
+- The binding's FFI loader (`src/ffi.ts`) resolves `prebuilds/...`
+  relative to the package root. `bun/npm pack` only includes files
+  inside the package tree — a shared `../../prebuilds/` would silently
+  drop from the published tarball and the installed binding would fail
+  to load its dylib.
+- `vendor/ghostty/` is consumed at build time by `gen-bindings.ts`
+  (binding-specific) and stays with it.
+- `blinkyterm` has no FFI of its own; it depends on the binding via
+  `workspace:*`. No shared native state.
+
+Only genuinely-shared things (workspace root `package.json`,
+`tsconfig.base.json`, `CLAUDE.md`, `docs/`) live at the repo root.
 
 - The repo rename is a one-time structural change. The GitHub URL and
   clone instructions update accordingly.
 - The npm package name for the binding drops the `ts-` prefix (now
   `libghostty-vt`), matching the upstream C library's name. `ts-` was
   redundant with `package.json → types`.
-- Shared `vendor/`, `prebuilds/`, `scripts/`, `docs/` — the pin is a
-  single source of truth for both packages.
+- `vendor/`, `prebuilds/`, and binding `scripts/` live inside
+  `packages/libghostty-vt/` (see rationale above). `docs/` is shared
+  at the workspace root for cross-cutting design work.
 - Bun workspaces (`workspaces: ["packages/*"]`). `bun install` at root
   hoists and symlinks.
 
@@ -487,40 +508,84 @@ quiesceTimer fires
   └── scheduler.maybeYield()
 
 scheduler.maybeYield()
-  ├── if exitSignal resolved → yield terminal frame (iterator closes)
+  ├── if exitSignal resolved → publish terminal frame (iterator closes)
   ├── if now - lastYieldAt < minIntervalMs → defer to boundary
   ├── determine trigger:
-  │     • if pendingReasons contains "heartbeat" → bypass yieldOn filter (always yields)
-  │     • else if pendingReasons ∩ yieldOn is empty → skip (no yield)
+  │     • if pendingReasons contains "heartbeat" → bypass yieldOn filter (always publishes)
+  │     • else if pendingReasons ∩ yieldOn is empty → skip (no publish)
   │     • else → proceed with pendingReasons ∩ yieldOn
-  └── yield path:
-        ├── renderState.update(terminal)   ← ensure snapshot is current
-        ├── construct frozen FrameSnapshot
-        ├── yield Frame with reason = priorityPick(trigger)
-        ├── renderState.markClean()        ← clear dirty flags per Pass 3 contract
-        ├── reset pendingReasons = ∅
-        ├── reset bellsSinceLast = 0, titleChangesSinceLast = []
-        ├── lastYieldAt = now
-        └── restart heartbeatTimer(maxIntervalMs)
+  └── publish path (executes atomically, see §4.2.1):
+        1. renderState.update(terminal)                   // refresh cache
+        2. construct frozen FrameSnapshot (copy of current state)
+        3. snapshot accumulator counters into the Frame:
+              bellsSinceLast, titleChangesSinceLast
+        4. renderState.markClean()                        // clear dirty flags
+        5. reset scheduler accumulators:
+              pendingReasons = ∅
+              bellsSinceLast = 0
+              titleChangesSinceLast = []
+        6. lastYieldAt = now
+        7. restart heartbeatTimer(maxIntervalMs)
+        8. publish Frame to pending slot, signal waiting consumer
 
-heartbeatTimer fires (maxIntervalMs elapsed with no yield)
+heartbeatTimer fires (maxIntervalMs elapsed with no publish)
   └── pendingReasons += "heartbeat" → scheduler.maybeYield()
 ```
 
-Notes on the scheduler semantics:
+### 4.2.1 The publish-then-clear ordering is load-bearing
+
+Runner's `frames()` iterator is **NOT** implemented as an async generator
+that literally does `yield frame; cleanup();`. That pattern is wrong
+here: an async generator suspends *at* `yield` and runs statements after
+the `yield` only when the consumer calls `.next()` again. Events
+arriving during agent-think time would accumulate, then be wiped by
+the post-yield cleanup before ever being observed.
+
+Instead, Runner uses an explicit slot-and-signal handoff:
+
+- Scheduler owns a single `pendingFrame: Frame | null` slot and a
+  `consumerWaiter` (a Promise the iterator's `next()` awaits).
+- The publish path above executes **steps 1–8 synchronously, in
+  order, with no intervening await**. Snapshot capture and accumulator
+  reset happen *before* the consumer can observe the frame. Steps 3
+  copies the current accumulator values onto the Frame; step 5
+  resets the live accumulators to their zero state.
+- Any pty events that arrive between step 8 (publish) and the
+  consumer's next invocation of `next()` land in the fresh
+  accumulators and are counted toward the *next* frame — never
+  silently dropped.
+
+The consumer-facing `AsyncIterable<Frame>` implementation wraps this:
+
+```ts
+class FrameIterator implements AsyncIterator<Frame> {
+  async next(): Promise<IteratorResult<Frame>> {
+    if (scheduler.pendingFrame) {
+      const f = scheduler.pendingFrame;
+      scheduler.pendingFrame = null;
+      if (isTerminal(f.reason)) return { done: true, value: undefined };
+      return { done: false, value: f };
+    }
+    await scheduler.consumerWaiter();  // resolved by publish step 8
+    return this.next();                 // recheck
+  }
+}
+```
+
+### 4.2.2 Scheduler notes
 
 - **Heartbeat bypasses `yieldOn`.** Users configure `yieldOn` to silence
   *change*-driven yields; heartbeat is the "you asked to be poked at
-  least this often" signal and must fire regardless. This is enforced
-  by a special-case branch in `maybeYield`, above.
-- **Dirty state is cleared at yield**, not at `update()`. Per the Pass 3
-  `RenderState` contract (§Pass 3 Codex round 1 fix), `update()`
-  refreshes but does not clear; `markClean()` clears. Without the
-  `markClean` step after yielding, every subsequent quiesce would
-  continue to report `"cellChange"` and defeat the change gate.
-- **All accumulators reset at yield.** `pendingReasons`, `bellsSinceLast`,
-  `titleChangesSinceLast` — otherwise counts and reasons carry forward
-  into the next frame's snapshot.
+  least this often" signal and must fire regardless.
+- **Dirty state is cleared at publish**, not at `update()`. Per the Pass
+  3 `RenderState` contract (§Pass 3 Codex round 1 fix), `update()`
+  refreshes but does not clear; `markClean()` clears. Without
+  `markClean` after publishing, every subsequent quiesce would continue
+  to report `"cellChange"` and defeat the change gate.
+- **All accumulators reset atomically at publish.** `pendingReasons`,
+  `bellsSinceLast`, `titleChangesSinceLast` — copied into the Frame
+  first, then reset. Events arriving post-publish populate the fresh
+  set and surface in the next frame.
 
 ### 4.3 Reason priority
 
@@ -627,10 +692,25 @@ terminal frame after a subsequent `terminate()` or late self-exit.
      SIGKILL immediately (dispose is nuclear — polite shutdown is terminate()).
 4. Await child exit, capped at 2s. If it misses, log and continue.
 5. Close pty master/slave fds.
-6. Dispose Terminal and KeyEncoder.
+6. Dispose, in order:
+     a. RenderState  ([Symbol.dispose] — frees libghostty row/cell iterator handles)
+     b. KeyEncoder   ([Symbol.dispose] — frees encoder + pending event handles)
+     c. Terminal     ([Symbol.dispose] — frees terminal handle)
 ```
 
 Idempotent. Subsequent calls resolve immediately.
+
+**Two layers of post-dispose access error.** After `Runner` dispose
+completes:
+
+- Runner's own accessors — `runner.renderState`, `runner.terminal`,
+  `runner.sendText()`, etc. — throw Runner's `DisposedError`. The
+  getter is the gate; the underlying handle isn't consulted.
+- A consumer who held a `RenderState` or `Terminal` reference from
+  *before* disposal and calls methods on it afterwards gets the
+  binding's existing error: `GhosttyError` with code `"closed"` from
+  the Pass 3 `#assertOpen` check. Each layer is honest about its own
+  lifecycle; neither pretends the other's state is still alive.
 
 ### 5.3 Edge cases (required test coverage)
 
