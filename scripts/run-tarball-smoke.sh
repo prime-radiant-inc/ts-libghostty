@@ -48,8 +48,9 @@ EOF
 bun install --silent
 
 cat > run.ts <<'EOF'
-import { Terminal, Formatter } from "ts-libghostty-vt";
+import { Terminal, Formatter, RenderState, encodeFocus } from "ts-libghostty-vt";
 
+// Pass 1 — Terminal + Formatter
 using term = new Terminal({ cols: 10, rows: 3 });
 term.vtWrite(new TextEncoder().encode("hi"));
 using fmt = new Formatter({ format: "plain" });
@@ -58,6 +59,31 @@ if (!s.includes("hi")) {
   console.error("expected 'hi' in output, got:", JSON.stringify(s));
   process.exit(1);
 }
+
+// Pass 3 — RenderState forEachCell
+using rs = new RenderState();
+rs.update(term);
+let text = "";
+rs.forEachCell(0, (cell) => { text += cell.text; });
+if (!text.startsWith("hi")) {
+  console.error("expected RenderState row 0 to start with 'hi', got:", JSON.stringify(text));
+  process.exit(1);
+}
+
+// Pass 3 — Terminal.cellAt
+const cell = term.cellAt({ x: 0, y: 0 });
+if (cell?.text !== "h") {
+  console.error("expected cellAt(0,0).text === 'h', got:", JSON.stringify(cell));
+  process.exit(1);
+}
+
+// Pass 3 — encodeFocus
+const focusBytes = encodeFocus("in");
+if (focusBytes[0] !== 0x1B) {
+  console.error("expected encodeFocus('in') to start with ESC, got:", Array.from(focusBytes));
+  process.exit(1);
+}
+
 console.log("OK");
 EOF
 
