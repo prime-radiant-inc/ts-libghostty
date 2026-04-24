@@ -456,6 +456,18 @@ export class RenderState {
     this.#viewportCursor = { x, y, visible: true, wideTail };
   }
 
+  // Reusable mutable cell for hot-path walks. Fields mutate in-place between
+  // callback invocations; callers must not retain the reference.
+  // Optional fields (style, hyperlinkUri) are absent by default; #walkCached
+  // sets or deletes them per-cell to satisfy exactOptionalPropertyTypes.
+  #hotCell: RenderCell = {
+    x: 0,
+    text: "",
+    wide: false,
+    isWideContinuation: false,
+    protected: false,
+  };
+
   /**
    * Read colors from libghostty via ghostty_render_state_colors_get.
    * Requires Task 3 to have run so structLayouts["GhosttyRenderStateColors"]
@@ -527,6 +539,37 @@ export class RenderState {
     }
   }
 
+  /**
+   * Invoke `cb` once per cell in the given row, reusing a single mutable
+   * `RenderCell` object (`#hotCell`) across all invocations. The callback must
+   * not retain the reference — the same object is mutated for every cell.
+   *
+   * `row` may be a `RenderRow` (from `rows()` / `forEachDirtyRow`) or a raw
+   * row index (0-based). Out-of-bounds indices are silently ignored.
+   */
+  forEachCell(row: RenderRow | number, cb: (cell: RenderCell) => void): void {
+    this.#assertOpen();
+    const y = typeof row === "number" ? row : row.y;
+    const cached = this.#rows[y];
+    if (!cached) return;
+    this.#walkCached(cached.cells, cb);
+  }
+
+  /**
+   * Invoke `cb` once per cell of every dirty row, in display order. Each dirty
+   * row produces a fresh `RenderRow` snapshot (allocated once per dirty row);
+   * the `RenderCell` is the reusable `#hotCell` (mutated per cell). The
+   * callback must not retain the cell reference.
+   */
+  forEachDirtyCell(cb: (row: RenderRow, cell: RenderCell) => void): void {
+    this.#assertOpen();
+    for (const cached of this.#rows) {
+      if (!cached.dirty) continue;
+      const rowSnap = this.#toRenderRow(cached);
+      this.#walkCached(cached.cells, (cell) => cb(rowSnap, cell));
+    }
+  }
+
   // ---- Private iterator helpers (Task 11) -----------------------------------
 
   #toRenderRow(cached: CachedRow): RenderRow {
@@ -552,6 +595,30 @@ export class RenderState {
       if (c.style !== undefined) cell.style = c.style;
       if (c.hyperlinkUri !== undefined) cell.hyperlinkUri = c.hyperlinkUri;
       yield cell;
+    }
+  }
+
+  /**
+   * Hot-path inner loop: mutates `#hotCell` field-by-field for each cached
+   * cell and invokes `cb`. exactOptionalPropertyTypes: optional fields are set
+   * when present and deleted when absent, so `#hotCell` never carries a stale
+   * value from the previous iteration.
+   */
+  #walkCached(cells: CachedCell[], cb: (cell: RenderCell) => void): void {
+    const hot = this.#hotCell;
+    for (const c of cells) {
+      hot.x = c.x;
+      hot.text = c.text;
+      hot.wide = c.wide;
+      hot.isWideContinuation = c.isWideContinuation;
+      hot.protected = c.protected;
+      // exactOptionalPropertyTypes: set or delete optional fields to avoid
+      // stale values leaking across cell iterations.
+      if (c.style !== undefined) hot.style = c.style;
+      else delete hot.style;
+      if (c.hyperlinkUri !== undefined) hot.hyperlinkUri = c.hyperlinkUri;
+      else delete hot.hyperlinkUri;
+      cb(hot);
     }
   }
 }
