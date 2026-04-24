@@ -199,6 +199,80 @@ export const structLayouts: Record<string, StructLayout> = {
       "charsets": { offset: 13, size: 1, kind: "bool" },
     },
   },
+  "GhosttyColorRgb": {
+    size: 3, align: 1, isSized: false,
+    fields: {
+      "r": { offset: 0, size: 1, kind: "uint" },
+      "g": { offset: 1, size: 1, kind: "uint" },
+      "b": { offset: 2, size: 1, kind: "uint" },
+    },
+  },
+  "GhosttyStyleColor": {
+    size: 16, align: 8, isSized: false,
+    fields: {
+      "tag": { offset: 0, size: 4, kind: "int" },
+      "value": { offset: 8, size: 8, kind: "struct" },
+    },
+  },
+  "GhosttyStyle": {
+    size: 72, align: 8, isSized: true,
+    fields: {
+      "size": { offset: 0, size: 8, kind: "uint" },
+      "fg_color": { offset: 8, size: 16, kind: "struct" },
+      "bg_color": { offset: 24, size: 16, kind: "struct" },
+      "underline_color": { offset: 40, size: 16, kind: "struct" },
+      "bold": { offset: 56, size: 1, kind: "bool" },
+      "italic": { offset: 57, size: 1, kind: "bool" },
+      "faint": { offset: 58, size: 1, kind: "bool" },
+      "blink": { offset: 59, size: 1, kind: "bool" },
+      "inverse": { offset: 60, size: 1, kind: "bool" },
+      "invisible": { offset: 61, size: 1, kind: "bool" },
+      "strikethrough": { offset: 62, size: 1, kind: "bool" },
+      "overline": { offset: 63, size: 1, kind: "bool" },
+      "underline": { offset: 64, size: 4, kind: "int" },
+    },
+  },
+  "GhosttyRenderStateColors": {
+    size: 792, align: 8, isSized: true,
+    fields: {
+      "size": { offset: 0, size: 8, kind: "uint" },
+      "background": { offset: 8, size: 3, kind: "struct" },
+      "foreground": { offset: 11, size: 3, kind: "struct" },
+      "cursor": { offset: 14, size: 3, kind: "struct" },
+      "cursor_has_value": { offset: 17, size: 1, kind: "bool" },
+      "palette": { offset: 18, size: 768, kind: "struct" },
+    },
+  },
+  "GhosttyGridRef": {
+    size: 24, align: 8, isSized: true,
+    fields: {
+      "size": { offset: 0, size: 8, kind: "uint" },
+      "node": { offset: 8, size: 8, kind: "ptr" },
+      "x": { offset: 16, size: 2, kind: "uint" },
+      "y": { offset: 18, size: 2, kind: "uint" },
+    },
+  },
+  "GhosttyPointCoordinate": {
+    size: 8, align: 4, isSized: false,
+    fields: {
+      "x": { offset: 0, size: 2, kind: "uint" },
+      "y": { offset: 4, size: 4, kind: "uint" },
+    },
+  },
+  "GhosttyPoint": {
+    size: 24, align: 8, isSized: false,
+    fields: {
+      "tag": { offset: 0, size: 4, kind: "int" },
+      "value": { offset: 8, size: 16, kind: "struct" },
+    },
+  },
+  "GhosttyTerminalScrollViewport": {
+    size: 24, align: 8, isSized: false,
+    fields: {
+      "tag": { offset: 0, size: 4, kind: "int" },
+      "value": { offset: 8, size: 16, kind: "struct" },
+    },
+  },
 };
 
 // enum GhosttyBuildInfo

@@ -75,6 +75,110 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (term, data:c_int, out*)
     returns: FFIType.i32,
   },
+  // --- Pass 3 additions -----------------------------------------------------------
+  // Render state lifecycle + update + dirty + colors
+  ghostty_render_state_new: {
+    args: [FFIType.ptr, FFIType.ptr],   // (allocator|null, &out_handle)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_free: {
+    args: [FFIType.ptr],                // (handle)
+    returns: FFIType.void,
+  },
+  ghostty_render_state_update: {
+    args: [FFIType.ptr, FFIType.ptr],   // (state, terminal)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_set: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (state, option, &value)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_get: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (state, data, &out)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_colors_get: {
+    args: [FFIType.ptr, FFIType.ptr],   // (state, &out_colors)
+    returns: FFIType.i32,
+  },
+  // Render-state row iterator
+  ghostty_render_state_row_iterator_new: {
+    args: [FFIType.ptr, FFIType.ptr],   // (allocator|null, &out_iterator)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_row_iterator_next: {
+    args: [FFIType.ptr],                // (iterator)
+    returns: FFIType.bool,
+  },
+  ghostty_render_state_row_iterator_free: {
+    args: [FFIType.ptr],                // (iterator)
+    returns: FFIType.void,
+  },
+  ghostty_render_state_row_get: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (iterator, data, &out)
+    returns: FFIType.i32,
+  },
+  // Render-state cell iterator (per-row)
+  ghostty_render_state_row_cells_new: {
+    args: [FFIType.ptr, FFIType.ptr],   // (allocator|null, &out_cells)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_row_cells_next: {
+    args: [FFIType.ptr],                // (cells)
+    returns: FFIType.bool,
+  },
+  ghostty_render_state_row_cells_select: {
+    args: [FFIType.ptr, FFIType.u16],   // (cells, x)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_row_cells_get: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (cells, data, &out)
+    returns: FFIType.i32,
+  },
+  ghostty_render_state_row_cells_free: {
+    args: [FFIType.ptr],                // (cells)
+    returns: FFIType.void,
+  },
+  // Grid ref accessors (Terminal.cellAt + RenderState decode)
+  // ghostty_terminal_grid_ref: GhosttyPoint (24 B, > 16 B) is passed via
+  // hidden pointer per AAPCS64. We pass ptr to the marshaled point bytes.
+  ghostty_terminal_grid_ref: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (terminal, &point, &out_ref)
+    returns: FFIType.i32,
+  },
+  ghostty_grid_ref_cell: {
+    args: [FFIType.ptr, FFIType.ptr],   // (&ref, &out_cell)
+    returns: FFIType.i32,
+  },
+  ghostty_grid_ref_row: {
+    args: [FFIType.ptr, FFIType.ptr],   // (&ref, &out_row)
+    returns: FFIType.i32,
+  },
+  ghostty_grid_ref_graphemes: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr],  // (&ref, buf|null, buf_len, &out_len)
+    returns: FFIType.i32,
+  },
+  ghostty_grid_ref_hyperlink_uri: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr],  // (&ref, buf|null, buf_len, &out_len)
+    returns: FFIType.i32,
+  },
+  ghostty_grid_ref_style: {
+    args: [FFIType.ptr, FFIType.ptr],   // (&ref, &out_style)
+    returns: FFIType.i32,
+  },
+  // Focus encode (probe-size-first pattern)
+  ghostty_focus_encode: {
+    args: [FFIType.i32, FFIType.ptr, FFIType.u64, FFIType.ptr],  // (event, buf|null, buf_len, &out_written)
+    returns: FFIType.i32,
+  },
+  // Terminal scroll viewport: GhosttyTerminalScrollViewport (24 B > 16 B) is
+  // passed via hidden pointer per AAPCS64. We pass ptr to the marshaled bytes.
+  ghostty_terminal_scroll_viewport: {
+    args: [FFIType.ptr, FFIType.ptr],   // (terminal, &behavior)
+    returns: FFIType.void,
+  },
+  // --- End Pass 3 additions ---------------------------------------------------
+
   // GhosttyFormatterTerminalOptions (56 B) is passed via hidden pointer on
   // arm64 AAPCS64 (structs > 16 B are passed indirectly). We declare it as
   // FFIType.ptr and pass a pointer to the options bytes.

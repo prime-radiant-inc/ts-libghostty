@@ -14,6 +14,12 @@
 #include <string.h>
 
 #include "ghostty/vt.h"
+#include "ghostty/vt/color.h"
+#include "ghostty/vt/style.h"
+#include "ghostty/vt/point.h"
+#include "ghostty/vt/grid_ref.h"
+#include "ghostty/vt/render.h"
+#include "ghostty/vt/terminal.h"
 
 static int first_entry = 1;
 
@@ -130,12 +136,147 @@ static void probe_formatter_screen_extra(void) {
   end_struct();
 }
 
+/* ===== Pass 3: new structs ===== */
+
+static void probe_color_rgb(void) {
+  /* GhosttyColorRgb: 3 bytes tightly packed, no size field. */
+  emit_struct("GhosttyColorRgb",
+              sizeof(GhosttyColorRgb),
+              _Alignof(GhosttyColorRgb),
+              0);
+  first_field = 1;
+  EMIT_UINT(GhosttyColorRgb, r);
+  EMIT_UINT(GhosttyColorRgb, g);
+  EMIT_UINT(GhosttyColorRgb, b);
+  end_struct();
+}
+
+static void probe_style_color(void) {
+  /* GhosttyStyleColor: tag (i32) + value (union: palette u8 | rgb | _padding u64).
+   * Not a sized struct. The union value is treated as a single opaque "struct" field. */
+  emit_struct("GhosttyStyleColor",
+              sizeof(GhosttyStyleColor),
+              _Alignof(GhosttyStyleColor),
+              0);
+  first_field = 1;
+  EMIT_INT(GhosttyStyleColor, tag);
+  EMIT_STRUCT(GhosttyStyleColor, value);
+  end_struct();
+}
+
+static void probe_style(void) {
+  /* GhosttyStyle: sized struct (first field is size_t size).
+   * fg_color, bg_color, underline_color are GhosttyStyleColor (tag+value union).
+   * bool flags then int underline at the end. */
+  const int is_sized = (offsetof(GhosttyStyle, size) == 0 &&
+                        sizeof(((GhosttyStyle*)0)->size) == sizeof(size_t));
+  emit_struct("GhosttyStyle",
+              sizeof(GhosttyStyle),
+              _Alignof(GhosttyStyle),
+              is_sized);
+  first_field = 1;
+  EMIT_UINT(GhosttyStyle, size);
+  EMIT_STRUCT(GhosttyStyle, fg_color);
+  EMIT_STRUCT(GhosttyStyle, bg_color);
+  EMIT_STRUCT(GhosttyStyle, underline_color);
+  EMIT_BOOL(GhosttyStyle, bold);
+  EMIT_BOOL(GhosttyStyle, italic);
+  EMIT_BOOL(GhosttyStyle, faint);
+  EMIT_BOOL(GhosttyStyle, blink);
+  EMIT_BOOL(GhosttyStyle, inverse);
+  EMIT_BOOL(GhosttyStyle, invisible);
+  EMIT_BOOL(GhosttyStyle, strikethrough);
+  EMIT_BOOL(GhosttyStyle, overline);
+  EMIT_INT(GhosttyStyle, underline);
+  end_struct();
+}
+
+static void probe_render_state_colors(void) {
+  /* GhosttyRenderStateColors: sized struct with palette[256]. */
+  const int is_sized = (offsetof(GhosttyRenderStateColors, size) == 0 &&
+                        sizeof(((GhosttyRenderStateColors*)0)->size) == sizeof(size_t));
+  emit_struct("GhosttyRenderStateColors",
+              sizeof(GhosttyRenderStateColors),
+              _Alignof(GhosttyRenderStateColors),
+              is_sized);
+  first_field = 1;
+  EMIT_UINT(GhosttyRenderStateColors, size);
+  EMIT_STRUCT(GhosttyRenderStateColors, background);
+  EMIT_STRUCT(GhosttyRenderStateColors, foreground);
+  EMIT_STRUCT(GhosttyRenderStateColors, cursor);
+  EMIT_BOOL(GhosttyRenderStateColors, cursor_has_value);
+  EMIT_STRUCT(GhosttyRenderStateColors, palette);
+  end_struct();
+}
+
+static void probe_grid_ref(void) {
+  /* GhosttyGridRef: sized struct: size(8) + node(ptr 8) + x(u16) + y(u16). */
+  const int is_sized = (offsetof(GhosttyGridRef, size) == 0 &&
+                        sizeof(((GhosttyGridRef*)0)->size) == sizeof(size_t));
+  emit_struct("GhosttyGridRef",
+              sizeof(GhosttyGridRef),
+              _Alignof(GhosttyGridRef),
+              is_sized);
+  first_field = 1;
+  EMIT_UINT(GhosttyGridRef, size);
+  EMIT_PTR(GhosttyGridRef, node);
+  EMIT_UINT(GhosttyGridRef, x);
+  EMIT_UINT(GhosttyGridRef, y);
+  end_struct();
+}
+
+static void probe_point_coordinate(void) {
+  /* GhosttyPointCoordinate: x(u16) + y(u32). Not a sized struct. */
+  emit_struct("GhosttyPointCoordinate",
+              sizeof(GhosttyPointCoordinate),
+              _Alignof(GhosttyPointCoordinate),
+              0);
+  first_field = 1;
+  EMIT_UINT(GhosttyPointCoordinate, x);
+  EMIT_UINT(GhosttyPointCoordinate, y);
+  end_struct();
+}
+
+static void probe_point(void) {
+  /* GhosttyPoint: tag(i32) + value(union: coordinate | _padding[2]). Not sized. */
+  emit_struct("GhosttyPoint",
+              sizeof(GhosttyPoint),
+              _Alignof(GhosttyPoint),
+              0);
+  first_field = 1;
+  EMIT_INT(GhosttyPoint, tag);
+  EMIT_STRUCT(GhosttyPoint, value);
+  end_struct();
+}
+
+static void probe_terminal_scroll_viewport(void) {
+  /* GhosttyTerminalScrollViewport: tag(i32) + value(union: delta intptr | _padding[2]).
+   * Not a sized struct. Value union treated as opaque "struct" field. */
+  emit_struct("GhosttyTerminalScrollViewport",
+              sizeof(GhosttyTerminalScrollViewport),
+              _Alignof(GhosttyTerminalScrollViewport),
+              0);
+  first_field = 1;
+  EMIT_INT(GhosttyTerminalScrollViewport, tag);
+  EMIT_STRUCT(GhosttyTerminalScrollViewport, value);
+  end_struct();
+}
+
 int main(void) {
   printf("{\n  \"structs\": [\n");
   probe_terminal_options();
   probe_formatter_terminal_options();
   probe_formatter_terminal_extra();
   probe_formatter_screen_extra();
+  /* Pass 3 additions */
+  probe_color_rgb();
+  probe_style_color();
+  probe_style();
+  probe_render_state_colors();
+  probe_grid_ref();
+  probe_point_coordinate();
+  probe_point();
+  probe_terminal_scroll_viewport();
   printf("\n  ]\n}\n");
   return 0;
 }
