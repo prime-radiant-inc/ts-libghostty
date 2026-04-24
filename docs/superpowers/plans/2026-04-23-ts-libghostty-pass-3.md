@@ -232,6 +232,128 @@ typedef struct {
 
 ---
 
+## Task 2 reconciliation — corrections to downstream tasks
+
+**Added 2026-04-23 after Lovelace's Task 2 probe.** Cipher's plan-authoring survey had 10 divergences from the real pinned API. Probe commit `f490421` on `main` is the source of truth. Task 3 and downstream Bobs MUST apply the corrections below.
+
+### Confirmed enum values (use these in `generated.ts` references and any inline constants)
+
+- `GHOSTTY_SUCCESS = 0`
+- `GHOSTTY_OUT_OF_SPACE = -3` (plan originally had `-5` as a placeholder — delete any hardcoded `-5`)
+- `GHOSTTY_NO_VALUE = -4` (APC `get` returns this, not `INVALID_VALUE`; minor)
+- `GHOSTTY_RENDER_STATE_OPTION_DIRTY = 0`
+- `GHOSTTY_RENDER_STATE_DIRTY_FALSE = 0`
+- `GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR = 4`
+- `GHOSTTY_RENDER_STATE_ROW_DATA_CELLS = 3` (plan originally said `2`; value `2` is `ROW_DATA_RAW`)
+- `GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES = 19`, confirmed
+
+These will be available via `generated.enumValues.*` after Task 3 regenerates `generated.ts`. Prefer the generated constants in code; use literal values only for the probe script.
+
+### Row iteration requires a populate step
+
+The plan's Task 10 `#rebuildCache` calls `ghostty_render_state_row_iterator_next` immediately after `_new`. That iterates zero rows. **Corrected pattern** (bake this into Task 10's `#rebuildCache`):
+
+```typescript
+const D = generated.enumValues.GhosttyRenderStateData;
+const R = generated.enumValues.GhosttyRenderStateRowData;
+
+// 1. Create empty iterator object.
+const iterOut = new BigUint64Array(1);
+let rc = ffi.symbols.ghostty_render_state_row_iterator_new(null, ptr(iterOut));
+if (rc !== 0) {
+  throw new GhosttyError({ code: getResultCodeName(rc), functionName: "row_iterator_new" });
+}
+const iter = Number(iterOut[0]) as Pointer;
+
+// 2. Populate it from the render state via get(ROW_ITERATOR).
+rc = ffi.symbols.ghostty_render_state_get(this.#handle!, D.ROW_ITERATOR, ptr(iterOut));
+if (rc !== 0) {
+  ffi.symbols.ghostty_render_state_row_iterator_free(iter);
+  throw new GhosttyError({ code: getResultCodeName(rc), functionName: "render_state_get(ROW_ITERATOR)" });
+}
+
+// 3. Create a reusable cells container (one per rebuild; reset per row).
+const cellsOut = new BigUint64Array(1);
+rc = ffi.symbols.ghostty_render_state_row_cells_new(null, ptr(cellsOut));
+if (rc !== 0) {
+  ffi.symbols.ghostty_render_state_row_iterator_free(iter);
+  throw new GhosttyError({ code: getResultCodeName(rc), functionName: "row_cells_new" });
+}
+const cells = Number(cellsOut[0]) as Pointer;
+
+try {
+  let y = 0;
+  while (ffi.symbols.ghostty_render_state_row_iterator_next(iter)) {
+    const dirtyBuf = new Uint8Array(1);
+    rc = ffi.symbols.ghostty_render_state_row_get(
+      iter, R.DIRTY, ptr(dirtyBuf),
+    );
+    const rowDirty = rc === 0 && dirtyBuf[0] === 1;
+
+    // Populate the cells container from the current row (CELLS = 3, NOT 2).
+    rc = ffi.symbols.ghostty_render_state_row_get(iter, R.CELLS, ptr(cellsOut));
+    const decoded = rc === 0 ? this.#walkCells(cells) : [];
+
+    this.#rows.push({ y, wrapped: false, dirty: rowDirty, cells: decoded });
+    y += 1;
+  }
+} finally {
+  ffi.symbols.ghostty_render_state_row_cells_free(cells);
+  ffi.symbols.ghostty_render_state_row_iterator_free(iter);
+}
+```
+
+Replaces the Task 10 `#rebuildCache` body and the Task 10 `#walkCells` stub's signature — `#walkCells(cells: Pointer)` now iterates the reusable container (call `row_cells_next` until false).
+
+### `GhosttyPoint` is 24 bytes, not 16
+
+Task 3's `writePoint` helper uses `generated.sizedStructs.GhosttyPoint.size` (populated by Task 3 Step 5's `bun run verify:generated`), so it self-corrects. But Task 3 Bobs should verify the generated size is 24 before proceeding — if the probe layout reports something else, re-check `vendor/ghostty/include/ghostty/vt/point.h`.
+
+Layout reference:
+```
+tag:                i32 @ 0
+(pad)                   @ 4..7
+value.coordinate.x: u16 @ 8
+value.coordinate.y: u32 @ 10
+(pad)                   @ 14..23
+size = 24
+```
+
+### Empty-cell graphemes returns `SUCCESS + len=0`
+
+Task 8's `#decodeGridRef` and Task 11's `#walkCells` already handle `len > 0` conditionally — no code change required. But the error check should permit `rc === SUCCESS` explicitly (not force `OUT_OF_SPACE`):
+
+```typescript
+// OK as plan-authored — rc === 0 path falls through without throw:
+let rc = ffi.symbols.ghostty_grid_ref_graphemes(ptr(refBuf), null, 0n, ptr(lenOut));
+if (rc !== 0 && getResultCodeName(rc) !== "out_of_space") {
+  throw new GhosttyError({ ... });
+}
+```
+
+No change to the plan's control flow. Note this in code comments so a future reader doesn't "fix" it.
+
+### `GhosttyTerminalOptions` layout
+
+Pass 1's Terminal constructor already uses the correct 16-byte layout (no `size` field). Pass 3 does not touch that code path except for the post-construct APC `set` calls (Task 7). No amendment needed.
+
+### FFI declaration of `ghostty_render_state_get` was already in Task 3
+
+Plan's Task 3 Step 2 lists `ghostty_render_state_get` in the SYMBOLS additions. No amendment needed — just confirming it's there.
+
+### Summary of downstream task amendments
+
+| Task | Amendment |
+|---|---|
+| 3 | No functional amendment; confirm `generated.sizedStructs.GhosttyPoint.size === 24` after verify:generated |
+| 8 | None (grapheme SUCCESS+0 already handled) |
+| 10 | Replace `#rebuildCache` body per the corrected pattern above |
+| 11 | `#walkCells(cellsHandle: Pointer)` — iterate until `row_cells_next` returns false; use per-cell accessors via `row_cells_get` with correct data-key enum values (confirm `GRAPHEMES_LEN`, `GRAPHEMES_BUF`, `STYLE` values in `generated.ts` after Task 3) |
+
+All other downstream tasks are unaffected.
+
+---
+
 ## File structure
 
 ### New files
