@@ -20,6 +20,17 @@ describe("Terminal lifecycle", () => {
     term.close();   // must not throw
   });
 
+  it("is idempotent under close() → close() even with callbacks registered", () => {
+    let bellCount = 0;
+    const term = new Terminal({
+      cols: 10, rows: 3,
+      onBell: () => { bellCount++; },
+    });
+    term.close();
+    // Second close must be a silent no-op — no throw, no double-free crash.
+    expect(() => term.close()).not.toThrow();
+  });
+
   it("Symbol.dispose closes", () => {
     let terminal: Terminal;
     {

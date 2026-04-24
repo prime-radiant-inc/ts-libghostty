@@ -313,9 +313,47 @@ export class Terminal {
   }
 
   close(): void {
+    this.#assertNotInCallback("close");
     if (this.#handle === null) return;
     const lib = getLib();
-    lib.symbols.ghostty_terminal_free(this.#handle);
+    const h = this.#handle;
+
+    // Detach callbacks BEFORE closing JSCallbacks and BEFORE terminal_free.
+    // Passing NULL to ghostty_terminal_set clears the effect and ensures
+    // libghostty will never invoke a thunk whose JS storage has been freed.
+    // terminal_free should also sever callbacks, but detaching explicitly is
+    // belt-and-suspenders. Non-OK detach results are logged but do not stop
+    // teardown — we still want to free the handle and close the JSCallbacks.
+    if (this.#writePtyCb !== null) {
+      const r = lib.symbols.ghostty_terminal_set(
+        h,
+        GhosttyTerminalOptionValues["GHOSTTY_TERMINAL_OPT_WRITE_PTY"],
+        null,
+      );
+      if (r !== 0) console.error("ts-libghostty-vt: detach WRITE_PTY returned", r);
+    }
+    if (this.#bellCb !== null) {
+      const r = lib.symbols.ghostty_terminal_set(
+        h,
+        GhosttyTerminalOptionValues["GHOSTTY_TERMINAL_OPT_BELL"],
+        null,
+      );
+      if (r !== 0) console.error("ts-libghostty-vt: detach BELL returned", r);
+    }
+    if (this.#titleCb !== null) {
+      const r = lib.symbols.ghostty_terminal_set(
+        h,
+        GhosttyTerminalOptionValues["GHOSTTY_TERMINAL_OPT_TITLE_CHANGED"],
+        null,
+      );
+      if (r !== 0) console.error("ts-libghostty-vt: detach TITLE_CHANGED returned", r);
+    }
+
+    if (this.#writePtyCb !== null) { try { this.#writePtyCb.close(); } catch {} this.#writePtyCb = null; }
+    if (this.#bellCb !== null)     { try { this.#bellCb.close();     } catch {} this.#bellCb = null; }
+    if (this.#titleCb !== null)    { try { this.#titleCb.close();    } catch {} this.#titleCb = null; }
+
+    lib.symbols.ghostty_terminal_free(h);
     this.#handle = null;
   }
 
