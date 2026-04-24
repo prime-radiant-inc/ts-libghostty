@@ -11,7 +11,8 @@ import {
   resultCodeByValue,
   structLayouts,
 } from "./internal/generated";
-import { writeStruct, readStyle, type RawStyle } from "./internal/sized-struct";
+import { writeStruct, readStyle } from "./internal/sized-struct";
+import { rawStyleToCellStyle } from "./internal/style";
 import {
   makeBellCallback,
   makeTitleCallback,
@@ -28,7 +29,6 @@ import type {
   TerminalColors,
   TerminalOptions,
   TerminalSnapshot,
-  UnderlineStyle,
 } from "./types";
 
 /**
@@ -881,7 +881,7 @@ export class Terminal {
     let style: CellStyle | undefined;
     if (rc === 0) {
       const raw = readStyle(styleBuf);
-      style = this.#rawStyleToCellStyle(raw);
+      style = rawStyleToCellStyle(raw);
     } else if (getResultCodeName(rc) !== "no_value" && getResultCodeName(rc) !== "invalid_value") {
       throw new GhosttyError(
         `ghostty_grid_ref_style failed with code ${rc}`,
@@ -936,33 +936,6 @@ export class Terminal {
       );
     }
     return new TextDecoder("utf-8").decode(buf.subarray(0, Number(writtenOut[0])));
-  }
-
-  /**
-   * Convert a `RawStyle` (decoded from GhosttyStyle buffer) into a `CellStyle`
-   * with the underline SGR int mapped to the UnderlineStyle string union.
-   */
-  #rawStyleToCellStyle(raw: RawStyle): CellStyle {
-    const underlineMap: readonly UnderlineStyle[] =
-      ["none", "single", "double", "curly", "dotted", "dashed"];
-    const underline = underlineMap[raw.underline] ?? "none";
-    const result: CellStyle = {
-      bold: raw.bold,
-      faint: raw.faint,
-      italic: raw.italic,
-      underline,
-      overline: raw.overline,
-      strikethrough: raw.strikethrough,
-      blink: raw.blink,
-      inverse: raw.inverse,
-      invisible: raw.invisible,
-    };
-    if (raw.fg !== undefined) result.fg = raw.fg;
-    if (raw.bg !== undefined) result.bg = raw.bg;
-    if (raw.underlineColor !== undefined && !('palette' in raw.underlineColor)) {
-      result.underlineColor = raw.underlineColor as RGB;
-    }
-    return result;
   }
 
   /**
