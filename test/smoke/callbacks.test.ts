@@ -41,3 +41,83 @@ describe("Terminal effect callbacks — onBell", () => {
     expect(count).toBe(1);
   });
 });
+
+describe("Terminal effect callbacks — onTitleChanged", () => {
+  const oscTitle = (title: string): Uint8Array => {
+    const enc = new TextEncoder();
+    const prefix = enc.encode("\x1b]0;");
+    const body = enc.encode(title);
+    const suffix = new Uint8Array([0x07]);
+    const out = new Uint8Array(prefix.length + body.length + suffix.length);
+    out.set(prefix, 0);
+    out.set(body, prefix.length);
+    out.set(suffix, prefix.length + body.length);
+    return out;
+  };
+
+  it("fires on OSC 0 title change with the new title", () => {
+    const titles: string[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onTitleChanged: (t) => { titles.push(t); },
+    });
+    term.vtWrite(oscTitle("hello"));
+    expect(titles).toEqual(["hello"]);
+  });
+
+  it("fires on OSC 2 title change", () => {
+    const titles: string[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onTitleChanged: (t) => { titles.push(t); },
+    });
+    const enc = new TextEncoder();
+    const prefix = enc.encode("\x1b]2;");
+    const body = enc.encode("osc2-title");
+    const suffix = new Uint8Array([0x07]);
+    const seq = new Uint8Array(prefix.length + body.length + suffix.length);
+    seq.set(prefix, 0);
+    seq.set(body, prefix.length);
+    seq.set(suffix, prefix.length + body.length);
+    term.vtWrite(seq);
+    expect(titles).toEqual(["osc2-title"]);
+  });
+
+  it("fires once per title change in a stream of multiple changes", () => {
+    const titles: string[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onTitleChanged: (t) => { titles.push(t); },
+    });
+    const first = oscTitle("one");
+    const second = oscTitle("two");
+    const third = oscTitle("three");
+    const combined = new Uint8Array(first.length + second.length + third.length);
+    combined.set(first, 0);
+    combined.set(second, first.length);
+    combined.set(third, first.length + second.length);
+    term.vtWrite(combined);
+    expect(titles).toEqual(["one", "two", "three"]);
+  });
+
+  it("handles empty titles (OSC 0 ; BEL)", () => {
+    const titles: string[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onTitleChanged: (t) => { titles.push(t); },
+    });
+    const empty = new Uint8Array([0x1b, 0x5d, 0x30, 0x3b, 0x07]);
+    term.vtWrite(empty);
+    expect(titles.length === 0 || titles[0] === "").toBe(true);
+  });
+
+  it("handles Unicode titles (multi-byte UTF-8)", () => {
+    const titles: string[] = [];
+    using term = new Terminal({
+      cols: 10, rows: 3,
+      onTitleChanged: (t) => { titles.push(t); },
+    });
+    term.vtWrite(oscTitle("тайтл 🦀"));
+    expect(titles).toEqual(["тайтл 🦀"]);
+  });
+});
