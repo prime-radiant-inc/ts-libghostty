@@ -12,6 +12,29 @@ import type { CellStyle, RGB, UnderlineStyle } from "../types";
 const UNDERLINE_MAP: readonly UnderlineStyle[] =
   ["none", "single", "double", "curly", "dotted", "dashed"];
 
+/**
+ * True when the RawStyle represents libghostty's default (unstyled) style.
+ * Used to avoid attaching an all-false `CellStyle` object to default cells,
+ * which would violate the `style?: undefined = default` public contract and
+ * bloat metadata fixtures.
+ */
+export function isDefaultRawStyle(raw: RawStyle): boolean {
+  return (
+    raw.fg === undefined &&
+    raw.bg === undefined &&
+    raw.underlineColor === undefined &&
+    !raw.bold &&
+    !raw.italic &&
+    !raw.faint &&
+    !raw.blink &&
+    !raw.inverse &&
+    !raw.invisible &&
+    !raw.strikethrough &&
+    !raw.overline &&
+    raw.underline === 0
+  );
+}
+
 export function rawStyleToCellStyle(raw: RawStyle): CellStyle {
   const underline = UNDERLINE_MAP[raw.underline] ?? "none";
   const result: CellStyle = {

@@ -138,6 +138,19 @@ Every downstream Bob read the reconciliation block before starting their task �
 - Unstable-fixture skip pattern (the `.skip.reason` sidecar idea) was planned but not needed — all 3 fixtures at v0.3.0 (hello-world, sgr-basic, utf8-emoji) produced stable output. Pass 4 fixtures follow the same pattern if needed.
 - Global API conventions from the Task 2 reconciliation (getLib, GhosttyError signature, #assertOpen, structLayouts / GhosttyXValues) — reuse these in Pass 4 task prompts so the plan-vs-real drift loop doesn't repeat.
 
+### Pass 3 Codex review pass 1 (2026-04-24, post-v0.3.0-tag)
+
+Codex reviewed the landed branch and surfaced four issues:
+
+- **P1 — `markClean` only cleared global native dirty, not per-row.** libghostty tracks global and per-row dirty independently. The single-call clear (`ghostty_render_state_set(OPTION_DIRTY, FALSE)`) clears global only; per-row flags stay set. After `update` → `markClean` → `update` with no terminal activity, `forEachDirtyRow` still visited every row while `dirty()` reported `"none"` — contradiction. **Fix:** `markClean` now iterates a populated row iterator and calls `ghostty_render_state_row_set(iter, ROW_OPTION_DIRTY, &false)` per row after the global clear, then mirrors into JS. Covered by new test `"Codex P1 repro: update → markClean → update (no activity) → forEachDirtyRow is empty"`.
+- **P1 — `RenderState` stubbed grid metadata fields.** `wrapped` was hardcoded false, `wide` / `isWideContinuation` were heuristic-only, `protected` was hardcoded false, `hyperlinkUri` never populated. Fixture JSONs had passed because they were generated from these same stubs. **Fix:** `#rebuildCache` now reads `ghostty_render_state_row_get(ROW_DATA_RAW)` → `ghostty_row_get(ROW_DATA_WRAP)` for wrapped; `#walkCells` reads `row_cells_get(RAW)` → `ghostty_cell_get(CELL_DATA_WIDE / PROTECTED)` for per-cell flags. Hyperlink URI on render-state cells remains unexposed at this pin (no HYPERLINK_URI data key on `GhosttyRenderStateRowCellsData`); `Terminal.cellAt` still provides hyperlink URI via `grid_ref_hyperlink_uri` for consumers that need it. Tests added for CJK wide detection, unstyled cells, and SGR-bold cells. Three fixture JSONs regenerated with correct content.
+- **P2 — Default cells attached all-false style objects.** `rawStyleToCellStyle` always returned a `CellStyle`, violating `style?: undefined = default` contract. **Fix:** new `isDefaultRawStyle(raw)` helper in `src/internal/style.ts`; both `Terminal.cellAt` and `RenderState.#walkCells` now only set `style` when the decoded `RawStyle` is non-default. Fixture JSONs shrank meaningfully.
+- **P2 — `RenderState.colors` didn't mirror `Terminal.colors` snapshot.** It returned `defaults: {}` and read effective via `ghostty_render_state_colors_get`, missing the caller's `setColors` defaults. **Fix:** `update(term)` now caches `term.colors()` directly; `RenderState.colors()` returns that cached snapshot. New test verifies `rs.colors().defaults.fg` matches `term.colors().defaults.fg` after `setColors`.
+
+Also added two SYMBOLS loads to `src/ffi.ts`: `ghostty_row_get` and `ghostty_render_state_row_set` (declared in the headers but not previously loaded); plus `ghostty_style_is_default` for future reuse.
+
+All 203 smoke tests pass (198 pre-review + 5 new regression tests). The `v0.3.0` tag was moved forward to include this fix — no intermediate `v0.3.0-rc` / `v0.3.1` to avoid cluttering the timeline. Per Matt's direction (mark-in-the-sand only, no push/publish), moving a local tag is safe.
+
 ### Pass 3 commit timeline
 
 - `e71885a` `c9a7489` `93b4451` Pass 3 spec + two Codex review reconciliation rounds

@@ -5,12 +5,16 @@ import {
   GhosttyRenderStateDataValues,
   GhosttyRenderStateDirtyValues,
   GhosttyRenderStateOptionValues,
+  GhosttyRenderStateRowOptionValues,
   GhosttyRenderStateRowDataValues,
   GhosttyRenderStateRowCellsDataValues,
+  GhosttyRowDataValues,
+  GhosttyCellDataValues,
+  GhosttyCellWideValues,
 } from "./internal/generated";
 import { GhosttyError, UseAfterCloseError, getResultCodeName } from "./errors";
 import { readRenderStateColors, readStyle } from "./internal/sized-struct";
-import { rawStyleToCellStyle } from "./internal/style";
+import { rawStyleToCellStyle, isDefaultRawStyle } from "./internal/style";
 import type {
   RGB,
   TerminalColors,
@@ -95,6 +99,12 @@ export class RenderState {
       );
     }
     this.#rebuildCache(term);
+    // Snapshot the Terminal's colors at update() time. RenderState.colors()
+    // must mirror `term.colors()` at the moment of the snapshot — both
+    // effective (post-OSC) and defaults. Reading from
+    // ghostty_render_state_colors_get alone misses `defaults` because that
+    // accessor returns the render-resolved color view only.
+    this.#colors = term.colors();
   }
 
   /**
@@ -111,21 +121,30 @@ export class RenderState {
   }
 
   /**
-   * Clear dirty state both natively (one call to ghostty_render_state_set
-   * with OPTION_DIRTY=FALSE, which clears both global and per-row layers)
-   * and in the JS mirror.
+   * Clear dirty state both natively (global + per-row) and in the JS mirror.
+   *
+   * libghostty tracks dirty at two independent native layers:
+   *   - Global: `ghostty_render_state_set(OPTION_DIRTY, FALSE)` clears this.
+   *   - Per-row: each row's dirty flag is cleared by
+   *     `ghostty_render_state_row_set(iter, ROW_OPTION_DIRTY, &false)`
+   *     while the iterator is positioned on that row.
+   *
+   * Clearing only global leaves per-row flags set — the next `update(term)`
+   * would then re-populate JS-side row.dirty=true and `forEachDirtyRow`
+   * would keep visiting rows even after `markClean()`.
    */
   markClean(): void {
     this.#assertOpen();
     const lib = getLib();
-    // Write GhosttyRenderStateDirty.FALSE = 0 as a 4-byte LE i32.
+
+    // 1. Global clear.
     const dirtyValBuf = new Uint8Array(4);
     new DataView(dirtyValBuf.buffer).setInt32(
       0,
       GhosttyRenderStateDirtyValues["GHOSTTY_RENDER_STATE_DIRTY_FALSE"],
       true,
     );
-    const rc = lib.symbols.ghostty_render_state_set(
+    let rc = lib.symbols.ghostty_render_state_set(
       this.#handle!,
       GhosttyRenderStateOptionValues["GHOSTTY_RENDER_STATE_OPTION_DIRTY"],
       ptr(dirtyValBuf),
@@ -136,7 +155,51 @@ export class RenderState {
         { code: getResultCodeName(rc), functionName: "ghostty_render_state_set" },
       );
     }
-    // Mirror the clear into the JS cache.
+
+    // 2. Per-row clear via a fresh row iterator. We can't reuse an iterator
+    //    from #rebuildCache because it's already consumed (freed there). We
+    //    take a new one, populate it, then walk + clear each row's per-row
+    //    dirty flag. ROW_OPTION_DIRTY takes a bool (1 byte).
+    const iterOut = new BigUint64Array(1);
+    rc = lib.symbols.ghostty_render_state_row_iterator_new(null, ptr(iterOut));
+    if (rc !== 0) {
+      throw new GhosttyError(
+        "ghostty_render_state_row_iterator_new failed in markClean",
+        { code: getResultCodeName(rc), functionName: "ghostty_render_state_row_iterator_new" },
+      );
+    }
+    const iter = Number(iterOut[0]) as Pointer;
+    try {
+      rc = lib.symbols.ghostty_render_state_get(
+        this.#handle!,
+        GhosttyRenderStateDataValues["GHOSTTY_RENDER_STATE_DATA_ROW_ITERATOR"],
+        ptr(iterOut),
+      );
+      if (rc !== 0) {
+        throw new GhosttyError(
+          "ghostty_render_state_get(ROW_ITERATOR) failed in markClean",
+          { code: getResultCodeName(rc), functionName: "ghostty_render_state_get" },
+        );
+      }
+      const falseBuf = new Uint8Array(1); // bool false = 0
+      while (lib.symbols.ghostty_render_state_row_iterator_next(iter)) {
+        rc = lib.symbols.ghostty_render_state_row_set(
+          iter,
+          GhosttyRenderStateRowOptionValues["GHOSTTY_RENDER_STATE_ROW_OPTION_DIRTY"],
+          ptr(falseBuf),
+        );
+        if (rc !== 0) {
+          throw new GhosttyError(
+            `ghostty_render_state_row_set(ROW_OPTION_DIRTY) failed`,
+            { code: getResultCodeName(rc), functionName: "ghostty_render_state_row_set" },
+          );
+        }
+      }
+    } finally {
+      lib.symbols.ghostty_render_state_row_iterator_free(iter);
+    }
+
+    // 3. Mirror into JS cache.
     this.#globalDirty = "none";
     for (const row of this.#rows) row.dirty = false;
   }
@@ -261,6 +324,24 @@ export class RenderState {
         );
         const rowDirty = rc === 0 && dirtyBuf[0] === 1;
 
+        // Read the RAW row (GhosttyRow, u64), then ask ghostty_row_get for WRAP.
+        let wrapped = false;
+        const rawRowBuf = new BigUint64Array(1);
+        rc = lib.symbols.ghostty_render_state_row_get(
+          iter,
+          R["GHOSTTY_RENDER_STATE_ROW_DATA_RAW"],
+          ptr(rawRowBuf),
+        );
+        if (rc === 0) {
+          const wrapOut = new Uint8Array(1);
+          const rcWrap = lib.symbols.ghostty_row_get(
+            rawRowBuf[0]!,
+            GhosttyRowDataValues["GHOSTTY_ROW_DATA_WRAP"],
+            ptr(wrapOut),
+          );
+          if (rcWrap === 0) wrapped = wrapOut[0] === 1;
+        }
+
         // Populate the cells container from the current row (CELLS = 3, NOT 2).
         rc = lib.symbols.ghostty_render_state_row_get(
           iter,
@@ -271,7 +352,7 @@ export class RenderState {
 
         this.#rows.push({
           y,
-          wrapped: false, // Task 11 extends RAW-row decode to populate wrap state
+          wrapped,
           dirty: rowDirty,
           cells: rowCells,
         });
@@ -350,7 +431,11 @@ export class RenderState {
       let style: CellStyle | undefined;
       if (rc === 0) {
         const raw = readStyle(styleBuf);
-        style = rawStyleToCellStyle(raw);
+        // Omit the style object entirely when the cell carries the default
+        // style. Per the public `style?: undefined = default` contract —
+        // attaching an all-false object would lie about cell styling and
+        // balloon metadata fixtures.
+        if (!isDefaultRawStyle(raw)) style = rawStyleToCellStyle(raw);
       } else if (getResultCodeName(rc) !== "no_value" && getResultCodeName(rc) !== "invalid_value") {
         throw new GhosttyError(
           `ghostty_render_state_row_cells_get(STYLE) failed with code ${rc}`,
@@ -358,33 +443,58 @@ export class RenderState {
         );
       }
 
-      // ---- 3. Wide / isWideContinuation inference --------------------------
-      // libghostty's row-cells iterator emits one entry per grid column.
-      // A cell with no graphemes immediately following a wide cell is the
-      // continuation (trailing half) of that wide character.
-      // CELL_DATA_WIDE is not exposed on GhosttyRenderStateRowCellsData at
-      // this pin, so we infer from grapheme presence + prior cell state.
-      const prevCell = x > 0 ? out[x - 1] : undefined;
-      const isWideContinuation = graphemesLen === 0 && prevCell?.wide === true;
-      // Wide detection: a cell is wide if it has text that renders into a
-      // single grapheme cluster with display width > 1. For Pass 3 we use the
-      // simplest safe heuristic — delegate to the continuation flag from the
-      // next iteration. The primary cell itself sets wide=true when its
-      // trailing pair has isWideContinuation=true. Because we can't look ahead,
-      // we mark wide=false here and patch in walkCells' post-loop (not done in
-      // Pass 3 — Task 13 tests will validate this behavior is acceptable).
-      const wide = false;
+      // ---- 3. Wide / isWideContinuation / protected via RAW cell -----------
+      // GhosttyRenderStateRowCellsDataValues.RAW (1) gives us a GhosttyCell
+      // (u64); we then call ghostty_cell_get with CELL_DATA_WIDE and
+      // CELL_DATA_PROTECTED for the real flags.
+      let wide = false;
+      let isWideContinuation = false;
+      let protectedFlag = false;
+      const rawCellBuf = new BigUint64Array(1);
+      rc = lib.symbols.ghostty_render_state_row_cells_get(
+        cellsHandle,
+        D["GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_RAW"],
+        ptr(rawCellBuf),
+      );
+      if (rc === 0) {
+        const cellU64 = rawCellBuf[0]!;
+        // WIDE returns a GhosttyCellWide enum value (u32).
+        const wideOut = new Uint32Array(1);
+        const rcWide = lib.symbols.ghostty_cell_get(
+          cellU64,
+          GhosttyCellDataValues["GHOSTTY_CELL_DATA_WIDE"],
+          ptr(wideOut),
+        );
+        if (rcWide === 0) {
+          const w = wideOut[0]!;
+          wide = w === GhosttyCellWideValues["GHOSTTY_CELL_WIDE_WIDE"];
+          isWideContinuation =
+            w === GhosttyCellWideValues["GHOSTTY_CELL_WIDE_SPACER_TAIL"] ||
+            w === GhosttyCellWideValues["GHOSTTY_CELL_WIDE_SPACER_HEAD"];
+        }
+        // PROTECTED returns bool.
+        const protectedOut = new Uint8Array(1);
+        const rcProt = lib.symbols.ghostty_cell_get(
+          cellU64,
+          GhosttyCellDataValues["GHOSTTY_CELL_DATA_PROTECTED"],
+          ptr(protectedOut),
+        );
+        if (rcProt === 0) protectedFlag = protectedOut[0] === 1;
+      }
 
-      // ---- 4. Hyperlink / protected ----------------------------------------
-      // Neither is exposed on GhosttyRenderStateRowCellsData at this pin.
-      // Leave undefined / false for Pass 3.
+      // ---- 4. Hyperlink URI ------------------------------------------------
+      // No HYPERLINK_URI key on GhosttyRenderStateRowCellsData at this pin;
+      // Pass-3 leaves cell.hyperlinkUri undefined for render-state cells.
+      // Consumers that need hyperlinks on a specific cell can use
+      // Terminal.cellAt({x, y}) which resolves via grid_ref and reads the URI
+      // through ghostty_grid_ref_hyperlink_uri.
 
       const cell: CachedCell = {
         x,
         text,
         wide,
         isWideContinuation,
-        protected: false,
+        protected: protectedFlag,
       };
       if (style !== undefined) cell.style = style;
       x++;

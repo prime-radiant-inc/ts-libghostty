@@ -138,6 +138,68 @@ describe("RenderState dirty lifecycle", () => {
     rs.forEachDirtyRow(() => { count += 1; });
     expect(count).toBe(0);
   });
+
+  test("Codex P1 repro: update → markClean → update (no activity) → forEachDirtyRow is empty", () => {
+    // This proves markClean() cleared libghostty's per-row dirty flags natively.
+    // If only the global flag had been cleared, the re-update would re-populate
+    // each row's dirty=true from the stale per-row state, and forEachDirtyRow
+    // would still walk rows while dirty() reports "none".
+    using term = new Terminal({ cols: 10, rows: 4 });
+    using rs = new RenderState();
+    rs.update(term);
+    rs.markClean();
+    rs.update(term);
+    expect(rs.dirty()).toBe("none");
+    let count = 0;
+    rs.forEachDirtyRow(() => { count += 1; });
+    expect(count).toBe(0);
+  });
+});
+
+describe("Codex P2: RenderState.colors mirrors Terminal.colors snapshot", () => {
+  test("rs.colors() after setColors+update matches term.colors().defaults", () => {
+    using term = new Terminal({ cols: 10, rows: 4 });
+    term.setColors({ defaults: { fg: [42, 43, 44] } });
+    using rs = new RenderState();
+    rs.update(term);
+    expect(rs.colors().defaults.fg).toEqual([42, 43, 44]);
+    expect(term.colors().defaults.fg).toEqual([42, 43, 44]);
+  });
+});
+
+describe("Codex P1: RenderState decodes wrapped, wide, isWideContinuation", () => {
+  test("wide grapheme sets wide on primary, isWideContinuation on trailing", () => {
+    using term = new Terminal({ cols: 10, rows: 4 });
+    term.vtWrite(new TextEncoder().encode("中"));
+    using rs = new RenderState();
+    rs.update(term);
+    const rowsArr = [...rs.rows()];
+    const cells = [...rowsArr[0]!.cells()];
+    expect(cells[0]!.text).toBe("中");
+    expect(cells[0]!.wide).toBe(true);
+    expect(cells[0]!.isWideContinuation).toBe(false);
+    expect(cells[1]!.isWideContinuation).toBe(true);
+  });
+
+  test("unstyled cells have style === undefined (not an all-false object)", () => {
+    using term = new Terminal({ cols: 10, rows: 4 });
+    term.vtWrite(new TextEncoder().encode("x"));
+    using rs = new RenderState();
+    rs.update(term);
+    const rowsArr = [...rs.rows()];
+    const cells = [...rowsArr[0]!.cells()];
+    expect(cells[0]!.style).toBeUndefined();
+  });
+
+  test("bold cell carries style.bold === true", () => {
+    using term = new Terminal({ cols: 10, rows: 4 });
+    term.vtWrite(new TextEncoder().encode("\x1b[1mA"));
+    using rs = new RenderState();
+    rs.update(term);
+    const rowsArr = [...rs.rows()];
+    const cells = [...rowsArr[0]!.cells()];
+    expect(cells[0]!.style?.bold).toBe(true);
+  });
 });
 
 describe("RenderState.colors + cursor", () => {

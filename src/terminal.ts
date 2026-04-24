@@ -12,7 +12,7 @@ import {
   structLayouts,
 } from "./internal/generated";
 import { writeStruct, readStyle } from "./internal/sized-struct";
-import { rawStyleToCellStyle } from "./internal/style";
+import { rawStyleToCellStyle, isDefaultRawStyle } from "./internal/style";
 import {
   makeBellCallback,
   makeTitleCallback,
@@ -881,7 +881,9 @@ export class Terminal {
     let style: CellStyle | undefined;
     if (rc === 0) {
       const raw = readStyle(styleBuf);
-      style = rawStyleToCellStyle(raw);
+      // Omit style entirely for default-styled cells per the public
+      // `style?: undefined = default` contract.
+      if (!isDefaultRawStyle(raw)) style = rawStyleToCellStyle(raw);
     } else if (getResultCodeName(rc) !== "no_value" && getResultCodeName(rc) !== "invalid_value") {
       throw new GhosttyError(
         `ghostty_grid_ref_style failed with code ${rc}`,

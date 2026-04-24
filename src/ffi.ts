@@ -172,6 +172,24 @@ const SYMBOLS = {
     args: [FFIType.u64, FFIType.i32, FFIType.ptr],  // (cell, data, &out)
     returns: FFIType.i32,
   },
+  // Row data accessor — GhosttyRow is uint64_t (opaque). Used for WRAP flag.
+  ghostty_row_get: {
+    args: [FFIType.u64, FFIType.i32, FFIType.ptr],  // (row, data, &out)
+    returns: FFIType.i32,
+  },
+  // Per-row dirty clear — see render.h §ghostty_render_state_row_set.
+  // Clears per-row dirty flag on the current iterator position when called
+  // with ROW_OPTION_DIRTY + a bool-false value. Must be called per row
+  // because global clear does NOT cascade to per-row flags.
+  ghostty_render_state_row_set: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (iter, option, &value)
+    returns: FFIType.i32,
+  },
+  // Style default check — true if the GhosttyStyle is the default (unstyled) style.
+  ghostty_style_is_default: {
+    args: [FFIType.ptr],  // (&style)
+    returns: FFIType.bool,
+  },
   // Focus encode (probe-size-first pattern)
   ghostty_focus_encode: {
     args: [FFIType.i32, FFIType.ptr, FFIType.u64, FFIType.ptr],  // (event, buf|null, buf_len, &out_written)
