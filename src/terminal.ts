@@ -15,6 +15,7 @@ import {
   makeWritePtyCallback,
   type TrampolineResult,
 } from "./internal/callbacks";
+import { writeScrollViewport } from "./internal/marshal";
 import type {
   ModeName,
   TerminalOptions,
@@ -547,6 +548,32 @@ export class Terminal {
     const lib = getLib();
     const result = lib.symbols.ghostty_terminal_mode_set(this.#handle, tag, value);
     checkResult(result, "ghostty_terminal_mode_set");
+  }
+
+  scrollViewport(pos: "top" | "bottom" | number): void {
+    this.#assertNotInCallback("scrollViewport");
+    this.#assertOpen();
+
+    let tag: 0 | 1 | 2;
+    let delta = 0;
+    if (pos === "top") tag = 0;
+    else if (pos === "bottom") tag = 1;
+    else if (typeof pos === "number" && Number.isFinite(pos)) {
+      tag = 2;
+      delta = Math.trunc(pos);
+    } else {
+      throw new GhosttyError(
+        `invalid scrollViewport argument: expected "top" | "bottom" | number; received ${JSON.stringify(pos)}`,
+        {
+          code: "invalid_value",
+          functionName: "Terminal.scrollViewport",
+        },
+      );
+    }
+
+    const buf = writeScrollViewport(tag, delta);
+    const lib = getLib();
+    lib.symbols.ghostty_terminal_scroll_viewport(this.#handle, ptr(buf));
   }
 
   /**
