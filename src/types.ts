@@ -73,6 +73,35 @@ export interface CellAtPoint {
 
 // --- End cell query types -----------------------------------------------------
 
+// --- Pass 3 render-state types (Task 10) --------------------------------------
+
+export interface ViewportCursor {
+  x: number;
+  y: number;
+  visible: boolean;
+  /** True if the cursor sits on the trailing half of a wide grapheme. */
+  wideTail: boolean;
+}
+
+export interface RenderRow {
+  y: number;
+  wrapped: boolean;
+  dirty: boolean;
+  cells(): IterableIterator<RenderCell>;
+}
+
+export interface RenderCell {
+  x: number;
+  text: string;
+  wide: boolean;
+  isWideContinuation: boolean;
+  style?: CellStyle;
+  hyperlinkUri?: string;
+  protected: boolean;
+}
+
+// --- End Pass 3 render-state types -------------------------------------------
+
 export type CursorStyle = "block" | "underline" | "bar";
 export type MouseTracking = "none" | "x10" | "normal" | "button" | "any";
 

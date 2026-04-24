@@ -1,5 +1,6 @@
 export { Terminal } from "./terminal";
 export { Formatter } from "./formatter";
+export { RenderState } from "./render-state";
 export {
   GhosttyError,
   LibraryNotFoundError,
@@ -31,6 +32,9 @@ export type {
   CellStyle,
   CellInfo,
   CellAtPoint,
+  ViewportCursor,
+  RenderRow,
+  RenderCell,
 } from "./types";
 export { pinnedCommit } from "./internal/generated";
 export { encodeFocus } from "./focus";

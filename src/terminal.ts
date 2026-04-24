@@ -384,6 +384,16 @@ export class Terminal {
     this.close();
   }
 
+  /**
+   * Internal-use handle accessor for RenderState.update. Not part of the
+   * public API; do not call from consumer code.
+   * @internal
+   */
+  unsafeHandle(): Pointer {
+    this.#assertOpen();
+    return this.#handle!;
+  }
+
   // ---- Methods stubbed — real implementations in Tasks 12-15 ------------
 
   vtWrite(bytes: Uint8Array): void {

@@ -4,8 +4,9 @@ import { resultCodeByValue } from "./internal/generated";
  * Map a raw GhosttyResult integer to its string name ("ok", "out_of_space",
  * etc.). Falls back to "unknown" for unrecognised values.
  */
-export function getResultCodeName(rc: number): string {
-  return resultCodeByValue[rc] ?? "unknown";
+export function getResultCodeName(rc: number): GhosttyErrorCode {
+  const name = resultCodeByValue[rc] ?? "unknown";
+  return name as GhosttyErrorCode;
 }
 
 export type GhosttyErrorCode =
