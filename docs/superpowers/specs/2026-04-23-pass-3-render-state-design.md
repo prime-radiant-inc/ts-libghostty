@@ -28,12 +28,13 @@ Gauntlet, the primary consumer, currently captures terminal state via tmux `capt
 3. `Terminal.colors()` / `Terminal.setColors(patch)` — returns `{effective, defaults, palette[256]}` per the §4.7 semantics in the binding design.
 4. `Terminal.cellAt({x, y, coordinateSpace})` — all four coord spaces at once (`"active"` / `"viewport"` / `"screen"` / `"history"`).
 5. `encodeFocus("in" | "out")` — standalone function, returns `Uint8Array`.
-6. Public types added to `src/types.ts` and re-exported from `src/index.ts`: `CellInfo`, `CellStyle`, `TerminalColors`, `UnderlineStyle`, `RenderRow`, `RenderCell`.
-7. Render-metadata fixture infrastructure: `.expected.json` sibling files under `test/fixtures/`, harness that replays an existing `.bin` through `vtWrite` and diffs the resulting render-state snapshot against the JSON. Reuses the `--update-fixtures` pattern from Pass 1.
-8. Real-program captures: pair `.expected.json` companions onto the existing `.bin` / `.expected.txt` fixtures already in `test/fixtures/`. No new captures authored in Pass 3.
-9. Malformed-input resilience fuzz — bounded (seeded, ≤ 128 KiB) random byte stream into `vtWrite`, asserts no exception bubbles out and `snapshot()` still works afterward.
-10. Large-APC payload test — ≥10 MiB synthetic APC payload, asserts process RSS does not grow proportionally and `vtWrite` returns cleanly (verifies the `apcMaxBytes` default wired at construction time).
-11. Local `v0.3.0` tag; changelog entry under `## [0.3.0]`; `CONFIRM_WITH_MATT.md` updated with Pass 3 summary + Pass 4 carry-forward.
+6. Re-expose `apcMaxBytes` and `apcMaxBytesKitty` on `TerminalOptions` and wire them through `Terminal.constructor` to libghostty. Hilbert's Pass-1 contract fix (commit `b5c7922`) removed both fields because they were silently dropped. Pass 3 puts them back honestly. Defaults match the binding design §5.9 (1 MiB and 0 respectively); a smoke test constructs a terminal with non-default bounds and verifies the wiring reaches libghostty.
+7. Public types added to `src/types.ts` and re-exported from `src/index.ts`: `CellInfo`, `CellStyle`, `TerminalColors`, `UnderlineStyle`, `RenderRow`, `RenderCell`.
+8. Render-metadata fixture infrastructure: `.expected.json` sibling files under `test/fixtures/`, harness that replays an existing `.bin` through `vtWrite` and diffs the resulting render-state snapshot against the JSON. Reuses the `--update-fixtures` pattern from Pass 1.
+9. Real-program captures: pair `.expected.json` companions onto the existing `.bin` / `.expected.txt` fixtures already in `test/fixtures/`. No new captures authored in Pass 3.
+10. Malformed-input resilience fuzz — bounded (seeded, ≤ 128 KiB) random byte stream into `vtWrite`, asserts no exception bubbles out and `snapshot()` still works afterward.
+11. Large-APC payload test — ≥10 MiB synthetic APC payload, asserts process RSS does not grow proportionally and `vtWrite` returns cleanly (verifies the `apcMaxBytes` default wired at construction time).
+12. Local `v0.3.0` tag; changelog entry under `## [0.3.0]`; `CONFIRM_WITH_MATT.md` updated with Pass 3 summary + Pass 4 carry-forward.
 
 ### 3.2 Explicitly out of scope (Pass 4)
 
@@ -51,17 +52,17 @@ References to "§N.M" below are sections of `docs/superpowers/specs/2026-04-22-t
 
 Public shape matches the binding design §4.2. Behavior in Pass 3:
 
-**Data model.** `update(term)` makes a single round trip into libghostty to retrieve the render-state snapshot (the C API exposes `ghostty_render_state_*` / `ghostty_page_list_*` calls; exact symbol set is determined during Task 2 of the plan by reading `vt.h` at the pin). The result is decoded into JS memory eagerly: a row array sized to the terminal's row count, each row holding the decoded cells for that row plus `wrapped` / `dirty` flags. All subsequent iterator walks read this cached JS memory. No FFI call happens mid-walk. This is deliberate: it keeps the cell hot path strictly JS, lets `markClean()` be a pure-JS flag flip, and gives us one obvious place to free / reallocate on `resize`.
+**Data model.** `update(term)` makes a single round trip into libghostty to retrieve the render-state snapshot (the C API exposes `ghostty_render_state_*` / `ghostty_page_list_*` calls; exact symbol set is determined during Task 2 of the plan by reading `vt.h` at the pin). The result is decoded into JS memory eagerly: a row array sized to the terminal's row count, each row holding the decoded cells for that row plus `wrapped` / `dirty` flags. All subsequent iterator walks read this cached JS memory. No FFI call happens mid-walk. This is deliberate: it keeps the cell hot path strictly JS, and gives us one obvious place to free / reallocate on `resize`.
 
-**Dirty lifecycle.** `update()` refreshes the cached snapshot from the terminal but does not clear dirty flags on rows. `markClean()` walks the cached rows and sets each `dirty = false`. This mirrors the C API and lets multiple consumers (renderer + log-tailer) observe independent dirty state by calling `markClean()` on their own cadence. `dirty()` returns `"none" | "rows" | "all"`: `"all"` if the terminal indicated a full redraw (e.g., alt-screen swap, reset), `"rows"` if a subset is dirty, `"none"` if nothing changed since the last `markClean()`.
+**Dirty lifecycle.** libghostty's render state tracks dirty at two native layers — a global "anything dirty" flag and per-row flags. `update(term)` reads both layers into the JS cache but does not clear them. `markClean()` is a two-step operation: (1) invoke the libghostty "clear dirty" call(s) that clear both native layers (exact symbol and whether it's one or two calls is resolved at Task 2); (2) mirror the result into the JS cache by clearing each cached row's `dirty` flag and resetting the global dirty state. This ordering matters: if step 1 is skipped, the next `update(term)` re-reads stale native dirty and `dirty()` never settles to `"none"`. Multiple consumers (renderer + log-tailer) can still observe independent dirty state — but only by each calling `markClean()` on their own cadence, which will double-clear the native layer without harm. `dirty()` returns `"none" | "rows" | "all"`: `"all"` if the terminal indicated a full redraw (e.g., alt-screen swap, reset), `"rows"` if a subset is dirty, `"none"` if nothing changed since the last `markClean()`.
 
 **Iterator shapes and allocation costs.**
-- Ergonomic path — `rows()` returns an `IterableIterator<RenderRow>`, one fresh `RenderRow` object per row. `row.cells()` returns an `IterableIterator<RenderCell>`, one fresh `RenderCell` object per cell. Consumer-friendly; allocates on every frame.
-- Hot path — `forEachCell(row, cb)` and `forEachDirtyCell(cb)` reuse a single mutable `RenderCell` object per invocation; fields mutate before the next iteration. `forEachDirtyRow(cb)` reuses a single `RenderRow` object similarly. The callback must not retain the reference.
+- Ergonomic path — `rows()` returns an `IterableIterator<RenderRow>`, one fresh `RenderRow` object per row. `row.cells()` returns an `IterableIterator<RenderCell>`, one fresh `RenderCell` object per cell. `forEachDirtyRow(cb)` also belongs to the ergonomic path: it allocates a fresh `RenderRow` per dirty row and invokes the callback with it. All three are consumer-friendly and allocate per frame.
+- Hot path — `forEachCell(row, cb)` and `forEachDirtyCell(cb)` reuse a single mutable `RenderCell` object across the walk; fields mutate before the next iteration. The callback must not retain that cell reference. `forEachDirtyCell` also passes a `RenderRow` alongside each cell; the `RenderRow` there is a snapshot (allocated or cached), not the reused hot-path cell.
 - Both paths read the same cached JS memory. The only difference is allocation pattern.
 
 **Object lifetimes.** Documented in code comments on the public types and called out in README:
-- Objects from `rows()` / `row.cells()` / `forEachDirtyRow` — snapshots, valid until the next `update()` call.
+- Objects from `rows()` / `row.cells()` / `forEachDirtyRow` / the `RenderRow` passed to `forEachDirtyCell` — snapshots, valid until the next `update()` call.
 - The mutable `RenderCell` passed to `forEachCell` / `forEachDirtyCell` — valid only for the duration of the single callback invocation; mutated before the next cell.
 - Retaining past these windows is undefined behavior.
 
@@ -104,7 +105,23 @@ Entries are `undefined` when libghostty reports the color as unset, not a placeh
 
 The observed behavior is documented in README verbatim. If upstream offers a preservation API, we expose it; if not, the README notes "`setColors` clears OSC overrides" and we move on. This decision is *not* blocking Pass 3 — both outcomes are acceptable; we document what libghostty does.
 
-### 4.4 `Terminal.cellAt`
+### 4.4 APC bounds (constructor wiring)
+
+`apcMaxBytes` and `apcMaxBytesKitty` return to `TerminalOptions` in Pass 3. Both bound the per-sequence byte limit that libghostty's VT parser retains for APC / Kitty-graphics escape payloads (see binding design §5.9). Defaults match the binding design:
+
+- `apcMaxBytes`: `1048576` (1 MiB).
+- `apcMaxBytesKitty`: `0` (Kitty image store disabled; distinct from the Kitty *keyboard* protocol, which is a Pass 4 concern).
+
+Wiring: `Terminal.constructor` passes both values into libghostty via the relevant constructor-options field (exact C surface confirmed at Task 2). Bounds validation reuses the `assertU32` / `assertSizeT` helpers Hilbert added during the Pass-1 contract fix: negatives and oversized values throw `GhosttyError{code: "invalid_value"}` with the offending field and value in the message.
+
+Test coverage (`test/smoke/apc-bounds.test.ts`):
+- **Default path** — construct without the options; behavior matches the large-APC resilience test in §4.8 (10 MiB payload handled cleanly under the 1 MiB default).
+- **Custom path** — construct with `apcMaxBytes: 2 * 1024 * 1024`; feed a 1.5 MiB APC payload, observe no crash and post-write RSS stays bounded. Feed a 3 MiB APC payload, observe truncation behavior (same signal: no crash, bounded RSS).
+- **Invalid path** — construct with `apcMaxBytes: -1` throws `GhosttyError{code: "invalid_value"}`; `apcMaxBytes: Number.MAX_SAFE_INTEGER + 1` throws; same for `apcMaxBytesKitty`.
+
+This closes the contract that Hilbert's Pass-1 fix left open: the options now exist on the type *and* are wired, rather than being silently dropped. Consumers who passed them under Pass 1 saw a TS compile error after the fix; after Pass 3 they work.
+
+### 4.5 `Terminal.cellAt`
 
 All four coordinate spaces implemented in Pass 3. Dispatch:
 
@@ -121,7 +138,7 @@ Returned `CellInfo` reuses the same decoding helpers as `RenderCell` (grapheme t
 
 Cost differences documented in README as a table.
 
-### 4.5 `encodeFocus`
+### 4.6 `encodeFocus`
 
 ```ts
 function encodeFocus(direction: "in" | "out"): Uint8Array;
@@ -131,7 +148,7 @@ Single FFI call to the relevant `ghostty_encode_*` function (exact symbol confir
 
 Standalone smoke test: `encodeFocus("in")` returns non-empty bytes starting with `ESC` (byte 0x1b); `encodeFocus("out")` returns non-empty bytes starting with `ESC`; both are stable (no nondeterminism).
 
-### 4.6 Render-metadata fixture infrastructure
+### 4.7 Render-metadata fixture infrastructure
 
 **Schema.** Each `.expected.json` sibling to a `.bin` fixture captures what a consumer would see after replaying the bytes through a fresh terminal of the fixture's declared geometry. Top-level shape:
 
@@ -164,7 +181,7 @@ Standalone smoke test: `encodeFocus("in")` returns non-empty bytes starting with
 }
 ```
 
-Fields are omitted when they take their default values (cells with `isWideContinuation: false`, `protected: false`, undefined `style`, etc.) to keep the JSON readable. The harness normalizes before compare: fills in defaults, sorts palette into a single flat array, truncates rows to the declared geometry.
+Fields are omitted when they take their default values (cells with `isWideContinuation: false`, `protected: false`, undefined `style`, etc.) to keep the JSON readable. The harness normalizes before compare: fills in defaults, canonicalizes RGB tuple representation (always `[r, g, b]`), and truncates rows to the declared geometry. **Palette index order is preserved** — indices are semantic (`palette[1]` and `palette[2]` are different colors), so any sort or reorder would hide index-swap bugs.
 
 **Dirty flags are not captured** in fixtures. Dirty state depends on observer cadence (a fixture captured on a fresh terminal is "all dirty"), which is not a useful invariant to assert.
 
@@ -179,7 +196,7 @@ Fields are omitted when they take their default values (cells with `isWideContin
 
 **Which fixtures get `.expected.json`.** All existing `.bin` fixtures in `test/fixtures/` that have an `.expected.txt` get a companion `.expected.json` generated in Pass 3. New fixtures added in future passes follow the same pattern.
 
-### 4.7 Malformed-input resilience
+### 4.8 Malformed-input resilience
 
 Two tests, both in `test/smoke/resilience-fuzz.test.ts`:
 
@@ -189,7 +206,7 @@ Two tests, both in `test/smoke/resilience-fuzz.test.ts`:
 
 The RSS bound is intentionally lenient (e.g., "post-RSS < pre-RSS + 4 MiB"); we want to catch "process grows 10 MiB" regressions, not enforce a tight bound.
 
-### 4.8 Public re-exports
+### 4.9 Public re-exports
 
 `src/index.ts` grows to re-export everything Pass 3 adds. Approximately:
 
@@ -214,24 +231,27 @@ Pass 3 follows the Pass 1 / Pass 2 subagent-driven model:
 ### 5.1 Task ordering (sketched — plan fills in detail)
 
 1. **Task 1 — preflight baseline.** Capture `bun test`, `bun run typecheck`, `bun run verify:generated` state. Record commit hash. Ensure tree is clean off `main` at v0.2.0.
-2. **Task 2 — FFI discovery.** Read `vendor/ghostty/include/ghostty/vt.h` at pin; enumerate symbols needed for render-state, scroll-viewport, colors, cell-at, focus-encode. Extend `SYMBOLS` in `src/ffi.ts`, update `generated.ts` via `bun run build:bindings`, commit. This is the Pass 3 equivalent of Pass 2 Task 3.
+2. **Task 2 — FFI discovery.** Read `vendor/ghostty/include/ghostty/vt.h` at pin; enumerate symbols needed for render-state, scroll-viewport, colors, cell-at, focus-encode, APC-bounds options, and dirty-clear operations. Extend `SYMBOLS` in `src/ffi.ts`, update `generated.ts` via `bun run build:bindings`, commit. This is the Pass 3 equivalent of Pass 2 Task 3.
 3. **Task 3 — struct-layout probe extension.** If any new structs are touched (render cell layout, style field additions, etc.), extend `scripts/probe-layout.c` and regenerate. `bun run verify:generated` must stay green.
-4. **Tasks 4–6 — small Terminal methods.** `scrollViewport`, `encodeFocus`, then `colors`/`setColors`. Each is a small commit with a smoke test. These are the "easy wins" that also establish the FFI patterns new to Pass 3 (single scalar call, array return for palette, partial-struct update).
-5. **Tasks 7–8 — `Terminal.cellAt`.** One task per "half" if the 4 coord spaces split cleanly into (active/viewport) and (screen/history); otherwise one task. Smoke tests cover all four spaces and the out-of-bounds → `undefined` case.
-6. **Tasks 9–12 — `RenderState`.** Split: (a) class skeleton + `update()` + `colors()` + `dirty()` + `markClean()` + `close()`; (b) ergonomic iterators; (c) hot-path iterators; (d) smoke tests for all three paths + dirty lifecycle. Dispatched Bob for (b) through (d) if the orchestrator wants parallelism; sequential is fine too.
-7. **Tasks 13–14 — metadata fixture infrastructure.** (a) Harness (normalize, compare, `--update-fixtures`). (b) Generate `.expected.json` companions for existing fixtures; any fixtures where libghostty produces unstable output across runs get flagged for later investigation (but don't block Pass 3 — just skip with a documented reason).
-8. **Task 15 — resilience fuzz.** Both sub-tests in one file.
-9. **Task 16 — public re-exports sweep.** `src/index.ts`, tarball-smoke spot-check.
-10. **Task 17 — release gate.** Changelog entry. Local `v0.3.0` tag. Update `CONFIRM_WITH_MATT.md`.
+4. **Tasks 4–7 — small Terminal methods.** `scrollViewport`, `encodeFocus`, `colors`/`setColors`, then APC bounds wiring (§4.4). Each is a small commit with a smoke test. These establish the FFI patterns new to Pass 3 (single scalar call, array return for palette, partial-struct update, constructor-options field) before the bigger RenderState work.
+5. **Tasks 8–9 — `Terminal.cellAt`.** One task per "half" if the 4 coord spaces split cleanly into (active/viewport) and (screen/history); otherwise one task. Smoke tests cover all four spaces and the out-of-bounds → `undefined` case.
+6. **Tasks 10–13 — `RenderState`.** Split: (a) class skeleton + `update()` + `colors()` + `dirty()` + `markClean()` (native + JS mirror, per §4.1) + `close()`; (b) ergonomic iterators (`rows()`, `row.cells()`, `forEachDirtyRow`); (c) hot-path iterators (`forEachCell`, `forEachDirtyCell`) with the reused mutable `RenderCell`; (d) smoke tests for all three paths + dirty lifecycle. Dispatched Bob for (b) through (d) if the orchestrator wants parallelism; sequential is fine too.
+7. **Tasks 14–15 — metadata fixture infrastructure.** (a) Harness (normalize, compare, `--update-fixtures`). (b) Generate `.expected.json` companions for existing fixtures; any fixtures where libghostty produces unstable output across runs get flagged for later investigation (but don't block Pass 3 — just skip with a documented reason).
+8. **Task 16 — resilience fuzz.** Both sub-tests (seeded random bytes + large-APC payload) in one file.
+9. **Task 17 — public re-exports sweep.** `src/index.ts`, tarball-smoke spot-check.
+10. **Task 18 — release gate.** Changelog entry. Local `v0.3.0` tag. Update `CONFIRM_WITH_MATT.md`.
 
-Estimated: 17 tasks. (Earlier rough-count was 20; consolidated. Plan may re-split.)
+Estimated: 18 tasks. (Earlier rough-count was 20, then 17 before the APC scope-back. Plan may re-split.)
 
 ### 5.2 Known unknowns to resolve in-flight
 
 - Exact libghostty symbol names for render-state extraction. `ghostty_render_state_*` is speculative. Resolved at Task 2 by reading `vt.h`.
+- Exact libghostty symbol(s) for clearing native dirty state (both global and per-row layers, per §4.1). Unknown whether this is one call or two. Resolved at Task 2.
+- Exact libghostty constructor-options field names for `apc_max_bytes` and `apc_max_bytes_kitty` (spec §5.9 of binding design documents the intent; C field names confirmed at Task 2).
 - Whether `Terminal.colors()` can be satisfied by `ghostty_terminal_get` keys or needs a dedicated accessor. Resolved at Task 2.
 - Whether OSC 10/11 overrides survive `setColors` (see §4.3). Resolved by the test at Task 6.
-- Whether any existing `.bin` fixtures produce unstable render-state output (cursor blink phase, timing, etc.). Resolved at Task 14 — unstable fixtures get skipped with a documented reason, not a blocker.
+- **Whether libghostty's render-state surface exposes a viewport cursor distinct from `Terminal.snapshot().cursor`.** For scrolled views (where the viewport may not contain the terminal's live cursor), a viewport-local cursor position is useful for consumers rendering the current view. Resolved at Task 2: if the C API exposes it naturally, add `RenderState.cursor()` to Pass 3 scope (a small additive API surface), extend the fixture schema to record it, and add a smoke test that scrolls the viewport and confirms `RenderState.cursor()` tracks the viewport rather than the terminal. If the C API does not expose it, document the manual computation (`Terminal.snapshot().cursor` minus viewport scroll offset) in the README and leave the method out of Pass 3. Either outcome is acceptable; Codex flagged this as an explicit open question on the Pass 3 spec.
+- Whether any existing `.bin` fixtures produce unstable render-state output (cursor blink phase, timing, etc.). Resolved at Task 15 — unstable fixtures get skipped with a documented reason, not a blocker.
 
 ## 6. Testing strategy
 
@@ -241,7 +261,8 @@ Estimated: 17 tasks. (Earlier rough-count was 20; consolidated. Plan may re-spli
 - `test/smoke/colors.test.ts` — read defaults; `setColors` patch; OSC 10/11 overrides; OSC-override survival test (records observed behavior).
 - `test/smoke/cell-at.test.ts` — positive lookup in each of the four coord spaces; out-of-bounds returns `undefined`; wide-grapheme cell returns `wide: true`, continuation returns `isWideContinuation: true`.
 - `test/smoke/focus.test.ts` — both directions encode non-empty bytes starting with ESC.
-- `test/smoke/render-state.test.ts` — lifecycle (construct + close + dispose); `update()` on fresh terminal produces rows matching geometry; ergonomic path (`rows()` + `row.cells()`); hot path (`forEachCell`); dirty lifecycle (`update()` does not clear; `markClean()` does); alt-screen swap sets `dirty() === "all"`; resize rebuilds cached layout.
+- `test/smoke/apc-bounds.test.ts` — default-path (default bound wires through), custom-path (`apcMaxBytes: 2 MiB` accepts 1.5 MiB payload, 3 MiB payload truncates without crash), invalid-path (`-1` and `Number.MAX_SAFE_INTEGER + 1` throw `GhosttyError{code: "invalid_value"}`).
+- `test/smoke/render-state.test.ts` — lifecycle (construct + close + dispose); `update()` on fresh terminal produces rows matching geometry; ergonomic path (`rows()` + `row.cells()`, `forEachDirtyRow`); hot path (`forEachCell`, `forEachDirtyCell`); dirty lifecycle — `update()` does not clear native or JS dirty; after `markClean()`, `dirty()` returns `"none"` and a follow-up `update()` with no terminal activity keeps it at `"none"` (proves native dirty was actually cleared, not just the JS mirror); alt-screen swap sets `dirty() === "all"`; resize rebuilds cached layout.
 - `test/smoke/resilience-fuzz.test.ts` — seeded random bytes (×20 seeds); large APC payload; both post-conditions (no exception, snapshot works).
 
 ### 6.2 Fixture tests
@@ -285,9 +306,16 @@ What Pass 4 needs from Pass 3:
 
 - **libghostty render-state FFI surface may differ from this spec's guesses.** Mitigation: Task 2 is a hard gate. If the FFI shape diverges significantly, we reconcile the spec before proceeding (same reconciliation pattern as Pass 1 Task 3).
 - **Render-state cached-in-JS memory model may be too heavy on large terminals** (e.g., 500×200 = 100K cells). Mitigation: the cache holds only cells that have ever been touched by `update()`, sized to geometry. At 100K cells and a conservative 200 bytes/cell (including grapheme strings), that's 20 MB — acceptable. If a real consumer hits memory pressure, the hot path's buffer-reuse mitigates and a lazy-per-row cache is a straightforward optimization in a later pass. Not a Pass 3 concern.
-- **Unstable fixture output** (e.g., timing-dependent cursor blink state) could fail CI spuriously. Mitigation: the fixture harness supports skipping individual fixtures with a documented `.skip.reason` sidecar, and Task 14 uses that escape hatch if needed. Blocking Pass 3 on hypothetically-unstable fixtures is not worth it.
+- **Unstable fixture output** (e.g., timing-dependent cursor blink state) could fail CI spuriously. Mitigation: the fixture harness supports skipping individual fixtures with a documented `.skip.reason` sidecar, and Task 15 uses that escape hatch if needed. Blocking Pass 3 on hypothetically-unstable fixtures is not worth it.
 - **Matt reviews + Codex reviews this spec before implementation starts.** Any material changes come as a spec revision, then propagate into the plan. Same cadence as Pass 2's two reconciliation rounds.
 
 ## 10. Revision history
 
 - **2026-04-23** — Initial spec written (Ekaterin).
+- **2026-04-23 (revision)** — Codex review pass 1 (P1 + three P2s):
+  - `markClean()` rewritten: two-step operation clearing native dirty (both global and per-row layers) then mirroring to JS cache. Previous "pure-JS flag flip" was incorrect — it would leave native dirty stale and `dirty()` would never settle to `"none"` after a subsequent `update()`. (§4.1)
+  - `apcMaxBytes` and `apcMaxBytesKitty` scoped back into Pass 3 as a new §4.4 and scope item 6. Hilbert's Pass-1 contract fix had removed them because they were silently dropped; Pass 3 wires them honestly. Without this, v0 would ship without the documented constructor surface because Pass 4 is keystroke-only.
+  - `forEachDirtyRow` reclassified from hot path to ergonomic path — allocates a fresh `RenderRow` per dirty row, snapshot lifetime valid until next `update()`. Only `forEachCell` / `forEachDirtyCell` reuse a mutable `RenderCell`. Matches the binding design §4.2 verbatim; the earlier spec text had contradictory lifetime contracts. (§4.1)
+  - Palette normalization rule corrected: preserve index order (indices are semantic), only canonicalize tuple representation. Sorting would hide index-swap bugs. (§4.7)
+  - Viewport-cursor exposure added to §5.2 known unknowns; resolved at Task 2 based on what libghostty's render-state surface offers.
+  - Task count revised from 17 → 18 to include APC bounds wiring task.
