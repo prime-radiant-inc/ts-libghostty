@@ -1,35 +1,32 @@
-# Open items for Matt — ts-libghostty
+# Open items for Matt — ts-libghostty-vt
 
-**Updated 2026-04-23 evening by Lessa.** Pass 1 complete. This doc is now the handoff for what's left before publish, plus carry-forward notes for Pass 2.
+**Updated 2026-04-23 by Murderbot.** Pass 1 done; Pass-1-fix done (Hilbert); differential testing harness done (separate Bob); Pass 2 in flight. First npm publish targets `v0.2.0` after Pass 2 lands. Pass 2 Bob is actively editing the "Pass 2 notes" section below — leave their content alone.
 
 ---
 
-## ✅ Pass 1 is done
+## Status snapshot
 
-22 of 22 tasks complete. Full clean rebuild from bare state verified (25s end-to-end). `v0.1.0` annotated tag at commit `2f1be96` on `main`, local only — **NOT pushed**. Ready for you to review, push, publish.
-
-**End-to-end verified:** `Terminal.vtWrite("hello")` → `Formatter.formatString(term)` returns `"hello"` across all three output formats (plain/vt/html). 67 smoke tests + 1 tarball test all pass against real libghostty-vt.
-
-**Public surface** (from `src/index.ts`):
-- `Terminal` — vtWrite, resize, reset, snapshot, mode/setMode, lifecycle (`close`, `using`/Symbol.dispose).
-- `Formatter` — plain/vt/html output.
-- `GhosttyError` hierarchy (5 classes) + `GhosttyErrorCode` type.
-- `setLibraryPath` / `isLoaded` / `libraryInfo` + `LibraryInfo` type.
-- `modeNames` / `ModeName` / `TerminalOptions` / `TerminalSnapshot` / `FormatterOptions` / supporting types.
-- `pinnedCommit` constant.
+| Phase | State |
+|---|---|
+| Pass 1 (Terminal + Formatter + lifecycle + ABI safety) | ✅ done; `v0.1.0` tag exists locally as a historical marker, **not being published** |
+| Pass-1-fix (Codex contract bugs) | ✅ done — Hilbert, commit `b5c7922`. See "Pass 1 contract fix-up" below. |
+| Differential testing harness v0 | ✅ done — separate Bob, commits `81e5d73`–`6362020` |
+| Pass 2 (effect callbacks: onWritePty/onBell/onTitleChanged) | 🟡 in flight; will land as `v0.2.0` |
 
 **Pinned to:** Ghostty `e88c6c099152dd6d2d7e517516e1f3c183c152f7` (tip-of-main as of 2026-04-22). Platforms: `darwin-arm64` only.
 
 ---
 
-## Before publish — your todo
+## Version policy
 
-1. ~~Fill in `REPLACE_WITH_REPO_URL`~~ — done; README points to `github.com/prime-radiant-inc/ts-libghostty-vt`.
-2. ~~Decide on GitHub repo location~~ — done; `prime-radiant-inc/ts-libghostty-vt` on GitHub.
-3. ~~Rename package to match `libghostty-vt` naming~~ — done; npm package name is `ts-libghostty-vt` (was `ts-libghostty`). `v0.1.0` retagged on the rename commit.
-4. **Push the `v0.1.0` tag**: `git push origin v0.1.0`. First push will trigger the CI workflow — verify green before publish.
-5. **Update LICENSE copyright** if needed — currently reads `Copyright 2026 Prime Radiant (and contributors)`, which matches the `prime-radiant-inc` GitHub org. Change if you prefer different attribution.
-6. **Publish.** `bun publish` or `npm publish` from a clean tree. The name `ts-libghostty-vt` is unclaimed on npm as of rename time.
+`v0.1.0` is **not being published.** First npm publish targets `v0.2.0` after Pass 2 lands, bundling Pass 1 + Hilbert's contract fixes + differential test harness + Pass 2 callbacks together. The local `v0.1.0` tag stays as a historical marker; no retag.
+
+## Before `v0.2.0` publish — your todo
+
+1. **Verify CI green** on main after Pass 2 merges.
+2. **Update LICENSE copyright** if needed — currently reads `Copyright 2026 Prime Radiant (and contributors)`, matching the `prime-radiant-inc` GitHub org. Change if you prefer different attribution.
+3. **Push `v0.2.0` tag.** Pass 2 plan's Task 12 creates it locally; you push.
+4. **Publish.** `bun publish` or `npm publish` from a clean tree. The name `ts-libghostty-vt` is unclaimed on npm as of last check.
 
 ---
 
