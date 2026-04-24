@@ -1,3 +1,13 @@
+import { resultCodeByValue } from "./internal/generated";
+
+/**
+ * Map a raw GhosttyResult integer to its string name ("ok", "out_of_space",
+ * etc.). Falls back to "unknown" for unrecognised values.
+ */
+export function getResultCodeName(rc: number): string {
+  return resultCodeByValue[rc] ?? "unknown";
+}
+
 export type GhosttyErrorCode =
   // FFI result codes (per ABI discovery §3 / src/internal/generated.ts RESULT_CODE_MAP)
   | "ok"

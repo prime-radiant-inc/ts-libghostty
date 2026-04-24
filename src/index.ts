@@ -28,3 +28,4 @@ export type {
   FormatterOptions,
 } from "./types";
 export { pinnedCommit } from "./internal/generated";
+export { encodeFocus } from "./focus";
