@@ -61,6 +61,20 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.u64, FFIType.ptr, FFIType.ptr, FFIType.ptr],
     returns: FFIType.i32,
   },
+  // ghostty_terminal_set wires callbacks (WRITE_PTY, BELL, TITLE_CHANGED, ...)
+  // and non-callback options. For callback options the value is a function
+  // pointer; passing NULL clears the option. Signature per ABI §4.
+  ghostty_terminal_set: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (term, opt:c_int, value:void*)
+    returns: FFIType.i32,
+  },
+  // ghostty_terminal_get reads a single terminal data key. Pass 2 uses it
+  // from the title_changed trampoline to read the fresh title. For the title
+  // key the out buffer must be a caller-allocated 16-byte GhosttyString slot.
+  ghostty_terminal_get: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],  // (term, data:c_int, out*)
+    returns: FFIType.i32,
+  },
   // GhosttyFormatterTerminalOptions (56 B) is passed via hidden pointer on
   // arm64 AAPCS64 (structs > 16 B are passed indirectly). We declare it as
   // FFIType.ptr and pass a pointer to the options bytes.
