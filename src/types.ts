@@ -29,8 +29,7 @@ export interface TerminalColors {
 // CursorStyle / MouseTracking are kept here for future passes that wire the
 // real `GhosttyStyle` cursor decode and a richer mouse-tracking surface than
 // the current "any tracking active" bool. They are intentionally NOT used by
-// `TerminalSnapshot` in Pass 1 — see CONFIRM_WITH_MATT.md "Known plan/code
-// drift" for the rationale.
+// `TerminalSnapshot` — see the note on `TerminalSnapshot` below.
 // --- Cell query types (Task 8) -----------------------------------------------
 
 export type UnderlineStyle =
@@ -180,11 +179,10 @@ export interface TerminalSnapshot {
   title?: string;
   pwd?: string;
   scrollbackRows: number;
-  // `cursor.style` and `mouseTracking` are deliberately omitted in Pass 1.
-  // CURSOR_STYLE returns a 72-byte GhosttyStyle struct (decode is a Pass 2+
-  // task); MOUSE_TRACKING returns a plain bool that does not map cleanly to
-  // the 5-variant `MouseTracking` union. Wiring either honestly belongs to a
-  // later pass — see CONFIRM_WITH_MATT.md "Known plan/code drift".
+  // `cursor.style` and `mouseTracking` are deliberately omitted. CURSOR_STYLE
+  // returns a 72-byte GhosttyStyle struct we don't decode yet; MOUSE_TRACKING
+  // returns a plain bool that does not map cleanly to the 5-variant
+  // `MouseTracking` union. Wiring either honestly belongs to a later pass.
 }
 
 export interface FormatterOptions {

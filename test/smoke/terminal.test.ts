@@ -140,8 +140,7 @@ describe("TerminalSnapshot shape (Codex bug 3, narrow path)", () => {
   // Pass 1 narrowed TerminalSnapshot: `cursor.style` and `mouseTracking` are
   // removed because the C side either returns a 72-byte struct we don't
   // decode (CURSOR_STYLE) or a single bool that does not map cleanly to the
-  // 5-variant MouseTracking union (MOUSE_TRACKING). See CONFIRM_WITH_MATT.md
-  // "Known plan/code drift" for the rationale.
+  // 5-variant MouseTracking union (MOUSE_TRACKING).
   it("snapshot does not have cursor.style or mouseTracking fields (runtime)", () => {
     using term = new Terminal({ cols: 80, rows: 24 });
     const snap = term.snapshot();

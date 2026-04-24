@@ -134,4 +134,4 @@ If you don't push back, I'll proceed with the picks above.
 3. Curate corpus (3 handcrafted + ~10 from parser-cmin)
 4. Write `test/differential/run.ts` (load corpus → run TS → run oracle → diff plain → report)
 5. README + manual smoke test
-6. Commit, push, document in `CONFIRM_WITH_MATT.md` if anything turned out to need a Matt-decision
+6. Commit, push, and surface any Matt-decision items to him directly
