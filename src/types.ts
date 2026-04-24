@@ -31,6 +31,48 @@ export interface TerminalColors {
 // the current "any tracking active" bool. They are intentionally NOT used by
 // `TerminalSnapshot` in Pass 1 — see CONFIRM_WITH_MATT.md "Known plan/code
 // drift" for the rationale.
+// --- Cell query types (Task 8) -----------------------------------------------
+
+export type UnderlineStyle =
+  | "none"
+  | "single"
+  | "double"
+  | "curly"
+  | "dotted"
+  | "dashed";
+
+export interface CellStyle {
+  fg?: RGB | PaletteIndex;
+  bg?: RGB | PaletteIndex;
+  bold: boolean;
+  faint: boolean;
+  italic: boolean;
+  underline: UnderlineStyle;
+  underlineColor?: RGB;
+  overline: boolean;
+  strikethrough: boolean;
+  blink: boolean;
+  inverse: boolean;
+  invisible: boolean;
+}
+
+export interface CellInfo {
+  text: string;
+  wide: boolean;
+  isWideContinuation: boolean;
+  style?: CellStyle;
+  hyperlinkUri?: string;
+  protected: boolean;
+}
+
+export interface CellAtPoint {
+  x: number;
+  y: number;
+  coordinateSpace?: "active" | "viewport" | "screen" | "history";
+}
+
+// --- End cell query types -----------------------------------------------------
+
 export type CursorStyle = "block" | "underline" | "bar";
 export type MouseTracking = "none" | "x10" | "normal" | "button" | "any";
 

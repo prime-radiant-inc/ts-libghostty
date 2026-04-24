@@ -4,24 +4,31 @@ import { GhosttyError, UseAfterCloseError, getResultCodeName } from "./errors";
 import {
   GhosttyTerminalDataValues,
   GhosttyTerminalOptionValues,
+  GhosttyCellDataValues,
+  GhosttyCellWideValues,
+  GhosttyPointTagValues,
   modeTagByName,
   resultCodeByValue,
   structLayouts,
 } from "./internal/generated";
-import { writeStruct } from "./internal/sized-struct";
+import { writeStruct, readStyle, type RawStyle } from "./internal/sized-struct";
 import {
   makeBellCallback,
   makeTitleCallback,
   makeWritePtyCallback,
   type TrampolineResult,
 } from "./internal/callbacks";
-import { writeScrollViewport, readRgb, readPalette256 } from "./internal/marshal";
+import { writeScrollViewport, readRgb, readPalette256, writePoint } from "./internal/marshal";
 import type {
+  CellAtPoint,
+  CellInfo,
+  CellStyle,
   ModeName,
   RGB,
   TerminalColors,
   TerminalOptions,
   TerminalSnapshot,
+  UnderlineStyle,
 } from "./types";
 
 /**
@@ -707,6 +714,245 @@ export class Terminal {
     if (defaults.fg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_FOREGROUND"], defaults.fg);
     if (defaults.bg) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_BACKGROUND"], defaults.bg);
     if (defaults.cursor) writeColor(O["GHOSTTY_TERMINAL_OPT_COLOR_CURSOR"], defaults.cursor);
+  }
+
+  /**
+   * Look up a single cell by grid coordinate. Returns `undefined` when the
+   * coordinate is outside the grid for the requested coord space (not a throw).
+   *
+   * Supported coord spaces: "active" (default), "viewport", "screen", "history".
+   * "screen" and "history" require scrollback content to be meaningful; they
+   * dispatch the same path as active/viewport — Task 9 adds tests for those.
+   *
+   * Read-only — safe to call from inside a callback.
+   */
+  cellAt(pt: CellAtPoint): CellInfo | undefined {
+    this.#assertOpen();
+
+    const { x, y, coordinateSpace = "active" } = pt;
+    const tag = this.#pointTag(coordinateSpace);
+
+    // Bounds pre-check at TS boundary — x must fit u16, y must fit u32.
+    // Out-of-range values are not errors; they just can't be in the grid.
+    if (!Number.isInteger(x) || x < 0 || x > 0xFFFF) return undefined;
+    if (!Number.isInteger(y) || y < 0 || y > 0xFFFFFFFF) return undefined;
+
+    const pointBuf = writePoint(tag, x, y);
+    const refBuf = this.#freshGridRefBuffer();
+    const lib = getLib();
+    const rc = lib.symbols.ghostty_terminal_grid_ref(this.#handle, ptr(pointBuf), ptr(refBuf));
+    if (rc !== 0) {
+      // INVALID_VALUE = coordinate outside the resolved grid for this coord space.
+      // This is a legitimate "miss", not an error. Any other non-OK code is real.
+      if (getResultCodeName(rc) === "invalid_value") return undefined;
+      throw new GhosttyError(
+        `ghostty_terminal_grid_ref failed with code ${rc}`,
+        { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_terminal_grid_ref" },
+      );
+    }
+
+    return this.#decodeGridRef(refBuf);
+  }
+
+  /** Map a coordinateSpace string to its GhosttyPointTag numeric value. */
+  #pointTag(space: "active" | "viewport" | "screen" | "history"): 0 | 1 | 2 | 3 {
+    const T = GhosttyPointTagValues;
+    switch (space) {
+      case "active":   return T["GHOSTTY_POINT_TAG_ACTIVE"] as 0;
+      case "viewport": return T["GHOSTTY_POINT_TAG_VIEWPORT"] as 1;
+      case "screen":   return T["GHOSTTY_POINT_TAG_SCREEN"] as 2;
+      case "history":  return T["GHOSTTY_POINT_TAG_HISTORY"] as 3;
+      default:
+        throw new GhosttyError(
+          `invalid coordinateSpace: expected "active" | "viewport" | "screen" | "history"; received ${JSON.stringify(space)}`,
+          { code: "invalid_value", functionName: "Terminal.cellAt" },
+        );
+    }
+  }
+
+  /**
+   * Allocate a GhosttyGridRef output buffer, pre-written with the required
+   * `size` field so libghostty recognises it as a valid sized struct.
+   */
+  #freshGridRefBuffer(): Uint8Array {
+    const layout = structLayouts["GhosttyGridRef"]!;
+    const buf = new Uint8Array(layout.size);
+    new DataView(buf.buffer).setBigUint64(layout.fields["size"]!.offset, BigInt(layout.size), true);
+    return buf;
+  }
+
+  /**
+   * Decode a filled GhosttyGridRef buffer into a CellInfo object.
+   * Calls the four grid-ref accessor FFI functions in sequence.
+   */
+  #decodeGridRef(refBuf: Uint8Array): CellInfo {
+    const lib = getLib();
+
+    // ---- 1. Grapheme codepoints → text ----------------------------------------
+    // Probe with buf=null to learn required codepoint count.
+    // Returns SUCCESS+len=0 for empty cells (no text), OUT_OF_SPACE+len>0 for
+    // cells with text. rc===SUCCESS here is not an error condition — it is the
+    // documented empty-cell path per grid_ref.h.
+    const lenOut = new BigUint64Array(1);
+    let rc = lib.symbols.ghostty_grid_ref_graphemes(ptr(refBuf), null, 0n, ptr(lenOut));
+    if (rc !== 0 && getResultCodeName(rc) !== "out_of_space") {
+      throw new GhosttyError(
+        `ghostty_grid_ref_graphemes (probe) failed with code ${rc}`,
+        { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_grid_ref_graphemes" },
+      );
+    }
+
+    const requiredCodepoints = Number(lenOut[0]);
+    let text = "";
+    if (requiredCodepoints > 0) {
+      const codepointBuf = new Uint32Array(requiredCodepoints);
+      const writtenOut = new BigUint64Array(1);
+      rc = lib.symbols.ghostty_grid_ref_graphemes(
+        ptr(refBuf),
+        ptr(codepointBuf),
+        BigInt(requiredCodepoints),
+        ptr(writtenOut),
+      );
+      if (rc !== 0) {
+        throw new GhosttyError(
+          `ghostty_grid_ref_graphemes (fetch) failed with code ${rc}`,
+          { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_grid_ref_graphemes" },
+        );
+      }
+      const written = Number(writtenOut[0]);
+      text = String.fromCodePoint(...codepointBuf.subarray(0, written));
+    }
+
+    // ---- 2. Cell-level read for wide + protected flags -------------------------
+    // GhosttyCell is uint64_t (opaque). ghostty_grid_ref_cell writes it into
+    // a BigUint64Array slot; we then pass the value (not a pointer to it) to
+    // ghostty_cell_get.
+    const cellOut = new BigUint64Array(1);
+    rc = lib.symbols.ghostty_grid_ref_cell(ptr(refBuf), ptr(cellOut));
+    if (rc !== 0) {
+      throw new GhosttyError(
+        `ghostty_grid_ref_cell failed with code ${rc}`,
+        { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_grid_ref_cell" },
+      );
+    }
+    const cellValue = cellOut[0]!; // u64 cell value (not a pointer)
+
+    // GhosttyCellWide enum: NARROW=0, WIDE=1, SPACER_TAIL=2, SPACER_HEAD=3.
+    const wideEnumOut = new Int32Array(1);
+    const rcWide = lib.symbols.ghostty_cell_get(
+      cellValue,
+      GhosttyCellDataValues["GHOSTTY_CELL_DATA_WIDE"],
+      ptr(wideEnumOut),
+    );
+    const wideEnum = rcWide === 0 ? wideEnumOut[0] : 0;
+    const wide = wideEnum === GhosttyCellWideValues["GHOSTTY_CELL_WIDE_WIDE"];
+    const isWideContinuation =
+      wideEnum === GhosttyCellWideValues["GHOSTTY_CELL_WIDE_SPACER_TAIL"] ||
+      wideEnum === GhosttyCellWideValues["GHOSTTY_CELL_WIDE_SPACER_HEAD"];
+
+    const protectedOut = new Uint8Array(1);
+    const rcProt = lib.symbols.ghostty_cell_get(
+      cellValue,
+      GhosttyCellDataValues["GHOSTTY_CELL_DATA_PROTECTED"],
+      ptr(protectedOut),
+    );
+    const isProtected = rcProt === 0 && protectedOut[0] !== 0;
+
+    // ---- 3. Style — sized struct GhosttyStyle ----------------------------------
+    // Must pre-fill the `size` field before handing to ghostty_grid_ref_style.
+    const styleLayout = structLayouts["GhosttyStyle"]!;
+    const styleBuf = new Uint8Array(styleLayout.size);
+    new DataView(styleBuf.buffer).setBigUint64(
+      styleLayout.fields["size"]!.offset,
+      BigInt(styleLayout.size),
+      true,
+    );
+    rc = lib.symbols.ghostty_grid_ref_style(ptr(refBuf), ptr(styleBuf));
+    let style: CellStyle | undefined;
+    if (rc === 0) {
+      const raw = readStyle(styleBuf);
+      style = this.#rawStyleToCellStyle(raw);
+    } else if (getResultCodeName(rc) !== "no_value" && getResultCodeName(rc) !== "invalid_value") {
+      throw new GhosttyError(
+        `ghostty_grid_ref_style failed with code ${rc}`,
+        { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_grid_ref_style" },
+      );
+    }
+
+    // ---- 4. Hyperlink URI — probe-size-first -----------------------------------
+    const hyperlinkUri = this.#readHyperlinkUri(refBuf);
+
+    // exactOptionalPropertyTypes: only include optional fields when non-undefined
+    const info: CellInfo = {
+      text,
+      wide,
+      isWideContinuation,
+      protected: isProtected,
+    };
+    if (style !== undefined) info.style = style;
+    if (hyperlinkUri !== undefined) info.hyperlinkUri = hyperlinkUri;
+    return info;
+  }
+
+  /**
+   * Read hyperlink URI from a grid ref using probe-size-first pattern.
+   * Returns undefined when no hyperlink is attached to the cell.
+   * Per grid_ref.h: SUCCESS + len=0 means no hyperlink (not NO_VALUE).
+   */
+  #readHyperlinkUri(refBuf: Uint8Array): string | undefined {
+    const lib = getLib();
+    const lenOut = new BigUint64Array(1);
+    let rc = lib.symbols.ghostty_grid_ref_hyperlink_uri(ptr(refBuf), null, 0n, ptr(lenOut));
+    // SUCCESS + len=0 → no hyperlink; OUT_OF_SPACE + len>0 → hyperlink present.
+    // (grid_ref.h: "If the cell has no hyperlink, out_len is set to 0 and
+    // GHOSTTY_SUCCESS is returned." — plan's NO_VALUE claim was incorrect.)
+    if (rc !== 0 && getResultCodeName(rc) !== "out_of_space") {
+      // Any other error code is unexpected — propagate.
+      throw new GhosttyError(
+        `ghostty_grid_ref_hyperlink_uri (probe) failed with code ${rc}`,
+        { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_grid_ref_hyperlink_uri" },
+      );
+    }
+    const required = Number(lenOut[0]);
+    if (required === 0) return undefined;
+
+    const buf = new Uint8Array(required);
+    const writtenOut = new BigUint64Array(1);
+    rc = lib.symbols.ghostty_grid_ref_hyperlink_uri(ptr(refBuf), ptr(buf), BigInt(required), ptr(writtenOut));
+    if (rc !== 0) {
+      throw new GhosttyError(
+        `ghostty_grid_ref_hyperlink_uri (fetch) failed with code ${rc}`,
+        { code: getResultCodeName(rc) as GhosttyError["code"], functionName: "ghostty_grid_ref_hyperlink_uri" },
+      );
+    }
+    return new TextDecoder("utf-8").decode(buf.subarray(0, Number(writtenOut[0])));
+  }
+
+  /**
+   * Convert a `RawStyle` (decoded from GhosttyStyle buffer) into a `CellStyle`
+   * with the underline SGR int mapped to the UnderlineStyle string union.
+   */
+  #rawStyleToCellStyle(raw: RawStyle): CellStyle {
+    const underlineMap: readonly UnderlineStyle[] =
+      ["none", "single", "double", "curly", "dotted", "dashed"];
+    const underline = underlineMap[raw.underline] ?? "none";
+    const result: CellStyle = {
+      bold: raw.bold,
+      faint: raw.faint,
+      italic: raw.italic,
+      underline,
+      overline: raw.overline,
+      strikethrough: raw.strikethrough,
+      blink: raw.blink,
+      inverse: raw.inverse,
+      invisible: raw.invisible,
+    };
+    if (raw.fg !== undefined) result.fg = raw.fg;
+    if (raw.bg !== undefined) result.bg = raw.bg;
+    if (raw.underlineColor !== undefined && !('palette' in raw.underlineColor)) {
+      result.underlineColor = raw.underlineColor as RGB;
+    }
+    return result;
   }
 
   /**

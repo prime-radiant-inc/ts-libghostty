@@ -166,6 +166,12 @@ const SYMBOLS = {
     args: [FFIType.ptr, FFIType.ptr],   // (&ref, &out_style)
     returns: FFIType.i32,
   },
+  // Cell data accessors — GhosttyCell is uint64_t (opaque value, NOT a pointer).
+  // ghostty_cell_get(cell: u64, data: c_int, out: void*) -> GhosttyResult
+  ghostty_cell_get: {
+    args: [FFIType.u64, FFIType.i32, FFIType.ptr],  // (cell, data, &out)
+    returns: FFIType.i32,
+  },
   // Focus encode (probe-size-first pattern)
   ghostty_focus_encode: {
     args: [FFIType.i32, FFIType.ptr, FFIType.u64, FFIType.ptr],  // (event, buf|null, buf_len, &out_written)

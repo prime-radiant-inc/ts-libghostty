@@ -27,6 +27,10 @@ export type {
   TerminalOptions,
   TerminalSnapshot,
   FormatterOptions,
+  UnderlineStyle,
+  CellStyle,
+  CellInfo,
+  CellAtPoint,
 } from "./types";
 export { pinnedCommit } from "./internal/generated";
 export { encodeFocus } from "./focus";
