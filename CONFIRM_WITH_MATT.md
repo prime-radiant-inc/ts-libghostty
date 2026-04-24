@@ -66,6 +66,10 @@ Pass 2 starts from commit `b5c7922` on `main` (Hilbert's Pass-1-fix commit, the 
 
 All four preflight greps pass. Pass 2 is unblocked.
 
+### Task 2 findings (2026-04-23, Turing)
+
+`scripts/probe-callbacks.ts` ran clean on the first pass (exit 0, `tag=probe result=ok`). All three callback options — `WRITE_PTY` (1), `BELL` (2), `TITLE_CHANGED` (5) — bind, fire synchronously from `vt_write`, and detach cleanly when re-set to NULL. JSCallback.ptr passes straight through `ghostty_terminal_set` with no wrapping or shim. The `terminal` argument libghostty passes to each trampoline is bit-identical to the handle returned from `ghostty_terminal_new` (observed three times, all matched) — so JS closures can rely on it for identity and userdata can remain NULL through Pass 2. Post-detach BEL produced no extra callback, and the teardown order (set NULL → jscallback.close → terminal_free) did not crash. **Open Question #1 resolves to the default path:** `ghostty_terminal_get(DATA_TITLE)` invoked from *inside* the title_changed trampoline returned `"probe-title"` — the new title is synchronously readable within the callback. Task 9 Step 3's fallback (HALT AND ESCALATE on empty/stale read) is a no-op; proceed with the default snapshot-inside-callback strategy. No surprises versus the ABI doc. One minor observation worth flagging for Task 9: DA1 (`CSI c`) produced exactly one `write_pty` invocation with an `ESC`-prefixed reply, not a chunked stream — the reply handler can assume whole-sequence delivery per write.
+
 ---
 
 ## Known plan/code drift (low priority — does not block publish)
