@@ -1,3 +1,5 @@
 {
-  "hello-world": { "cols": 80, "rows": 24 }
+  "hello-world": { "cols": 80, "rows": 24 },
+  "sgr-basic": { "cols": 80, "rows": 24 },
+  "utf8-emoji": { "cols": 80, "rows": 24 }
 }
