@@ -58,14 +58,46 @@ using term = new Terminal({
 
 The other five effect-shaped callbacks exposed by the C API (`ENQUIRY`, `XTVERSION`, `SIZE`, `COLOR_SCHEME`, `DEVICE_ATTRIBUTES`) are query-response shapes that return data into libghostty's allocator — deferred until the allocator-callback pattern is established.
 
-## API surface (Pass 1 + 2)
+## API surface (Pass 1 + 2 + 3)
 
-- `Terminal` — construction, `vtWrite`, `resize`, `reset`, `snapshot`, `mode`/`setMode`, lifecycle (`close`, `using`), **effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`)**.
+- `Terminal` — construction, `vtWrite`, `resize`, `reset`, `snapshot`, `mode`/`setMode`, lifecycle (`close`, `using`), effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`), **`scrollViewport`, `colors`/`setColors`, `cellAt`**, **APC bounds (`apcMaxBytes`, `apcMaxBytesKitty`)**.
+- **`RenderState`** — `update(term)` snapshot then iterate rows/cells. Dual iterator shape:
+  - Ergonomic: `rows()`, `row.cells()`, `forEachDirtyRow(cb)` allocate fresh objects per iteration, snapshot lifetime valid until next `update()`.
+  - Hot path: `forEachCell(row, cb)` / `forEachDirtyCell(cb)` reuse a single mutable `RenderCell` across the walk — the callback **must not retain the reference**. Mutate your own buffer if you need to retain cell data past the callback.
+  - `dirty()` / `markClean()` — dirty tracking (both libghostty-native and JS-cached). `markClean()` performs a native clear (one call) then mirrors to JS; multiple consumers can each call it on independent cadences.
+  - `colors()` — view of libghostty's current render-state colors.
+  - `cursor()` — viewport cursor position (`x`, `y`, `visible`, `wideTail`), distinct from `Terminal.snapshot().cursor` (which tracks the live cursor regardless of viewport scroll).
+- **`encodeFocus("in" | "out")`** — standalone function, returns fresh `Uint8Array`.
 - `Formatter` — `plain`/`vt`/`html` dumps of a Terminal's current screen.
 - `GhosttyError` + subclasses (`LibraryNotFoundError`, `UnsupportedPlatformError`, `LibraryCompatibilityError`, `UseAfterCloseError`).
 - `setLibraryPath` / `isLoaded` / `libraryInfo` for diagnostics and out-of-tree library paths.
 
-`RenderState` (per-cell grid reading), `KeyEncoder`, and polish features (modes beyond the simple get/set, color get/set, viewport scroll, `cellAt`) are on the roadmap for Passes 3–5.
+`KeyEncoder` + `KeyEvent` (keystroke encoding, Kitty keyboard protocol, application/normal modes) ships in Pass 4. Remaining roadmap items (mouse encoder, paste helpers, Kitty graphics, query-response callbacks) are tranched post-v0.
+
+### `cellAt` coord-space cost
+
+`Terminal.cellAt({x, y, coordinateSpace?})` supports four coord spaces with different costs. Out-of-bounds returns `undefined`, not a throw.
+
+| coord space | cost | notes |
+|---|---|---|
+| `"active"` (default) | O(1) | cells visible in the active screen |
+| `"viewport"` | O(1) | cells visible in the current viewport (= active if not scrolled) |
+| `"screen"` | O(row) | full screen including wrapped rows |
+| `"history"` | O(depth) | scrollback only; touches storage |
+
+### `RenderState` iterator contract
+
+Objects returned from `rows()`, `row.cells()`, `forEachDirtyRow(cb)`, and the `RenderRow` passed to `forEachDirtyCell(cb)` are **snapshots valid until the next `update()` call**. The mutable `RenderCell` passed to `forEachCell(row, cb)` and `forEachDirtyCell(cb)` is valid **only for the duration of the single callback invocation** — fields mutate before the next cell iteration.
+
+Retaining either past its window is undefined behavior.
+
+### `markClean()` semantics
+
+libghostty tracks dirty state at both a global and per-row level. `markClean()` clears both native layers in one `ghostty_render_state_set(OPTION_DIRTY, FALSE)` call, then mirrors the clear into the JS-side cache. Multiple consumers (renderer + log-tailer, etc.) can call `markClean()` on independent cadences — double-clearing libghostty's internal flags is harmless. If you skip `markClean()` after processing a frame, subsequent `update()` calls will continue to report the previous dirty state.
+
+### OSC color-override behavior
+
+OSC 10/11/12 color overrides set by the running program **are preserved across `Terminal.setColors(patch)` calls**. Consumers relying on OSC overrides do not need to re-emit them after `setColors`.
 
 ## License
 

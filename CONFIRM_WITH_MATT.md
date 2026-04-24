@@ -109,6 +109,57 @@ Pass 3 starts from HEAD of `main` at commit `fcf5494ac5e0915c265f101687fcc9574e3
 
 Pass 3 is unblocked.
 
+### Pass 3 complete (2026-04-23, Ekaterin)
+
+All 18 tasks landed. Final state: **198 smoke tests pass / 0 fail** (112 baseline + 86 Pass-3 additions), typecheck clean, `verify:generated` green (141 symbols, 49 enums, 12 structs), tarball smoke green.
+
+**Plan edits during execution — three rounds of reconciliation.** Pass 3's plan was written with Cipher's plan-authoring header survey, which diverged from the real libghostty-vt in several ways. Each discovery fed a reconciliation commit that downstream Bobs read:
+
+1. **Task 2 reconciliation** (after Lovelace's probe) — caught 10 divergences: `ROW_DATA_CELLS = 3` (plan had 2), row iterator requires a `get(ROW_ITERATOR)` populate step, cell iteration uses a reusable container (`cells_new` + `row_get(CELLS, &cells)`), `GhosttyPoint` is 24 bytes, APC read-back is NOT supported (test strategy branches to the "no-crash" fallback), `OUT_OF_SPACE = -3` (plan had `-5` placeholder), empty cells return `SUCCESS + len=0` not `OUT_OF_SPACE`.
+2. **Post-Task-3 naming correction** (after Vaucanson) — plan referenced `generated.sizedStructs.X` / `generated.enumValues.GhosttyX` but the generator actually exports `structLayouts["X"]!` (top-level Record) / `GhosttyXValues` (individual per-enum exports). Sed-wide rename plus 4 import statements corrected.
+3. **Global API conventions amendment** (after Niven + Faraday's Task 4/5 findings) — plan used `ffi.symbols.X` but real code uses `const lib = getLib(); lib.symbols.X`; plan used `new GhosttyError({code, functionName, message})` but real signature is `new GhosttyError(message, {code, functionName})`; plan used `#assertNotClosed("method")` but real name is `#assertOpen()` (no arg). Added a conventions table to the Task 2 reconciliation block; subsequent Bobs apply substitutions when copying plan snippets. `#assertNotClosed` → `#assertOpen` rename was sed'd plan-wide as well.
+
+Every downstream Bob read the reconciliation block before starting their task — the pattern held and no more cascading drift emerged after Task 5.
+
+**Open Question resolutions from probing:**
+
+- **Native dirty clear: ONE call** via `ghostty_render_state_set(state, GHOSTTY_RENDER_STATE_OPTION_DIRTY, &GHOSTTY_RENDER_STATE_DIRTY_FALSE)`. Clears both the global dirty flag and per-row flags in a single operation. Benchmarker's Task 13 "markClean + re-update with no activity stays 'none'" test verifies the native clear actually clears (not just the JS mirror — that was the P1 item from Codex round 1).
+- **Viewport cursor IS exposed** via `CURSOR_VIEWPORT_*` render-state data keys (x/y/has_value/wide_tail). Cursor style on viewport is NOT exposed — consistent with `TerminalSnapshot.cursor.style` staying deferred. `RenderState.cursor()` returns `ViewportCursor { x, y, visible, wideTail }`.
+- **APC read-back is NOT supported.** `ghostty_terminal_get(handle, APC_MAX_BYTES, ...)` returns `NO_VALUE (-4)`. §4.4 test strategy went to the fallback path (no-crash + invalid-path assertions only). APC bounds themselves still wire correctly via `ghostty_terminal_set`.
+- **OSC 10/11/12 overrides are PRESERVED** across `setColors` calls (Prism's Task 6 probe). README documents this.
+
+**Pass 3 Bob run.** 14 Bobs contributed across 18 tasks: Ekaterin (orchestrator, Tasks 1/3-reconciliation/15/17/18 inline), Cipher (plan-authoring header survey), Lovelace (Task 2), Vaucanson (Task 3), Niven (Task 4), Faraday (Task 5), Prism (Task 6), Lorentz (Task 7), Ptolemy (Task 8), Annals (Task 9), Vesalius (Task 10), Weaver (Task 11), Knuth (Task 12), Benchmarker (Task 13), Dewey (Task 14), Barlow (Task 16). Orchestrator-on-main with dispatched-Bobs-on-worktrees through Task 10; switched to dispatched-Bobs-on-main from Task 11 onward (the `isolation: "worktree"` pattern branched off `origin/main` rather than current HEAD, forcing manual integration at each step; direct-on-main dispatch with sequential execution avoided that).
+
+**Carry-forward for Pass 4.**
+
+- `KeyEncoder`, `KeyEvent`, `KittyFlags`, `Mods` — the full keystroke-encoding surface. `src/internal/generated.ts` already has `Key` as a string-literal union (generated from `vt.h`); Pass 4 wires the encoder around it.
+- `rawStyleToCellStyle` helper now lives in `src/internal/style.ts` (Weaver's Task 11 extraction). If Pass 4 needs style decoding, import from there.
+- `RenderState`'s mutable-singleton hot-path pattern does NOT apply to `KeyEncoder.encode` — encode returns a fresh `Uint8Array` per call (binding design §4.4 confirms).
+- Unstable-fixture skip pattern (the `.skip.reason` sidecar idea) was planned but not needed — all 3 fixtures at v0.3.0 (hello-world, sgr-basic, utf8-emoji) produced stable output. Pass 4 fixtures follow the same pattern if needed.
+- Global API conventions from the Task 2 reconciliation (getLib, GhosttyError signature, #assertOpen, structLayouts / GhosttyXValues) — reuse these in Pass 4 task prompts so the plan-vs-real drift loop doesn't repeat.
+
+### Pass 3 commit timeline
+
+- `e71885a` `c9a7489` `93b4451` Pass 3 spec + two Codex review reconciliation rounds
+- `fcf5494` Pass 3 plan (pre-Codex)
+- `2e84abd` Task 1 preflight (Ekaterin)
+- `f490421` `1295834` Task 2 probe (Lovelace) + plan reconciliation
+- `364a823` `4e1f948` Task 3 SYMBOLS + helpers (Vaucanson) + plan naming correction
+- `17c508e` `57faea2` Task 4 scrollViewport (Niven) + #assertOpen plan rename
+- `e187c4c` `b0b82c6` Task 5 encodeFocus (Faraday) + global API conventions amendment
+- `2816a88` Task 6 colors/setColors (Prism) — records OSC survival = YES
+- `9c6d94c` Task 7 APC bounds (Lorentz)
+- `4295f78` `5256243` Task 8 + Task 9 cellAt (Ptolemy, Annals)
+- `d241a49` Task 10 RenderState skeleton (Vesalius, manual integration)
+- `4531222` Task 11 ergonomic iterators + walkCells decode (Weaver)
+- `758c606` Task 12 hot-path iterators (Knuth)
+- `39bf80c` Task 13 RenderState smoke tests, 18 tests (Benchmarker)
+- `3ed9e20` Task 14 metadata fixture harness (Dewey)
+- `2104571` Task 15 sgr-basic + utf8-emoji fixtures (Ekaterin inline)
+- `c7210c2` Task 16 resilience fuzz + large-APC (Barlow)
+- `2abafdc` Task 17 tarball smoke extension (Ekaterin inline)
+- (Task 18 commit) release prep + `v0.3.0` tag
+
 ---
 
 ## Known plan/code drift (low priority — does not block publish)
