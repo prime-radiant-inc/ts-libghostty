@@ -32,7 +32,12 @@ async function main(): Promise<void> {
   const agent = pickAgent();
   console.log(`[bobbihack] using agent: ${agent.name}`);
 
+  // Pin to 80x25 so the rendered NetHack pane (25 inner rows) matches
+  // what the child writes to. Default is 80x24, which leaves a phantom
+  // blank row at the bottom of our pane.
   const runner = await Runner.spawn(["nethack"], {
+    cols: 80,
+    rows: 25,
     env: nethackEnv(),
     frame: { minIntervalMs: 500, maxIntervalMs: 10_000, quiesceMs: 100 },
   });
@@ -97,12 +102,12 @@ async function main(): Promise<void> {
       requestPaint();
 
       const prompt = detectPrompt(frame.snapshot);
-      if (prompt === "more") { await runner.sendKey("Space"); continue; }
-      if (prompt === "yn") { await runner.sendText("n"); continue; }
+      if (prompt === "more") { if (!runner.exited) await runner.sendKey("Space"); continue; }
+      if (prompt === "yn") { if (!runner.exited) await runner.sendText("n"); continue; }
       if (prompt === "death") { break; }
 
       if (ac.signal.aborted) {
-        if (!cleanQuitSent) {
+        if (!cleanQuitSent && !runner.exited) {
           cleanQuitSent = true;
           await runner.sendText("#quit\r y\r y\r");
         }
@@ -132,6 +137,7 @@ async function main(): Promise<void> {
       requestPaint();
 
       if (ac.signal.aborted) continue;
+      if (runner.exited) continue;
 
       if (decision === "quit") {
         cleanQuitSent = true;

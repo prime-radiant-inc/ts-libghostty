@@ -29,7 +29,9 @@ export class MockAgent implements Agent {
 
   constructor(opts: MockAgentOptions = {}) {
     this.#rng = mulberry32(opts.seed ?? 42);
-    this.#gapMs = opts.gapMs ?? 80;
+    // 250ms default gives the spectator a beat to read each delta.
+    // Tests pass `gapMs: 0` to keep the suite snappy.
+    this.#gapMs = opts.gapMs ?? 250;
     this.#minThoughts = opts.minThoughts ?? 2;
     this.#maxThoughts = opts.maxThoughts ?? 4;
   }

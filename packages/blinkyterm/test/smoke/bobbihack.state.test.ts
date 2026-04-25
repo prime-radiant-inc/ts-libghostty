@@ -74,7 +74,7 @@ test("onAgentEvent thinking is ignored when no current turn", () => {
   expect(s1).toBe(s0);
 });
 
-test("onTurnEnd moves currentTurn into history (newest first)", () => {
+test("onTurnEnd appends to history and keeps currentTurn for the live area", () => {
   let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
   s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
   s = onAgentEvent(s, { kind: "thinking", delta: "going east " });
@@ -82,7 +82,10 @@ test("onTurnEnd moves currentTurn into history (newest first)", () => {
   s = onAgentEvent(s, { kind: "action", move: "east" });
   s = onTurnEnd(s);
 
-  expect(s.currentTurn).toBeNull();
+  // currentTurn stays so the live area keeps showing the just-completed turn
+  // until the next onTurnStart replaces it.
+  expect(s.currentTurn).not.toBeNull();
+  expect(s.currentTurn?.committed).toBe("east");
   expect(s.history.length).toBe(1);
   expect(s.history[0]).toMatchObject({
     number: 1,
@@ -90,6 +93,20 @@ test("onTurnEnd moves currentTurn into history (newest first)", () => {
     decision: "east",
   });
   expect(s.history[0]?.summary).toContain("going east");
+});
+
+test("onTurnStart replaces a sticky completed turn", () => {
+  let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
+  s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
+  s = onAgentEvent(s, { kind: "action", move: "east" });
+  s = onTurnEnd(s);
+  s = onTurnStart(s, { turn: 2, frameReason: "bell" });
+  expect(s.currentTurn).toEqual({
+    number: 2,
+    frameReason: "bell",
+    streamingText: "",
+    committed: null,
+  });
 });
 
 test("onTurnEnd records error decision when committed is null", () => {

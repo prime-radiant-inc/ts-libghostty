@@ -124,7 +124,10 @@ export function onTurnEnd(state: ViewState): ViewState {
     decision,
   };
   const next = [record, ...state.history].slice(0, state.historyCapacity);
-  return { ...state, currentTurn: null, history: next };
+  // Keep `currentTurn` populated so the live area continues to display the
+  // just-completed turn (with its committed move) until the next onTurnStart
+  // replaces it. Otherwise the live area flashes blank between turns.
+  return { ...state, history: next };
 }
 
 export function onResize(state: ViewState, hostCols: number, hostRows: number): ViewState {
