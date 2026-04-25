@@ -338,10 +338,12 @@ export class Runner {
   }
 
   frames(): AsyncIterable<Frame> {
+    if (this.#disposed) throw new DisposedError("Runner");
     if (this.#iteratorActive) throw new IteratorInUseError();
     this.#iteratorActive = true;
 
     let closed = false;
+    let firstFrameDelivered = false;
     const terminal = this.#terminal;
     const renderState = this.#renderState;
     const scheduler = this.#scheduler;
@@ -352,6 +354,7 @@ export class Runner {
     const iter: AsyncIterator<Frame> = {
       next: async (): Promise<IteratorResult<Frame>> => {
         if (closed) {
+          releaseLock();
           return { done: true, value: undefined };
         }
         await scheduler.awaitReady();
@@ -360,7 +363,28 @@ export class Runner {
         // could yield to the event loop here would let new effects land
         // mid-snapshot, smearing frame boundaries.
         renderState.update(terminal);
-        const reason: FrameReason = priorityPick(scheduler.pendingReasonSet());
+        const pending = scheduler.pendingReasonSet();
+        // Edge case: child wrote bytes then exited before quiesce fired.
+        // Both `initial` and `exited`/`crashed` are pending. Spec §3.5
+        // promises the first iterator frame is `reason: "initial"`; the
+        // terminal frame follows. priorityPick would otherwise rank
+        // exited/crashed above initial and steal the first frame.
+        let reason: FrameReason;
+        let exitToReplay: { exitCode?: number; signal?: NodeJS.Signals } | null = null;
+        if (
+          !firstFrameDelivered &&
+          pending.has("initial") &&
+          (pending.has("exited") || pending.has("crashed"))
+        ) {
+          reason = "initial";
+          const peek = scheduler.snapshot();
+          exitToReplay = {
+            ...(peek.exitCode !== undefined ? { exitCode: peek.exitCode } : {}),
+            ...(peek.signal !== undefined ? { signal: peek.signal } : {}),
+          };
+        } else {
+          reason = priorityPick(pending);
+        }
         const schedSnap = scheduler.snapshot();
         const snapshot = buildFrameSnapshot({
           terminal,
@@ -382,8 +406,16 @@ export class Runner {
         })();
         renderState.markClean();
         scheduler.consume();
+        firstFrameDelivered = true;
+        // Re-queue the exit reason so the next next() delivers the
+        // terminal frame. Replays through the existing noteExit path,
+        // which markReady-s the scheduler.
+        if (exitToReplay !== null) {
+          scheduler.noteExit(exitToReplay);
+        }
         if (reason === "exited" || reason === "crashed") {
           closed = true;
+          releaseLock();
         }
         return { done: false, value: frame };
       },

@@ -36,9 +36,10 @@ await using runner = await Runner.spawn(["bash", "-l"], {
 });
 
 for await (const frame of runner.frames()) {
-  console.log(`[${frame.reason}] seq=${frame.seq}`);
-  console.log(frame.text);
-  if (frame.text.includes("$ ")) break;
+  console.log(`[${frame.reason}]`);
+  console.log(frame.snapshot.text);
+  if (frame.snapshot.text.includes("$ ")) break;
+  if (frame.reason === "exited" || frame.reason === "crashed") break;
 }
 ```
 
