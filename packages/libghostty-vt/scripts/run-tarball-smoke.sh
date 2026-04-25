@@ -40,7 +40,7 @@ cat > package.json <<EOF
   "name": "tarball-smoke",
   "type": "module",
   "dependencies": {
-    "ts-libghostty-vt": "file:$TGZ"
+    "libghostty-vt": "file:$TGZ"
   }
 }
 EOF
@@ -48,7 +48,7 @@ EOF
 bun install --silent
 
 cat > run.ts <<'EOF'
-import { Terminal, Formatter, RenderState, encodeFocus } from "ts-libghostty-vt";
+import { Terminal, Formatter, RenderState, encodeFocus } from "libghostty-vt";
 
 // Pass 1 — Terminal + Formatter
 using term = new Terminal({ cols: 10, rows: 3 });
