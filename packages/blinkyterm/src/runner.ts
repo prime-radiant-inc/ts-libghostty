@@ -1,9 +1,15 @@
 import { KeyEncoder, RenderState, Terminal } from "libghostty-vt";
 
-import { DisposedError, FirstFrameTimeoutError, SpawnError } from "./errors";
-import type { SpawnOptions } from "./types";
+import {
+  DisposedError,
+  FirstFrameTimeoutError,
+  IteratorInUseError,
+  SpawnError,
+} from "./errors";
+import type { Frame, FrameReason, SpawnOptions } from "./types";
 import { realClock } from "./internal/clock";
-import { Scheduler } from "./internal/scheduler";
+import { priorityPick, Scheduler } from "./internal/scheduler";
+import { buildFrameSnapshot } from "./internal/snapshot";
 import { WriteQueue } from "./internal/write-queue";
 
 // Subset of `Bun.Subprocess` we actually use. Avoids leaning on Bun's full
@@ -78,6 +84,7 @@ export class Runner {
   #exited = false;
   #exitCode: number | undefined;
   #signal: NodeJS.Signals | undefined;
+  #iteratorActive = false;
 
   private constructor(args: {
     pty: BunTerminalLike;
@@ -306,6 +313,70 @@ export class Runner {
   get renderState(): RenderState {
     if (this.#disposed) throw new DisposedError("Runner");
     return this.#renderState;
+  }
+
+  frames(): AsyncIterable<Frame> {
+    if (this.#iteratorActive) throw new IteratorInUseError();
+    this.#iteratorActive = true;
+
+    let closed = false;
+    const terminal = this.#terminal;
+    const renderState = this.#renderState;
+    const scheduler = this.#scheduler;
+    const releaseLock = (): void => {
+      this.#iteratorActive = false;
+    };
+
+    const iter: AsyncIterator<Frame> = {
+      next: async (): Promise<IteratorResult<Frame>> => {
+        if (closed) {
+          return { done: true, value: undefined };
+        }
+        await scheduler.awaitReady();
+
+        // ATOMIC FINALIZE — no awaits between these steps. Anything that
+        // could yield to the event loop here would let new effects land
+        // mid-snapshot, smearing frame boundaries.
+        renderState.update(terminal);
+        const reason: FrameReason = priorityPick(scheduler.pendingReasonSet());
+        const schedSnap = scheduler.snapshot();
+        const snapshot = buildFrameSnapshot({
+          terminal,
+          renderState,
+          bellsSinceLast: schedSnap.bellsSinceLast,
+          titleChangesSinceLast: schedSnap.titleChangesSinceLast,
+        });
+        const frame: Frame = (() => {
+          if (reason === "exited" || reason === "crashed") {
+            const f: Frame = {
+              reason,
+              snapshot,
+              ...(schedSnap.exitCode !== undefined ? { exitCode: schedSnap.exitCode } : {}),
+              ...(schedSnap.signal !== undefined ? { signal: schedSnap.signal } : {}),
+            };
+            return f;
+          }
+          return { reason, snapshot };
+        })();
+        renderState.markClean();
+        scheduler.consume();
+        if (reason === "exited" || reason === "crashed") {
+          closed = true;
+        }
+        return { done: false, value: frame };
+      },
+      return: async (): Promise<IteratorResult<Frame>> => {
+        closed = true;
+        releaseLock();
+        return { done: true, value: undefined };
+      },
+    };
+
+    return {
+      [Symbol.asyncIterator]() {
+        return iter;
+      },
+    };
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
