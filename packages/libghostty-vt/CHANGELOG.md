@@ -4,6 +4,36 @@ All notable changes to `ts-libghostty-vt` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-24
+
+### Added
+
+- `KeyEncoder` class — converts `KeyEvent` objects to VT byte
+  sequences via libghostty's `ghostty_key_encoder_*` C API. Supports
+  bound mode (paired with a `Terminal`, auto-syncs encoder options
+  on each encode) and standalone mode (static `KeyEncoderOptions`
+  bag). Mode-aware — DECCKM cursor-key mode, Kitty keyboard flags,
+  and other state are respected.
+- `KeyEvent`, `Mods`, `Key`, `KeyEncoderOptions` types.
+- `EncodeError` (extends `GhosttyError`) with codes
+  `"encode_failed"` (libghostty returned non-success) and
+  `"invalid_utf8"` (utf8 contract violated — C0 controls or macOS
+  PUA codepoints).
+
+### Changed
+
+- Repository now a Bun-workspaces monorepo. `libghostty-vt` lives at
+  `packages/libghostty-vt/`. (Restructure landed alongside this
+  release; the binding's API surface and shipping tarball are
+  unchanged from 0.3.0 except for the new KeyEncoder additions
+  above.)
+
+### Notes
+
+- All eight `ghostty_key_encoder_setopt` options are surfaced via
+  `KeyEncoderOptions`. Mouse encoding, paste/OSC 52, and IME
+  composition remain explicitly out of Pass 4 scope.
+
 ## [0.3.0] — 2026-04-24
 
 Pass 3 closes the v0 grid-reading surface. With Pass 2's effect callbacks and Pass 3's `RenderState` + four new `Terminal` methods, a consumer can replace tmux-style terminal capture with structured grid reads, cell-level style access, and dynamic color state. Pass 4 (keystroke encoding via `KeyEncoder`) is the last remaining pass before v1 targets upstream API stability.
