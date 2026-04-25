@@ -1,7 +1,7 @@
 import { ptr, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
 import { GhosttyError, EncodeError, UseAfterCloseError, getResultCodeName } from "./errors";
-import { GhosttyKeyActionValues } from "./internal/generated";
+import { GhosttyKeyActionValues, GhosttyKeyEncoderOptionValues } from "./internal/generated";
 import { keyToGhosttyId, type Key } from "./internal/key-names";
 import { packMods, type Mods } from "./internal/mods-pack";
 import { isInvalidKeyUtf8 } from "./internal/key-utf8-validator";
@@ -20,8 +20,19 @@ export interface KeyEvent {
 }
 
 export interface KeyEncoderOptions {
-  // Filled in by Task 12. For now, an empty bag is valid.
+  cursorKeyMode?: "normal" | "application";
+  keypadKeyMode?: "normal" | "application";
+  ignoreKeypadWithNumLock?: boolean;
+  altEscPrefix?: boolean;
+  modifyOtherKeysState2?: boolean;
+  kittyFlags?: number;     // u8 bitmask; see Kitty keyboard protocol
+  macosOptionAsAlt?: "false" | "true" | "left" | "right";  // GhosttyOptionAsAlt
+  backarrowKeyMode?: boolean;       // false=BS emits 0x7f, true=0x08
 }
+
+const OPTION_AS_ALT_VALUES = {
+  false: 0, true: 1, left: 2, right: 3,
+} as const;
 
 const ACTION_BY_NAME = {
   press:   GhosttyKeyActionValues.GHOSTTY_KEY_ACTION_PRESS,
@@ -60,7 +71,7 @@ export class KeyEncoder implements Disposable {
         this.#handle, opts.terminal._handle,
       );
     } else if (opts.options) {
-      // Standalone mode option setters land in Task 12; for now, no-op (empty options bag).
+      this.#applyOptions(opts.options);
     }
   }
 
@@ -164,6 +175,34 @@ export class KeyEncoder implements Disposable {
     if (this.#handle === null) return;
     getLib().symbols.ghostty_key_encoder_free(this.#handle);
     this.#handle = null;
+  }
+
+  #applyOptions(o: KeyEncoderOptions): void {
+    const lib = getLib();
+    const O = GhosttyKeyEncoderOptionValues;
+    // ghostty_key_encoder_setopt is void per the C header — these helpers
+    // don't check rc.
+    const setBool = (optId: number, value: boolean) => {
+      const buf = new Uint8Array([value ? 1 : 0]);
+      lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
+    };
+    const setU8 = (optId: number, value: number) => {
+      const buf = new Uint8Array([value & 0xff]);
+      lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
+    };
+    const setEnumI32 = (optId: number, value: number) => {
+      // GhosttyOptionAsAlt is enum-typed, passed by reference to its int value.
+      const buf = new Int32Array([value]);
+      lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
+    };
+    if (o.cursorKeyMode !== undefined)           setBool(O.GHOSTTY_KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION,    o.cursorKeyMode === "application");
+    if (o.keypadKeyMode !== undefined)           setBool(O.GHOSTTY_KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION,    o.keypadKeyMode === "application");
+    if (o.ignoreKeypadWithNumLock !== undefined) setBool(O.GHOSTTY_KEY_ENCODER_OPT_IGNORE_KEYPAD_WITH_NUMLOCK, o.ignoreKeypadWithNumLock);
+    if (o.altEscPrefix !== undefined)            setBool(O.GHOSTTY_KEY_ENCODER_OPT_ALT_ESC_PREFIX,            o.altEscPrefix);
+    if (o.modifyOtherKeysState2 !== undefined)   setBool(O.GHOSTTY_KEY_ENCODER_OPT_MODIFY_OTHER_KEYS_STATE_2, o.modifyOtherKeysState2);
+    if (o.kittyFlags !== undefined)              setU8(O.GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS,                 o.kittyFlags);
+    if (o.macosOptionAsAlt !== undefined)        setEnumI32(O.GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT,    OPTION_AS_ALT_VALUES[o.macosOptionAsAlt]);
+    if (o.backarrowKeyMode !== undefined)        setBool(O.GHOSTTY_KEY_ENCODER_OPT_BACKARROW_KEY_MODE,        o.backarrowKeyMode);
   }
 
   #assertOpen(): void {

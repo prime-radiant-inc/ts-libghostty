@@ -81,6 +81,40 @@ describe("KeyEncoder — modified keys (golden table)", () => {
   }
 });
 
+describe("KeyEncoder — standalone mode options", () => {
+  test("cursorKeyMode: 'application' makes ArrowUp emit ESC O A", () => {
+    using enc = new KeyEncoder({ options: { cursorKeyMode: "application" } });
+    const bytes = enc.encode({ key: "ArrowUp" });
+    expect(Array.from(bytes)).toEqual([0x1b, 0x4f, 0x41]);
+  });
+
+  test("cursorKeyMode: 'normal' makes ArrowUp emit ESC [ A (default)", () => {
+    using enc = new KeyEncoder({ options: { cursorKeyMode: "normal" } });
+    const bytes = enc.encode({ key: "ArrowUp" });
+    expect(Array.from(bytes)).toEqual([0x1b, 0x5b, 0x41]);
+  });
+
+  test("kittyFlags accepts a u8 bitmask", () => {
+    using enc = new KeyEncoder({ options: { kittyFlags: 0b11111 } });
+    // Just verify it constructs and encodes without throwing — exact bytes
+    // depend on Kitty protocol details we don't fully spec here.
+    const bytes = enc.encode({ key: "KeyA", utf8: "a", unshiftedCodepoint: 0x61 });
+    expect(bytes.length).toBeGreaterThan(0);
+  });
+
+  test("backarrowKeyMode: false (default) → Backspace emits 0x7f", () => {
+    using enc = new KeyEncoder({ options: { backarrowKeyMode: false } });
+    const bytes = enc.encode({ key: "Backspace" });
+    expect(Array.from(bytes)).toEqual([0x7f]);
+  });
+
+  test("backarrowKeyMode: true → Backspace emits 0x08", () => {
+    using enc = new KeyEncoder({ options: { backarrowKeyMode: true } });
+    const bytes = enc.encode({ key: "Backspace" });
+    expect(Array.from(bytes)).toEqual([0x08]);
+  });
+});
+
 import { Terminal } from "../../src";
 
 describe("KeyEncoder — bound mode (terminal sync)", () => {
