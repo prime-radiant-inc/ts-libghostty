@@ -205,3 +205,32 @@ export interface FormatterOptions {
   kittyKeyboard?: boolean;       // C field: `kitty_keyboard`
   charsets?: boolean;
 }
+
+// --- Pass 4 render-rect types ------------------------------------------------
+
+export interface RenderRect {
+  readonly row: number;   // 1-based host row of top-left
+  readonly col: number;   // 1-based host col of top-left
+  readonly cols: number;
+  readonly rows: number;
+}
+
+export interface RectRenderOptions {
+  /**
+   * SGR color depth.
+   * - "preserve" (default): emit RGB / palette / 16-color SGR as the source
+   *   carries it.
+   * - "none": skip color and attribute SGR entirely (plain text only;
+   *   blank-but-bg-styled cells render as undifferentiated whitespace).
+   */
+  colorDepth?: "preserve" | "none";
+}
+
+export interface RectCursor {
+  readonly row: number;       // 1-based host row
+  readonly col: number;       // 1-based host col
+  /** True when the cursor sits on the trailing half of a wide grapheme. */
+  readonly wideTail: boolean;
+}
+
+// --- End Pass 4 render-rect types --------------------------------------------

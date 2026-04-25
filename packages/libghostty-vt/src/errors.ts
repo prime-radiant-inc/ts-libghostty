@@ -23,6 +23,7 @@ export type GhosttyErrorCode =
   | "use_after_close"
   | "encode_failed"
   | "invalid_utf8"
+  | "rect_size_mismatch"
   | "unknown";
 
 export interface GhosttyErrorOptions {
@@ -99,5 +100,25 @@ export class EncodeError extends GhosttyError {
   constructor(message: string, opts: GhosttyErrorOptions) {
     super(message, opts);
     this.name = "EncodeError";
+  }
+}
+
+export class RectSizeMismatch extends GhosttyError {
+  readonly source: { cols: number; rows: number };
+  readonly dest: { cols: number; rows: number };
+
+  constructor(
+    source: { cols: number; rows: number },
+    dest: { cols: number; rows: number },
+  ) {
+    super(
+      `RectSizeMismatch: source is ${source.cols}×${source.rows}, ` +
+        `dest is ${dest.cols}×${dest.rows}. ` +
+        `Resize the source program (terminal.resize) or the destination box.`,
+      { code: "rect_size_mismatch" },
+    );
+    this.name = "RectSizeMismatch";
+    this.source = { cols: source.cols, rows: source.rows };
+    this.dest = { cols: dest.cols, rows: dest.rows };
   }
 }
