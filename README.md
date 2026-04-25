@@ -31,3 +31,8 @@ cd packages/libghostty-vt && bun test test/smoke   # binding tests
 Apache-2.0 for ts-libghostty source. See [LICENSE](./LICENSE) at the
 root and per-package licenses for any bundled third-party material
 (e.g., `packages/libghostty-vt/LICENSE_GHOSTTY` for the dylib).
+
+## About
+
+Copyright 2026 Prime Radiant
+[https://primeradiant.com](https://primeradiant.com)
