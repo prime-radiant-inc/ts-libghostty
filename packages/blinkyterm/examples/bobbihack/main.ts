@@ -32,12 +32,13 @@ async function main(): Promise<void> {
   const agent = pickAgent();
   console.log(`[bobbihack] using agent: ${agent.name}`);
 
-  // Pin to 80x25 so the rendered NetHack pane (25 inner rows) matches
-  // what the child writes to. Default is 80x24, which leaves a phantom
-  // blank row at the bottom of our pane.
+  // Pin to 80x24 — NetHack 3.6 only paints 24 rows even when given a
+  // 25-row pty (probe confirmed lines.length=24 either way). The pane
+  // is sized to match exactly, so there's no blank row before the
+  // bottom border.
   const runner = await Runner.spawn(["nethack"], {
     cols: 80,
-    rows: 25,
+    rows: 24,
     env: nethackEnv(),
     frame: { minIntervalMs: 500, maxIntervalMs: 10_000, quiesceMs: 100 },
   });

@@ -37,9 +37,10 @@ Or via the script: `bun run bobbihack`.
 
 bobbihack picks one of three layouts based on host terminal size:
 
-- **Side-by-side** when ≥ 124×27. NetHack pinned left at 82×27;
+- **Side-by-side** when ≥ 126×26. NetHack pinned left at 84×26
+  (a 1-cell horizontal margin around NetHack's 80×24 output);
   agent pane fills the remaining width and full height.
-- **Stacked** when ≥ 82×39 but not wide enough for side-by-side.
+- **Stacked** when ≥ 84×39 but not wide enough for side-by-side.
   NetHack pinned top; agent pane below.
 - **Resize prompt** when neither fits.
 

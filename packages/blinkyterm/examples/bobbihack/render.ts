@@ -75,16 +75,24 @@ function drawBox(parts: string[], box: Box, title: string): void {
 
 function drawNethackContent(parts: string[], box: Box, screenAnsi: string): void {
   const lines = screenAnsi.split("\n");
-  const innerCols = box.cols - 2;
+  // Layout reserves 1 cell of horizontal padding on each side inside the box,
+  // so content occupies cols [box.col+2 .. box.col+box.cols-3]. The margin
+  // cells (box.col+1 and box.col+box.cols-2) are always blank.
+  const NETHACK_HPAD = 1;
+  const contentCols = box.cols - 2 - 2 * NETHACK_HPAD;
   const innerRows = box.rows - 2;
   for (let i = 0; i < innerRows; i++) {
     const line = lines[i] ?? "";
+    // Left margin cell
     parts.push(goto(box.row + 1 + i, box.col + 1));
+    parts.push(" ");
+    // Content
     parts.push(line);
     parts.push(RESET);
-    // pad with spaces if line was shorter than innerCols (visually clear stale chars)
     const visible = stripAnsi(line).length;
-    if (visible < innerCols) parts.push(" ".repeat(innerCols - visible));
+    if (visible < contentCols) parts.push(" ".repeat(contentCols - visible));
+    // Right margin cell
+    parts.push(" ");
   }
 }
 

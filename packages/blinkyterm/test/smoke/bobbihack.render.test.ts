@@ -84,6 +84,6 @@ test("render stacked layout still emits both pane titles", () => {
 test("render tooSmall shows a single resize message and no boxes", () => {
   const out = render(initTooSmall());
   expect(out).toContain("Resize");
-  expect(out).toContain("124");  // side-by-side minimum
-  expect(out).toContain("82");   // stacked minimum cols
+  expect(out).toContain("126");  // side-by-side minimum cols
+  expect(out).toContain("84");   // stacked minimum cols
 });
