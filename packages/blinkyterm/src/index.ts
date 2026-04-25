@@ -16,4 +16,13 @@ export type {
   Terminal,
   RenderState,
 } from "./types";
+export {
+  BlinkyTermError,
+  DisposedError,
+  ExitedError,
+  FirstFrameTimeoutError,
+  IteratorInUseError,
+  SpawnError,
+} from "./errors";
+export type { BlinkyTermErrorCode } from "./errors";
 export { EncodeError } from "libghostty-vt";
