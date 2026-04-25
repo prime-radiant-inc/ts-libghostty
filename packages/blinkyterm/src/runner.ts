@@ -1,4 +1,5 @@
 import { KeyEncoder, RenderState, Terminal } from "libghostty-vt";
+import type { Key, KeyEvent, Mods } from "libghostty-vt";
 
 import {
   DisposedError,
@@ -11,6 +12,7 @@ import type { Frame, FrameReason, SpawnOptions, WaitExitResult } from "./types";
 import { realClock } from "./internal/clock";
 import { priorityPick, Scheduler } from "./internal/scheduler";
 import { buildFrameSnapshot } from "./internal/snapshot";
+import { eventFromUsLayout } from "./internal/us-layout";
 import { WriteQueue } from "./internal/write-queue";
 
 // Subset of `Bun.Subprocess` we actually use. Avoids leaning on Bun's full
@@ -388,6 +390,16 @@ export class Runner {
   async sendText(text: string): Promise<void> {
     const bytes = new TextEncoder().encode(text);
     await this.sendBytes(bytes);
+  }
+
+  async sendKeyEvent(event: KeyEvent): Promise<void> {
+    this.#assertRunning("sendKeyEvent");
+    const bytes = this.#encoder.encode(event);
+    await this.sendBytes(bytes);
+  }
+
+  async sendKey(key: Key, mods?: Mods): Promise<void> {
+    return this.sendKeyEvent(eventFromUsLayout(key, mods));
   }
 
   async waitExit(): Promise<WaitExitResult> {
