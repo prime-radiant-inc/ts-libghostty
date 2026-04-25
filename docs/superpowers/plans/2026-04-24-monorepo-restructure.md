@@ -77,14 +77,18 @@ bun run verify:generated 2>&1 | tail -5
 
 Expected: succeeds (regenerates and `git diff` shows no changes).
 
-- [ ] **Step 6: Capture file-list snapshots for post-move comparison**
+- [ ] **Step 6: Capture file-list snapshot for post-move comparison**
 
 ```bash
-find src test scripts vendor prebuilds -type f 2>/dev/null | sort > .tmp/preflight-files.txt
+find src test scripts -type f 2>/dev/null | sort > .tmp/preflight-files.txt
 wc -l .tmp/preflight-files.txt
 ```
 
-Note the line count. After the move, the file list at the new paths must match (modulo path prefix).
+Note the line count. After the move, the file list at the new paths
+must match (modulo path prefix). `vendor/` and `prebuilds/` are
+deliberately excluded — they're gitignored build artifacts that move
+via plain `mv` (not `git mv`) and may legitimately be empty in a
+fresh checkout.
 
 - [ ] **Step 7: No commit yet** — preflight produces only `.tmp/` artifacts which are gitignored.
 
@@ -100,70 +104,101 @@ Expected: empty.
 
 **Files:**
 - Create: `packages/libghostty-vt/` (directory)
-- Move: `src/` → `packages/libghostty-vt/src/`
-- Move: `test/` → `packages/libghostty-vt/test/`
-- Move: `vendor/` → `packages/libghostty-vt/vendor/`
-- Move: `prebuilds/` → `packages/libghostty-vt/prebuilds/`
-- Move: `scripts/` → `packages/libghostty-vt/scripts/`
-- Move: `CHANGELOG.md` → `packages/libghostty-vt/CHANGELOG.md`
-- Move: `LICENSE_GHOSTTY` → `packages/libghostty-vt/LICENSE_GHOSTTY`
+- `git mv` (tracked): `src/`, `test/`, `scripts/`, `CHANGELOG.md`, `LICENSE_GHOSTTY` → `packages/libghostty-vt/...`
+- Plain `mv` (untracked artifacts): `vendor/`, `prebuilds/` → `packages/libghostty-vt/...`
 
-The big mechanical step. `git mv` preserves history.
+The big mechanical step. `git mv` preserves history for tracked files.
 
-- [ ] **Step 1: Create the packages directory**
+**Important: `vendor/` and `prebuilds/` are gitignored build artifacts**
+(see `.gitignore`). Nothing in them is tracked — `git mv` would error with
+"not under version control." Use plain `mv` for those two; the directories
+just relocate in the working tree without git noticing. Their contents
+get rebuilt on demand by `bun run build:libghostty` and `bun run
+build:bindings` if missing.
+
+- [ ] **Step 1: Confirm what's tracked vs. artifact**
+
+```bash
+git ls-tree -r HEAD vendor/ prebuilds/ 2>/dev/null | wc -l
+```
+
+Expected: `0`. Confirms both are untracked artifact directories.
+
+```bash
+git ls-tree -r HEAD scripts/ 2>/dev/null | head -3
+```
+
+Expected: 3+ tracked files (build-libghostty.sh, gen-bindings.ts, etc.). Confirms scripts/ is tracked and `git mv`-able.
+
+- [ ] **Step 2: Create the packages directory**
 
 ```bash
 mkdir -p packages/libghostty-vt
 ```
 
-- [ ] **Step 2: Move source/test/vendor/prebuilds/scripts**
+- [ ] **Step 3: `git mv` the tracked directories and files**
 
 ```bash
 git mv src packages/libghostty-vt/src
 git mv test packages/libghostty-vt/test
-git mv vendor packages/libghostty-vt/vendor
-git mv prebuilds packages/libghostty-vt/prebuilds
 git mv scripts packages/libghostty-vt/scripts
-```
-
-- [ ] **Step 3: Move binding-specific docs/license**
-
-```bash
 git mv CHANGELOG.md packages/libghostty-vt/CHANGELOG.md
 git mv LICENSE_GHOSTTY packages/libghostty-vt/LICENSE_GHOSTTY
+git mv .npmignore packages/libghostty-vt/.npmignore
 ```
 
-LICENSE (Apache-2.0 for the binding code) stays at the workspace root for now — it covers the whole repo. `LICENSE_GHOSTTY` is the upstream Ghostty license and travels with the binding because that's what bundles the dylib.
+LICENSE (Apache-2.0 for the binding code) stays at the workspace root for
+now — it covers the whole repo. `LICENSE_GHOSTTY` is the upstream Ghostty
+license and travels with the binding because that's what bundles the
+dylib. `.npmignore` controls what `bun pm pack` excludes from the
+binding's tarball — moves with the binding.
 
-- [ ] **Step 4: Verify all expected files moved**
+`.gitattributes` and `.gitignore` patterns are unanchored (no leading `/`)
+so they match `vendor/`, `prebuilds/`, `dist/` at any tree depth — they
+keep working without edits after the move.
+
+- [ ] **Step 4: Plain `mv` the untracked artifact directories**
 
 ```bash
-find packages/libghostty-vt/src \
-     packages/libghostty-vt/test \
-     packages/libghostty-vt/scripts \
-     packages/libghostty-vt/vendor \
-     packages/libghostty-vt/prebuilds -type f 2>/dev/null | wc -l
+[ -d vendor ]    && mv vendor    packages/libghostty-vt/vendor
+[ -d prebuilds ] && mv prebuilds packages/libghostty-vt/prebuilds
 ```
 
-Compare to the count from Task 1 Step 6. Should match.
+Conditional `[ -d ... ]` because in some environments (fresh clone) these
+directories may not exist yet. Skip silently in that case; the build
+scripts will create them at the new location.
 
-- [ ] **Step 5: Verify no stragglers at old paths**
+- [ ] **Step 5: Verify expected source-file count moved**
 
 ```bash
-ls src test vendor prebuilds scripts CHANGELOG.md LICENSE_GHOSTTY 2>&1 | grep -v "No such" || echo "all clean"
+find packages/libghostty-vt/src packages/libghostty-vt/test packages/libghostty-vt/scripts -type f | wc -l
 ```
 
-Expected: only "ls: ... No such file or directory" lines or `all clean`. None of those paths should still exist at the workspace root.
+Compare to the count of files inside src/test/scripts from Task 1 Step 6.
+Should match.
 
-- [ ] **Step 6: Commit the moves**
+- [ ] **Step 6: Verify no stragglers at old paths**
+
+```bash
+ls src test scripts CHANGELOG.md LICENSE_GHOSTTY .npmignore 2>&1 | grep -v "No such" || echo "all clean"
+```
+
+Expected: only "ls: ... No such file or directory" or `all clean`. None
+of those paths should still exist at the workspace root.
+
+- [ ] **Step 7: Commit the moves**
 
 ```bash
 git add -A
 git commit -m "$(cat <<'EOF'
 chore(monorepo): move binding files into packages/libghostty-vt/
 
-Pure file move, no content changes. git mv preserves history. Next
-commits add the workspace scaffolding (root package.json,
+git mv for tracked files (src, test, scripts, CHANGELOG.md,
+LICENSE_GHOSTTY) preserves history. Plain mv for untracked artifact
+directories (vendor, prebuilds) since they have no tracked content;
+build scripts populate them on demand at the new location.
+
+Next commits add workspace scaffolding (root package.json,
 tsconfig.base.json) and update path references in scripts and CI.
 
 This commit alone doesn't build — the package.json/tsconfig still
