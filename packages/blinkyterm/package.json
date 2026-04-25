@@ -30,7 +30,8 @@
     "test": "bun test test/smoke",
     "test:smoke": "bun test test/smoke",
     "probe:bun-terminal": "bun scripts/probe-bun-terminal.ts",
-    "probe:nethack": "bun scripts/probe-nethack-startup.ts"
+    "probe:nethack": "bun scripts/probe-nethack-startup.ts",
+    "bobbihack": "bun examples/bobbihack/main.ts"
   },
   "dependencies": {
     "libghostty-vt": "workspace:*"
