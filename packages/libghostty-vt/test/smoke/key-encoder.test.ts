@@ -147,3 +147,36 @@ describe("KeyEncoder — bound mode (terminal sync)", () => {
     expect(Array.from(b)).toEqual([0x1b, 0x4f, 0x41]);
   });
 });
+
+import { EncodeError } from "../../src/errors";
+
+describe("KeyEncoder — utf8 contract enforcement", () => {
+  test("utf8 with C0 control throws EncodeError(invalid_utf8)", () => {
+    using enc = new KeyEncoder({ options: {} });
+    expect(() => enc.encode({ key: "Enter", utf8: "\r" }))
+      .toThrow(EncodeError);
+    try {
+      enc.encode({ key: "KeyC", utf8: "\x03" });
+    } catch (e) {
+      expect(e).toBeInstanceOf(EncodeError);
+      expect((e as EncodeError).code).toBe("invalid_utf8");
+    }
+  });
+
+  test("utf8 with macOS PUA codepoint throws EncodeError(invalid_utf8)", () => {
+    using enc = new KeyEncoder({ options: {} });
+    expect(() => enc.encode({ key: "F1", utf8: "\u{F704}" }))
+      .toThrow(/PUA/);
+  });
+
+  test("utf8 with valid printable does NOT throw", () => {
+    using enc = new KeyEncoder({ options: {} });
+    expect(() => enc.encode({ key: "KeyA", utf8: "a", unshiftedCodepoint: 0x61 }))
+      .not.toThrow();
+  });
+
+  test("utf8 omitted entirely does NOT throw (encoder uses logical key)", () => {
+    using enc = new KeyEncoder({ options: {} });
+    expect(() => enc.encode({ key: "Enter" })).not.toThrow();
+  });
+});
