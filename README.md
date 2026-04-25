@@ -10,10 +10,9 @@ state machine.
   `RenderState`, `Formatter`, effect callbacks, color management.
   Self-contained; usable for parsing recorded VT streams or any
   context where you need the model layer.
-- *(future)* `packages/blinkyterm/` — npm `blinkyterm`. Higher-level
-  Runner that pairs `libghostty-vt` with `Bun.Terminal` (pty + child
-  lifecycle) and adds keystroke encoding for driving real TUI
-  programs from an agent. Targets v0.1.0 after Pass 5.
+- [`packages/blinkyterm/`](./packages/blinkyterm/) — npm `blinkyterm`.
+  Agent-facing Runner over `Bun.Terminal` plus `libghostty-vt`, with
+  async frame iteration and send helpers.
 
 ## Development
 

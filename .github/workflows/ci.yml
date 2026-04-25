@@ -62,3 +62,15 @@ jobs:
       - name: Build TypeScript
         working-directory: packages/libghostty-vt
         run: bun run build:ts
+
+      - name: Typecheck blinkyterm
+        working-directory: packages/blinkyterm
+        run: bun run typecheck
+
+      - name: Test blinkyterm
+        working-directory: packages/blinkyterm
+        run: bun run test
+
+      - name: Build blinkyterm TypeScript
+        working-directory: packages/blinkyterm
+        run: bun run build
