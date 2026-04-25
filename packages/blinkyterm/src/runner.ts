@@ -8,7 +8,13 @@ import {
   IteratorInUseError,
   SpawnError,
 } from "./errors";
-import type { Frame, FrameReason, SpawnOptions, WaitExitResult } from "./types";
+import type {
+  Frame,
+  FrameReason,
+  SpawnOptions,
+  TerminateOptions,
+  WaitExitResult,
+} from "./types";
 import { realClock } from "./internal/clock";
 import { priorityPick, Scheduler } from "./internal/scheduler";
 import { buildFrameSnapshot } from "./internal/snapshot";
@@ -88,6 +94,10 @@ export class Runner {
   #exitCode: number | undefined;
   #signal: NodeJS.Signals | undefined;
   #iteratorActive = false;
+  #cols: number;
+  #rows: number;
+  #cellPx: { width: number; height: number } | undefined;
+  #terminating: Promise<void> | undefined;
 
   private constructor(args: {
     pty: BunTerminalLike;
@@ -97,6 +107,9 @@ export class Runner {
     encoder: KeyEncoder;
     scheduler: Scheduler;
     writeQueue: WriteQueue;
+    cols: number;
+    rows: number;
+    cellPx: { width: number; height: number } | undefined;
   }) {
     this.#pid = args.proc.pid;
     this.#pty = args.pty;
@@ -106,6 +119,9 @@ export class Runner {
     this.#encoder = args.encoder;
     this.#scheduler = args.scheduler;
     this.#writeQueue = args.writeQueue;
+    this.#cols = args.cols;
+    this.#rows = args.rows;
+    this.#cellPx = args.cellPx;
   }
 
   static async spawn(argv: string[], opts: SpawnOptions = {}): Promise<Runner> {
@@ -229,6 +245,9 @@ export class Runner {
       encoder,
       scheduler,
       writeQueue: writeQueueInstance,
+      cols,
+      rows,
+      cellPx: opts.cellPx,
     });
 
     // Wire proc.exited to scheduler. We use a Promise rather than an onExit
@@ -402,8 +421,97 @@ export class Runner {
     return this.sendKeyEvent(eventFromUsLayout(key, mods));
   }
 
-  async waitExit(): Promise<WaitExitResult> {
-    await this.#proc.exited;
+  async waitExit(opts: { timeoutMs?: number } = {}): Promise<WaitExitResult> {
+    if (this.#disposed) throw new DisposedError("Runner");
+    if (this.#exited) return this.#latchedExitResult();
+
+    if (opts.timeoutMs === undefined) {
+      await this.#proc.exited;
+      return this.#latchedExitResult();
+    }
+
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), opts.timeoutMs);
+    });
+    const exited = this.#proc.exited.then(() => "exited" as const);
+    try {
+      const winner = await Promise.race([exited, timeout]);
+      if (winner === "timeout") {
+        return { exited: false };
+      }
+      return this.#latchedExitResult();
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  async terminate(opts: TerminateOptions = {}): Promise<void> {
+    if (this.#disposed) throw new DisposedError("Runner");
+    if (this.#exited) return;
+    if (this.#terminating !== undefined) return this.#terminating;
+
+    const signal: NodeJS.Signals = opts.signal ?? "SIGTERM";
+    const signal2: NodeJS.Signals = opts.signal2 ?? "SIGKILL";
+    const thenAfterMs = opts.thenAfterMs;
+
+    const run = async (): Promise<void> => {
+      try {
+        this.#proc.kill(signal);
+      } catch {
+        // Already dead — just await proc.exited below.
+      }
+
+      if (thenAfterMs === undefined) {
+        await this.#proc.exited;
+        return;
+      }
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const timeout = new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), thenAfterMs);
+      });
+      const exited = this.#proc.exited.then(() => "exited" as const);
+      let winner: "timeout" | "exited";
+      try {
+        winner = await Promise.race([exited, timeout]);
+      } finally {
+        if (timer !== undefined) clearTimeout(timer);
+      }
+      if (winner === "timeout" && !this.#exited) {
+        try {
+          this.#proc.kill(signal2);
+        } catch {
+          // ignore
+        }
+      }
+      await this.#proc.exited;
+    };
+
+    const pending = run();
+    this.#terminating = pending;
+    try {
+      await pending;
+    } finally {
+      this.#terminating = undefined;
+    }
+  }
+
+  async resize(cols: number, rows: number): Promise<void> {
+    this.#assertRunning("resize");
+    this.#cols = cols;
+    this.#rows = rows;
+    this.#pty.resize(cols, rows);
+    if (this.#cellPx !== undefined) {
+      this.#terminal.resize(cols, rows, this.#cellPx);
+    } else {
+      this.#terminal.resize(cols, rows);
+    }
+    this.#scheduler.noteCellChange();
+    this.#scheduler.maybeYield();
+  }
+
+  #latchedExitResult(): WaitExitResult {
     const result: WaitExitResult = { exited: true };
     if (this.#exitCode !== undefined) result.exitCode = this.#exitCode;
     if (this.#signal !== undefined) result.signal = this.#signal;
