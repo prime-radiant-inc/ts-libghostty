@@ -29,7 +29,7 @@ const proc = Bun.spawn({
     NETHACKOPTIONS: "name:agent,role:valkyrie,race:human,gender:female,align:lawful",
   },
   terminal: term,
-} as Parameters<typeof Bun.spawn>[0]);
+} as unknown as Parameters<typeof Bun.spawn>[0]);
 
 await Bun.sleep(3000);
 proc.kill("SIGTERM");

@@ -21,10 +21,15 @@ const proc = Bun.spawn({
   cmd: ["bash", "-lc", "stty size; read line; printf 'got:%s\\n' \"$line\""],
   env: { ...process.env, TERM: "xterm-256color" },
   terminal: term,
-  onExit(subprocess, exitCode, signalCode, error) {
+  onExit(
+    subprocess: Bun.Subprocess,
+    exitCode: number | null,
+    signalCode: NodeJS.Signals | number | null,
+    error: Error | null,
+  ) {
     events.push(`proc-exit:${exitCode ?? "null"}:${signalCode ?? "null"}:${error ? "error" : "ok"}:${subprocess.pid}`);
   },
-} as Parameters<typeof Bun.spawn>[0]);
+} as unknown as Parameters<typeof Bun.spawn>[0]);
 
 const writeReturn = term.write("hello\n");
 events.push(`write-return:${String(writeReturn)}:${typeof writeReturn}`);
@@ -52,3 +57,5 @@ term.close();
 events.push(`term-closed:${term.closed}`);
 
 for (const event of events) console.log(event);
+
+export {};
