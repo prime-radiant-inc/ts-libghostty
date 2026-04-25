@@ -273,7 +273,7 @@ const SUCCESS = 0;
 const KEY_ACTION_PRESS = 1;
 const KEY_C = 22;
 const KEY_ENTER = 58;
-const KEY_ARROW_UP = 158;       // confirm via generated.ts GhosttyKeyValues
+const KEY_ARROW_UP = 78;        // GhosttyKeyValues.GHOSTTY_KEY_ARROW_UP at the current pin
 const MODS_CTRL = 1 << 1;
 const OPT_KITTY_FLAGS = 5;
 const OPT_CURSOR_KEY_APPLICATION = 0;
@@ -367,13 +367,13 @@ log("cleanup", true);
 console.log("probe-key-encoder: done");
 ```
 
-A note on `KEY_ARROW_UP = 158`: this number must match `GhosttyKeyValues.GHOSTTY_KEY_ARROW_UP` from `packages/libghostty-vt/src/internal/generated.ts`. **Verify before running:**
+A note on `KEY_ARROW_UP = 78`: this number is from `GhosttyKeyValues.GHOSTTY_KEY_ARROW_UP` at the current Ghostty pin. **Sanity-check before running:**
 
 ```bash
 grep -n "GHOSTTY_KEY_ARROW_UP" packages/libghostty-vt/src/internal/generated.ts
 ```
 
-If the value is different, update the constant in the probe accordingly.
+Expected: `"GHOSTTY_KEY_ARROW_UP": 78,`. If the value differs (a future pin reorders enums), update the constant in the probe — the probe is one-shot, so a hardcode is fine.
 
 - [ ] **Step 2: Run the probe**
 
@@ -422,11 +422,11 @@ The symbols are declared in `generated.ts` but not bound. Wiring them in `SYMBOL
 
 - [ ] **Step 1: Write a failing FFI test**
 
-Open `packages/libghostty-vt/test/smoke/ffi.test.ts`. Find the existing test that asserts symbols load (likely uses `getLib()` and reads from `lib.symbols`). After it, add:
+Open `packages/libghostty-vt/test/smoke/ffi.test.ts`. The file imports the module as `import * as ffi from "../../src/ffi"`, so use `ffi.getLib()` (an unqualified `getLib()` would be undefined and the test would fail for the wrong reason — and would *keep* failing even after symbols are added). After the existing symbol-load test, add:
 
 ```ts
 test("Pass 4 — key encoder + event symbols are loaded", () => {
-  const lib = getLib();
+  const lib = ffi.getLib();
   // Encoder lifecycle + ops
   expect(typeof lib.symbols.ghostty_key_encoder_new).toBe("function");
   expect(typeof lib.symbols.ghostty_key_encoder_free).toBe("function");
@@ -1830,6 +1830,18 @@ describe("KeyEncoder — standalone mode options", () => {
     const bytes = enc.encode({ key: "KeyA", utf8: "a", unshiftedCodepoint: 0x61 });
     expect(bytes.length).toBeGreaterThan(0);
   });
+
+  test("backarrowKeyMode: false (default) → Backspace emits 0x7f", () => {
+    using enc = new KeyEncoder({ options: { backarrowKeyMode: false } });
+    const bytes = enc.encode({ key: "Backspace" });
+    expect(Array.from(bytes)).toEqual([0x7f]);
+  });
+
+  test("backarrowKeyMode: true → Backspace emits 0x08", () => {
+    using enc = new KeyEncoder({ options: { backarrowKeyMode: true } });
+    const bytes = enc.encode({ key: "Backspace" });
+    expect(Array.from(bytes)).toEqual([0x08]);
+  });
 });
 ```
 
@@ -2377,9 +2389,9 @@ Expected: smoke + tarball pass. The smoke count should be the baseline (207) plu
 - key-names.test.ts: +7 (Task 6)
 - key-utf8-validator.test.ts: +8 (Task 7)
 - errors.test.ts: +2 (Task 8)
-- key-encoder.test.ts: +6 (Task 9) +5 (Task 10) +3 (Task 11) +3 (Task 12) +4 (Task 13) = +21
+- key-encoder.test.ts: +6 (Task 9) +5 (Task 10) +3 (Task 11) +5 (Task 12) +4 (Task 13) = +23
 
-Total expected: ~252 pass. The exact count depends on whether some tests resolve into the same file's count differently.
+Total expected: ~254 pass. The exact count depends on whether some tests resolve into the same file's count differently.
 
 - [ ] **Step 3: Typecheck and verify:generated**
 
