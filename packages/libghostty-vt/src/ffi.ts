@@ -203,6 +203,66 @@ const SYMBOLS = {
   },
   // --- End Pass 3 additions ---------------------------------------------------
 
+  // --- Pass 4: KeyEncoder + KeyEvent (vt/key/encoder.h, vt/key/event.h) ----------
+  ghostty_key_encoder_new: {
+    args: [FFIType.ptr, FFIType.ptr],   // (allocator|null, &out_handle)
+    returns: FFIType.i32,
+  },
+  ghostty_key_encoder_free: {
+    args: [FFIType.ptr],                // (handle)
+    returns: FFIType.void,
+  },
+  // setopt + setopt_from_terminal are void per ghostty/vt/key/encoder.h
+  ghostty_key_encoder_setopt: {
+    args: [FFIType.ptr, FFIType.i32, FFIType.ptr],   // (encoder, opt_id, &value)
+    returns: FFIType.void,
+  },
+  ghostty_key_encoder_setopt_from_terminal: {
+    args: [FFIType.ptr, FFIType.ptr],   // (encoder, terminal)
+    returns: FFIType.void,
+  },
+  ghostty_key_encoder_encode: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr],
+    returns: FFIType.i32,               // (encoder, event, buf, cap, &written)
+  },
+  ghostty_key_event_new: {
+    args: [FFIType.ptr, FFIType.ptr],   // (allocator|null, &out_handle)
+    returns: FFIType.i32,
+  },
+  ghostty_key_event_free: {
+    args: [FFIType.ptr],                // (handle)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_action: {
+    args: [FFIType.ptr, FFIType.i32],   // (event, action_enum)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_key: {
+    args: [FFIType.ptr, FFIType.i32],   // (event, key_enum)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_mods: {
+    args: [FFIType.ptr, FFIType.u16],   // (event, mods_bitmask)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_consumed_mods: {
+    args: [FFIType.ptr, FFIType.u16],   // (event, consumed_mods_bitmask)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_composing: {
+    args: [FFIType.ptr, FFIType.bool],  // (event, composing)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_unshifted_codepoint: {
+    args: [FFIType.ptr, FFIType.u32],   // (event, codepoint)
+    returns: FFIType.void,
+  },
+  ghostty_key_event_set_utf8: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.u64],   // (event, utf8_ptr|null, len)
+    returns: FFIType.void,
+  },
+  // --- End Pass 4 additions ---------------------------------------------------
+
   // GhosttyFormatterTerminalOptions (56 B) is passed via hidden pointer on
   // arm64 AAPCS64 (structs > 16 B are passed indirectly). We declare it as
   // FFIType.ptr and pass a pointer to the options bytes.

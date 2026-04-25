@@ -50,4 +50,25 @@ describe("ffi", () => {
     expect(info.path).toBe(BUNDLED);
     expect(typeof info.pinnedCommit).toBe("string");
   });
+
+  it("Pass 4 — key encoder + event symbols are loaded", () => {
+    ffi.setLibraryPath(BUNDLED);
+    const lib = ffi.getLib();
+    // Encoder lifecycle + ops
+    expect(typeof lib.symbols.ghostty_key_encoder_new).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_encoder_free).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_encoder_setopt).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_encoder_setopt_from_terminal).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_encoder_encode).toBe("function");
+    // Event lifecycle + setters
+    expect(typeof lib.symbols.ghostty_key_event_new).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_free).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_action).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_key).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_mods).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_consumed_mods).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_composing).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_unshifted_codepoint).toBe("function");
+    expect(typeof lib.symbols.ghostty_key_event_set_utf8).toBe("function");
+  });
 });
