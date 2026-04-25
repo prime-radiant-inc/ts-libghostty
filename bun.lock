@@ -9,9 +9,20 @@
         "typescript": "^5.4.0",
       },
     },
+    "packages/blinkyterm": {
+      "name": "blinkyterm",
+      "version": "0.1.0",
+      "dependencies": {
+        "libghostty-vt": "workspace:*",
+      },
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.4.0",
+      },
+    },
     "packages/libghostty-vt": {
       "name": "libghostty-vt",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.4.0",
@@ -22,6 +33,8 @@
     "@types/bun": ["@types/bun@1.3.13", "", { "dependencies": { "bun-types": "1.3.13" } }, "sha512-9fqXWk5YIHGGnUau9TEi+qdlTYDAnOj+xLCmSTwXfAIqXr2x4tytJb43E9uCvt09zJURKXwAtkoH4nLQfzeTXw=="],
 
     "@types/node": ["@types/node@25.6.0", "", { "dependencies": { "undici-types": "~7.19.0" } }, "sha512-+qIYRKdNYJwY3vRCZMdJbPLJAtGjQBudzZzdzwQYkEPQd+PJGixUL5QfvCLDaULoLv+RhT3LDkwEfKaAkgSmNQ=="],
+
+    "blinkyterm": ["blinkyterm@workspace:packages/blinkyterm"],
 
     "bun-types": ["bun-types@1.3.13", "", { "dependencies": { "@types/node": "*" } }, "sha512-QXKeHLlOLqQX9LgYaHJfzdBaV21T63HhFJnvuRCcjZiaUDpbs5ED1MgxbMra71CsryN/1dAoXuJJJwIv/2drVA=="],
 
