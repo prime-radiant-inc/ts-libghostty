@@ -47,7 +47,7 @@ export function makeWritePtyCallback(
         owned.set(borrowed);
         userFn(owned);
       } catch (e) {
-        console.error("ts-libghostty-vt: onWritePty callback threw:", e);
+        console.error("libghostty-vt: onWritePty callback threw:", e);
       }
     },
     {
@@ -73,7 +73,7 @@ export function makeBellCallback(userFn: () => void): TrampolineResult {
       try {
         userFn();
       } catch (e) {
-        console.error("ts-libghostty-vt: onBell callback threw:", e);
+        console.error("libghostty-vt: onBell callback threw:", e);
       }
     },
     {
@@ -108,7 +108,7 @@ export function makeTitleCallback(
         const title = readTitle();
         userFn(title);
       } catch (e) {
-        console.error("ts-libghostty-vt: onTitleChanged callback threw:", e);
+        console.error("libghostty-vt: onTitleChanged callback threw:", e);
       }
     },
     {

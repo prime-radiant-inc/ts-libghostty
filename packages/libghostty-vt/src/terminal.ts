@@ -353,7 +353,7 @@ export class Terminal {
         GhosttyTerminalOptionValues["GHOSTTY_TERMINAL_OPT_WRITE_PTY"],
         null,
       );
-      if (r !== 0) console.error("ts-libghostty-vt: detach WRITE_PTY returned", r);
+      if (r !== 0) console.error("libghostty-vt: detach WRITE_PTY returned", r);
     }
     if (this.#bellCb !== null) {
       const r = lib.symbols.ghostty_terminal_set(
@@ -361,7 +361,7 @@ export class Terminal {
         GhosttyTerminalOptionValues["GHOSTTY_TERMINAL_OPT_BELL"],
         null,
       );
-      if (r !== 0) console.error("ts-libghostty-vt: detach BELL returned", r);
+      if (r !== 0) console.error("libghostty-vt: detach BELL returned", r);
     }
     if (this.#titleCb !== null) {
       const r = lib.symbols.ghostty_terminal_set(
@@ -369,7 +369,7 @@ export class Terminal {
         GhosttyTerminalOptionValues["GHOSTTY_TERMINAL_OPT_TITLE_CHANGED"],
         null,
       );
-      if (r !== 0) console.error("ts-libghostty-vt: detach TITLE_CHANGED returned", r);
+      if (r !== 0) console.error("libghostty-vt: detach TITLE_CHANGED returned", r);
     }
 
     if (this.#writePtyCb !== null) { try { this.#writePtyCb.close(); } catch {} this.#writePtyCb = null; }

@@ -1,6 +1,6 @@
 # Differential testing harness — v0
 
-Regression net for the ts-libghostty-vt FFI surface. Same input bytes → C
+Regression net for the libghostty-vt FFI surface. Same input bytes → C
 oracle (linked directly against `libghostty-vt`) **and** the TS binding;
 diff the formatted output.
 

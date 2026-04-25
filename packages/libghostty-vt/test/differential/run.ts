@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 /*
- * Differential testing harness for ts-libghostty-vt.
+ * Differential testing harness for libghostty-vt.
  *
  * For each file in test/differential/corpus/, runs the identical bytes through
  *   (a) the C oracle (.tmp/diff-oracle, built via cc against libghostty-vt)
