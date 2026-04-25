@@ -26,3 +26,4 @@ export {
 } from "./errors";
 export type { BlinkyTermErrorCode } from "./errors";
 export { EncodeError } from "libghostty-vt";
+export { realClock, createFakeClock } from "./internal/clock";
