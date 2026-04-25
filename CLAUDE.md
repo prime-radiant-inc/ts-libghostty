@@ -1,6 +1,15 @@
 # ts-libghostty-vt — agent notes
 
-TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Shipped: `v0.1.0` (Terminal + Formatter + lifecycle + ABI safety), `v0.2.0` (effect callbacks — `onWritePty`, `onBell`, `onTitleChanged`), `v0.3.0` (colors, scrollViewport, focus, APC bounds, `cellAt`, `RenderState`). See `CHANGELOG.md` for per-version detail; `docs/superpowers/specs/2026-04-22-ts-libghostty-design.md` for the full v0 surface.
+Bun-workspaces monorepo for the `ts-libghostty` project. The
+`packages/libghostty-vt/` package (npm: `libghostty-vt`) is a
+TypeScript/Bun binding over libghostty-vt — Ghostty's VT state
+machine. Shipped: `v0.1.0` (Terminal + Formatter + lifecycle + ABI
+safety), `v0.2.0` (effect callbacks — `onWritePty`, `onBell`,
+`onTitleChanged`), `v0.3.0` (colors, scrollViewport, focus, APC
+bounds, `cellAt`, `RenderState`). See
+`packages/libghostty-vt/CHANGELOG.md` for per-version detail;
+`docs/superpowers/specs/2026-04-22-ts-libghostty-design.md` for the
+full v0 surface.
 
 ## Load-bearing gotchas
 
@@ -38,13 +47,20 @@ TypeScript/Bun binding over libghostty-vt (Ghostty's VT state machine). Shipped:
 
 ## Where stuff lives
 
+Workspace root:
+- `package.json` — workspace root, `private: true`, `workspaces: ["packages/*"]`.
+- `tsconfig.base.json` — shared compilerOptions; per-package tsconfig extends.
+- `docs/` — cross-cutting design docs and plans.
+
+Inside `packages/libghostty-vt/`:
 - `src/index.ts` — public re-exports.
 - `src/internal/generated.ts` — GENERATED, do not hand-edit. Regen via `bun run build:bindings`.
 - `src/ffi.ts` — dlopen + symbol table + build-identity check.
 - `scripts/probe-layout.c`, `scripts/gen-bindings.ts` — struct probe + codegen.
 - `vendor/ghostty/` — pinned Ghostty checkout; headers consumed at build time.
-- `prebuilds/darwin-arm64/libghostty-vt.dylib` — bundled binary.
+- `prebuilds/darwin-arm64/libghostty-vt.dylib` — bundled binary (must live inside the package so `bun pack` includes it).
 - `test/smoke/` — FFI tests. `test/fixtures/` — VT fixture harness.
+- `CHANGELOG.md` — user-facing release notes for the binding.
 
 ## Release process
 
