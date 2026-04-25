@@ -38,3 +38,14 @@ export type {
 } from "./types";
 export { pinnedCommit } from "./internal/generated";
 export { encodeFocus } from "./focus";
+
+// Pass 4: keyboard input encoding
+export {
+  KeyEncoder,
+  type KeyEvent,
+  type Mods,
+  type Key,
+  type KeyEncoderOptions,
+} from "./key-encoder";
+
+export { EncodeError } from "./errors";
