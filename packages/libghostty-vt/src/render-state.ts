@@ -12,7 +12,7 @@ import {
   GhosttyCellDataValues,
   GhosttyCellWideValues,
 } from "./internal/generated";
-import { GhosttyError, UseAfterCloseError, getResultCodeName } from "./errors";
+import { GhosttyError, UseAfterCloseError, RectSizeMismatch, getResultCodeName } from "./errors";
 import { readRenderStateColors, readStyle } from "./internal/sized-struct";
 import { rawStyleToCellStyle, isDefaultRawStyle } from "./internal/style";
 import { renderRect } from "./render-rect";
@@ -25,6 +25,7 @@ import type {
   RenderCell,
   RectRenderOptions,
   RenderRect,
+  RectCursor,
 } from "./types";
 import type { Terminal } from "./terminal";
 
@@ -251,6 +252,35 @@ export class RenderState {
   toAnsiRect(dest: RenderRect, opts?: RectRenderOptions): string {
     this.#assertOpen();
     return renderRect(this, dest, opts ?? {});
+  }
+
+  /**
+   * Translate the viewport cursor into 1-based host coordinates relative
+   * to `dest`. Returns `null` when the viewport cursor is unset (the
+   * source program has hidden the cursor or it's offscreen) or when
+   * `update()` has never been called.
+   *
+   * Enforces the same strict size match as `toAnsiRect` — passing a
+   * mismatched dest throws `RectSizeMismatch`.
+   */
+  cursorInRect(dest: RenderRect): RectCursor | null {
+    this.#assertOpen();
+    if (
+      dest.cols !== this.#cols ||
+      dest.rows !== this.#rowCount
+    ) {
+      throw new RectSizeMismatch(
+        { cols: this.#cols, rows: this.#rowCount },
+        { cols: dest.cols, rows: dest.rows },
+      );
+    }
+    const cur = this.#viewportCursor;
+    if (cur === undefined) return null;
+    return {
+      row: dest.row + cur.y,
+      col: dest.col + cur.x,
+      wideTail: cur.wideTail,
+    };
   }
 
   /**
