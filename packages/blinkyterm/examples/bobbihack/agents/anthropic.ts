@@ -55,6 +55,10 @@ export async function* streamToAgentEvents(
       continue;
     }
   }
+
+  if (!actionEmitted) {
+    yield { kind: "error", message: "stream ended without a move" };
+  }
 }
 
 function parseMoveTool(json: string): AgentEvent {

@@ -11,15 +11,16 @@ const collect = async (raw: RawStreamEvent[]): Promise<AgentEvent[]> => {
   return out;
 };
 
-test("text deltas pass through as thinking events", async () => {
+test("text deltas pass through as thinking events; missing action terminates with error", async () => {
   const events = await collect([
     { type: "content_block_delta", delta: { type: "text_delta", text: "hello " } },
     { type: "content_block_delta", delta: { type: "text_delta", text: "world" } },
   ]);
-  expect(events).toEqual([
+  expect(events.slice(0, 2)).toEqual([
     { kind: "thinking", delta: "hello " },
     { kind: "thinking", delta: "world" },
   ]);
+  expect(events[2]).toEqual({ kind: "error", message: "stream ended without a move" });
 });
 
 test("tool_use input emits an action with the move", async () => {
