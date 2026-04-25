@@ -98,6 +98,31 @@ export class KeyEncoder implements Disposable {
       );
     }
 
+    // Validate key + action BEFORE the FFI call. Without this, a JS caller
+    // passing an unknown Key string (e.g. event.key === "Nope") would have
+    // keyToGhosttyId[event.key] === undefined; bun:ffi forwards undefined
+    // through ghostty_key_event_set_key as an arbitrary integer (typically
+    // 0/UNIDENTIFIED) and the encoder silently emits an empty byte stream.
+    // Surfacing the typo at the boundary as a typed error is the contract
+    // we want for the public API surface.
+    const keyId = keyToGhosttyId[event.key];
+    if (keyId === undefined) {
+      throw new EncodeError(
+        `KeyEvent.key is not a known Key: received ${JSON.stringify(event.key)}. ` +
+        `Expected a W3C UI Events code string (e.g. "KeyA", "ArrowUp", "F1", "Enter").`,
+        { code: "invalid_value" },
+      );
+    }
+    const actionName = event.action ?? "press";
+    const actionId = ACTION_BY_NAME[actionName];
+    if (actionId === undefined) {
+      throw new EncodeError(
+        `KeyEvent.action is not valid: received ${JSON.stringify(event.action)}. ` +
+        `Expected one of "press", "release", "repeat".`,
+        { code: "invalid_value" },
+      );
+    }
+
     // Build the C event
     const evOut = new BigUint64Array(1);
     let rc = lib.symbols.ghostty_key_event_new(null, ptr(evOut));
@@ -107,10 +132,18 @@ export class KeyEncoder implements Disposable {
     }
     const ev = Number(evOut[0]) as Pointer;
 
+    // utf8Bytes is hoisted out of the per-block scope so its underlying
+    // memory stays referenced for the lifetime of the C event. The C side
+    // (ghostty_key_event_set_utf8) stores a borrowed pointer, not a copy
+    // — if we let bytes go out of scope before encode() runs, Bun's GC
+    // could collect it and the C event would point at freed memory.
+    // The utf8Bytes binding is released when this try-block exits and the
+    // event is freed in the finally below.
+    let utf8Bytes: Uint8Array | undefined;
+
     try {
-      const action = ACTION_BY_NAME[event.action ?? "press"];
-      lib.symbols.ghostty_key_event_set_action(ev, action);
-      lib.symbols.ghostty_key_event_set_key(ev, keyToGhosttyId[event.key]);
+      lib.symbols.ghostty_key_event_set_action(ev, actionId);
+      lib.symbols.ghostty_key_event_set_key(ev, keyId);
       lib.symbols.ghostty_key_event_set_mods(ev, packMods(event.mods));
       lib.symbols.ghostty_key_event_set_consumed_mods(ev, packMods(event.consumedMods));
       lib.symbols.ghostty_key_event_set_composing(ev, event.composing ?? false);
@@ -118,8 +151,8 @@ export class KeyEncoder implements Disposable {
         lib.symbols.ghostty_key_event_set_unshifted_codepoint(ev, event.unshiftedCodepoint);
       }
       if (event.utf8 !== undefined && event.utf8.length > 0) {
-        const bytes = new TextEncoder().encode(event.utf8);
-        lib.symbols.ghostty_key_event_set_utf8(ev, ptr(bytes), BigInt(bytes.length));
+        utf8Bytes = new TextEncoder().encode(event.utf8);
+        lib.symbols.ghostty_key_event_set_utf8(ev, ptr(utf8Bytes), BigInt(utf8Bytes.length));
       } else {
         // null + 0 — explicit "no utf8"
         lib.symbols.ghostty_key_event_set_utf8(ev, null as unknown as Pointer, 0n);
@@ -160,6 +193,11 @@ export class KeyEncoder implements Disposable {
       return new Uint8Array(buf.slice(0, writtenN));
     } finally {
       lib.symbols.ghostty_key_event_free(ev);
+      // utf8Bytes can now be dropped — libghostty has no further reference
+      // to it after the event is freed. Reassign to undefined to make the
+      // intent obvious to readers (and to encourage the JS engine to drop
+      // the reference from this stack frame promptly).
+      utf8Bytes = undefined;
     }
   }
 

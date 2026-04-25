@@ -180,3 +180,66 @@ describe("KeyEncoder — utf8 contract enforcement", () => {
     expect(() => enc.encode({ key: "Enter" })).not.toThrow();
   });
 });
+
+describe("KeyEncoder — input validation (Codex post-merge review)", () => {
+  test("unknown key string throws EncodeError(invalid_value)", () => {
+    using enc = new KeyEncoder({ options: {} });
+    try {
+      enc.encode({ key: "Nope" as unknown as Parameters<typeof enc.encode>[0]["key"] });
+      throw new Error("expected encode to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(EncodeError);
+      expect((e as EncodeError).code).toBe("invalid_value");
+      expect((e as EncodeError).message).toMatch(/Nope/);
+    }
+  });
+
+  test("unknown action throws EncodeError(invalid_value)", () => {
+    using enc = new KeyEncoder({ options: {} });
+    try {
+      enc.encode({
+        key: "KeyA",
+        action: "smash" as unknown as Parameters<typeof enc.encode>[0]["action"],
+      });
+      throw new Error("expected encode to throw");
+    } catch (e) {
+      expect(e).toBeInstanceOf(EncodeError);
+      expect((e as EncodeError).code).toBe("invalid_value");
+      expect((e as EncodeError).message).toMatch(/smash/);
+    }
+  });
+
+  test("typed key + action pass through cleanly", () => {
+    using enc = new KeyEncoder({ options: {} });
+    const bytes = enc.encode({ key: "KeyC", utf8: "c", unshiftedCodepoint: 0x63, action: "press" });
+    expect(Array.from(bytes)).toEqual([0x63]);
+  });
+});
+
+describe("KeyEncoder — utf8 buffer lifetime (Codex post-merge review)", () => {
+  // The C event stores a borrowed pointer to the utf8 bytes; if the JS
+  // reference dies before encode() runs, GC could collect the buffer and
+  // libghostty would read freed memory. These tests aren't a deterministic
+  // GC stress check (those are hard to write), but a fast-loop encode
+  // cycles many short-lived TextEncoder buffers and would surface memory
+  // corruption as inconsistent output across iterations.
+  test("repeated encode of same KeyEvent produces consistent bytes", () => {
+    using enc = new KeyEncoder({ options: {} });
+    const reference = enc.encode({ key: "KeyA", utf8: "a", unshiftedCodepoint: 0x61 });
+    for (let i = 0; i < 1000; i++) {
+      const bytes = enc.encode({ key: "KeyA", utf8: "a", unshiftedCodepoint: 0x61 });
+      expect(Array.from(bytes)).toEqual(Array.from(reference));
+    }
+  });
+
+  test("non-ASCII utf8 round-trips consistently across many encodes", () => {
+    using enc = new KeyEncoder({ options: {} });
+    // 4-byte UTF-8 emoji to maximize the chance of the buffer being
+    // distinct across iterations (separate TextEncoder allocations).
+    const reference = enc.encode({ key: "KeyA", utf8: "🎉", unshiftedCodepoint: 0x1F389 });
+    for (let i = 0; i < 1000; i++) {
+      const bytes = enc.encode({ key: "KeyA", utf8: "🎉", unshiftedCodepoint: 0x1F389 });
+      expect(Array.from(bytes)).toEqual(Array.from(reference));
+    }
+  });
+});
