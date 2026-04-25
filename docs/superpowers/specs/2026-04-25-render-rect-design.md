@@ -86,9 +86,23 @@ testable.
   invoke the emission engine.
 
 **Cached `RenderState` on Terminal:** the convenience method's first
-call allocates a `RenderState`; subsequent calls reuse it. The cache
-is disposed when the Terminal is closed. This avoids re-allocating per
-paint and re-doing the FFI cell-walk when nothing's changed.
+call allocates a `RenderState`; subsequent calls reuse the same handle.
+**Every call invokes `update(this)` before rendering** — `update()` is
+cheap (one FFI cell-walk into a JS-side cache) and guarantees the
+cache reflects the Terminal's current state, including after
+`Terminal.resize()`. Reusing the handle avoids the allocation cost; we
+do not skip `update()` even when "nothing's changed" because tracking
+that across resize/`vtWrite` would require its own invalidation
+logic, and `update()` is fast enough that it isn't worth the
+complexity in v1.
+
+**Cached state lifecycle:** `Terminal.close()` MUST dispose the cached
+`RenderState` (call its `close()` so the libghostty handle is freed).
+This is a hard requirement — the implementation must wire it up.
+
+**TSDoc cross-link:** the convenience method's TSDoc references the
+primitive (`RenderState.toAnsiRect`) so consumers learn about the cache
+layer when they need to control it (e.g., for diff rendering later).
 
 **No native code changes.** This release is purely additive at the
 binding/TypeScript layer. Same prebuild dylib; tarball repacks for the
@@ -140,22 +154,46 @@ most recent `update()` cached. The caller controls when `update()` runs.
 
 `cursorInRect` adds the dest origin to the RenderState's viewport
 cursor (which is 0-based and source-local) and returns 1-based host
-coordinates. Returns `null` when:
+coordinates. **Like `toAnsiRect`, it enforces the strict size match**
+(see Validation below) — passing a mismatched dest throws
+`RectSizeMismatch`. Returns `null` when:
 - The viewport cursor is `undefined` (cursor offscreen / hidden)
-- `RenderState` was never `update()`'d
-- (Defensive) the cursor's source-local coords exceed the source
-  extent — shouldn't happen in practice but null-rather-than-throw
+- `RenderState` was never `update()`'d (its source dims are 0×0)
+
+**API naming rationale:** `Terminal.renderToAnsiRect` is verb-prefixed
+because the Terminal is live state and the operation is "render this
+into a rect right now" — a fresh action. `RenderState.toAnsiRect` is
+preposition-prefixed because RenderState is a snapshot-shaped object
+that produces alternative views of itself, mirroring how
+`Formatter.toAnsi` reads.
 
 **Validation (strict for v1):**
 
-`dest.cols` and `dest.rows` MUST equal the source's cols/rows
-(`RenderState`'s last-snapshot dimensions, or `Terminal.snapshot().cols/rows`
-for the convenience method). Mismatch throws `RectSizeMismatch`:
+For BOTH `toAnsiRect` and `cursorInRect`, `dest.cols` and `dest.rows`
+MUST equal the source's cols/rows. The "source" is:
+- For `state.toAnsiRect` / `state.cursorInRect`: `RenderState`'s
+  last-snapshot dimensions (the cols/rows captured at the most recent
+  `update()`).
+- For `terminal.renderToAnsiRect`: `Terminal.snapshot().cols/rows` at
+  the moment of the call. Because the convenience method `update()`s
+  every call, the cached `RenderState` will agree with the live
+  Terminal dims.
+
+Mismatch throws `RectSizeMismatch`:
 
 ```
 RectSizeMismatch: source is 80×24, dest is 80×25.
 Resize the source program (terminal.resize) or the destination box.
 ```
+
+**Empty / never-updated `RenderState`:** if a consumer calls
+`state.toAnsiRect(dest)` before any `update()`, the source dims are
+0×0 and the strict check throws `RectSizeMismatch` with that
+diagnostic ("source is 0×0, dest is 80×24"). The error message is
+clear enough to surface the missing `update()`; we do not introduce a
+separate `NeverUpdatedError` for v1. `cursorInRect` returns `null` in
+the same case (already documented above) since 0×0 source means no
+cursor is meaningfully positionable.
 
 The strict check makes dimension drift loud rather than silently
 mis-rendering. Permissive `fit: "exact" | "clip" | "pad"` is a thinkable
@@ -184,6 +222,11 @@ Returns the joined string.
 
 **Row-start reset:** defensive `\x1b[0m` so a bug in one row's SGR
 diffing can't bleed into the next. ~5 bytes per row, negligible.
+Implication for callers: any SGR state the caller had set in its own
+output before the rect render gets reset between every rendered row.
+Callers that wrap rect output in their own SGR run should re-establish
+their styling after the rect call (typically a non-issue — composers
+emit full SGR per region anyway).
 
 **SGR diffing:** emit a new SGR sequence only when the computed style
 differs from the last emitted one within the row. For typical content,
@@ -203,20 +246,36 @@ the cursor advances by 2 cells, so dropping the ghost is correct.
 **`computeSgr(style, colorDepth)`:**
 
 - Returns `""` for default style (no fg, no bg, no attributes).
-- Otherwise builds one CSI sequence: `\x1b[<params>m` with attributes
-  in this order: bold (1), faint (2), italic (3), underline (4), blink
-  (5), inverse (7), invisible (8), strikethrough (9). Then fg, then bg.
+- Otherwise builds one **reset-prefixed** CSI sequence:
+  `\x1b[0;<params>m`. The leading `0` resets all prior SGR state
+  before applying the new params, sidestepping any need for the
+  emitter to track which attributes/colors were active in the prior
+  cell. Cost: 2 extra bytes per non-default SGR transition.
+  Correctness: every emitted SGR is independent of the prior state.
+- Param order after the leading `0`: bold (1), faint (2), italic (3),
+  underline (4), blink (5), inverse (7), invisible (8), strikethrough
+  (9). Then fg, then bg.
+- **Diff rule (per-row):** if `sgr === lastSgr`, skip emission. If
+  `sgr === ""` and `lastSgr !== ""`, emit `\x1b[0m`. If `sgr !== ""`
+  (and differs from `lastSgr`), emit `sgr` — which already starts with
+  `\x1b[0;`. This handles all transitions correctly without
+  per-attribute fallbacks like `\x1b[39m` or `\x1b[22m`.
 - **Foreground (`colorDepth: "preserve"`):**
   - RGB → `38;2;R;G;B`
-  - palette index → `38;5;N`
-  - basic 16-color (when libghostty represents it as 0–15) → `30–37` /
-    `90–97`
-  - default fg → `39` (only emitted as part of a transition; if the
-    only difference from prior cell is "now default", emit `\x1b[0m`
-    instead of `39` to also clear attributes)
-- **Background:** parallel logic (`48;2/48;5/40–47/100–107` and `49`).
-- **`colorDepth: "none"`:** skip color and attribute SGR entirely
-  (plain text only). Useful for tests / snapshots / minimal hosts.
+  - palette index 16+ → `38;5;N`
+  - palette index 0–15 → short form `30–37` (0–7) and `90–97` (8–15).
+    Shorter than `38;5;N` and more compatible with very old hosts.
+  - default fg → not emitted; the leading `0` already implies default
+- **Background:** parallel logic (`48;2/48;5/40–47/100–107`); default bg
+  is implicit via the leading `0`.
+- **`colorDepth: "none"`:** `computeSgr` always returns `""`. Skips
+  color AND attribute SGR entirely. Trade-off: a cell that is "blank
+  with non-default bg" (e.g., a status-bar background) renders as
+  undifferentiated whitespace under this option — there is no
+  attribute/color emitted to paint the bg. This is intentional; "none"
+  is for plain-text consumers (tests, minimal hosts, dump-to-file).
+  Consumers that want monochrome-with-emphasis should use `"preserve"`
+  on a host with limited color support, not `"none"`.
 
 **Trailing state:** renderer does NOT move or hide the cursor at the
 end. The caller composes into its own ANSI stream and handles cursor
@@ -226,12 +285,15 @@ visibility via its own logic + `cursorInRect()`.
 
 | Error | Thrown by | When |
 |---|---|---|
-| `RectSizeMismatch` | `toAnsiRect`, `renderToAnsiRect` | dest dims ≠ source dims |
+| `RectSizeMismatch` | `toAnsiRect`, `renderToAnsiRect`, `cursorInRect` | dest dims ≠ source dims (incl. 0×0 source from never-updated RenderState) |
 | `UseAfterCloseError` | all three methods | RenderState / Terminal closed |
 
 `RectSizeMismatch` is new. Extends `GhosttyError` with code
 `"rect_size_mismatch"`; message includes both dimension pairs and a
-hint to call `terminal.resize` or adjust the destination.
+hint to call `terminal.resize` or adjust the destination. The
+implementation must also extend the `GhosttyErrorCode` union in
+`src/errors.ts` with the new `"rect_size_mismatch"` member — adding
+the class without updating the union would fail typecheck.
 
 ## 5. Testing
 
@@ -297,17 +359,10 @@ regressions.
 
 ## 8. Open questions
 
-1. **Cached RenderState ownership on Terminal.** Implementation detail:
-   does `Terminal.close()` need to dispose the cached RenderState
-   explicitly, or does GC handle it? The libghostty handle is a Pointer
-   so explicit close is the safer choice. The implementation plan must
-   wire `terminal.close()` → `cachedRenderState?.close()`.
-
-2. **Default color depth.** `"preserve"` is the obvious default. If
+1. **Default color depth.** `"preserve"` is the obvious default. If
    later we add downsampling, `"preserve"` stays the default and the
-   new depths are opt-in.
+   new depths are opt-in. Mentioning here so reviewers can flag if
+   they'd argue otherwise.
 
-3. **API discoverability.** Both `terminal.renderToAnsiRect` and
-   `state.toAnsiRect` exist. The convenience method should reference
-   the primitive in its TSDoc so consumers learn about the cache layer
-   when they need control.
+(Cached-RenderState lifecycle and TSDoc cross-link were initially
+listed as open questions but are concrete requirements; moved into §1.)
