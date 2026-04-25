@@ -2,11 +2,12 @@ import { KeyEncoder, RenderState, Terminal } from "libghostty-vt";
 
 import {
   DisposedError,
+  ExitedError,
   FirstFrameTimeoutError,
   IteratorInUseError,
   SpawnError,
 } from "./errors";
-import type { Frame, FrameReason, SpawnOptions } from "./types";
+import type { Frame, FrameReason, SpawnOptions, WaitExitResult } from "./types";
 import { realClock } from "./internal/clock";
 import { priorityPick, Scheduler } from "./internal/scheduler";
 import { buildFrameSnapshot } from "./internal/snapshot";
@@ -377,6 +378,29 @@ export class Runner {
         return iter;
       },
     };
+  }
+
+  async sendBytes(bytes: Uint8Array): Promise<void> {
+    this.#assertRunning("sendBytes");
+    await this.#writeQueue.write(bytes);
+  }
+
+  async sendText(text: string): Promise<void> {
+    const bytes = new TextEncoder().encode(text);
+    await this.sendBytes(bytes);
+  }
+
+  async waitExit(): Promise<WaitExitResult> {
+    await this.#proc.exited;
+    const result: WaitExitResult = { exited: true };
+    if (this.#exitCode !== undefined) result.exitCode = this.#exitCode;
+    if (this.#signal !== undefined) result.signal = this.#signal;
+    return result;
+  }
+
+  #assertRunning(methodName: string): void {
+    if (this.#disposed) throw new DisposedError("Runner");
+    if (this.#exited) throw new ExitedError(methodName);
   }
 
   async [Symbol.asyncDispose](): Promise<void> {
