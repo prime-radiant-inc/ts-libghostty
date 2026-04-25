@@ -99,6 +99,51 @@ libghostty tracks dirty state at both a global and per-row level. `markClean()` 
 
 OSC 10/11/12 color overrides set by the running program **are preserved across `Terminal.setColors(patch)` calls**. Consumers relying on OSC overrides do not need to re-emit them after `setColors`.
 
+## Keyboard input encoding
+
+Pass 4 adds `KeyEncoder` for converting structured `KeyEvent` objects
+into VT byte sequences. Encoder output is mode-aware — it respects
+DECCKM cursor-key mode, Kitty keyboard protocol flags, and other
+state.
+
+````typescript
+import { Terminal, KeyEncoder } from "libghostty-vt";
+
+using term = new Terminal({ cols: 80, rows: 24 });
+using enc = new KeyEncoder({ terminal: term });
+
+// Bound to a Terminal: each encode() syncs options from term first,
+// so live mode changes are picked up automatically.
+const ctrlC = enc.encode({ key: "KeyC", mods: { ctrl: true }, utf8: "c", unshiftedCodepoint: 0x63 });
+// → Uint8Array [0x03]
+
+const arrowUp = enc.encode({ key: "ArrowUp" });
+// → Uint8Array [0x1b, 0x5b, 0x41]  (ESC [ A — normal mode)
+
+term.vtWrite(new TextEncoder().encode("\x1b[?1h"));   // app sends DECCKM on
+const arrowUp2 = enc.encode({ key: "ArrowUp" });
+// → Uint8Array [0x1b, 0x4f, 0x41]  (ESC O A — application mode)
+````
+
+`KeyEvent.utf8` carries the unmodified character (e.g., `"c"` for
+Ctrl+C). The encoder derives modifier byte sequences from the logical
+key and mods bitmask; `utf8` MUST NOT contain C0 controls or macOS
+PUA function-key codepoints — pass `utf8` undefined in those cases
+and let the encoder use the logical key. Violations throw
+`EncodeError` with code `"invalid_utf8"`.
+
+For consumers who don't have (or want) a `Terminal`, the standalone
+form takes options directly:
+
+````typescript
+using enc = new KeyEncoder({
+  options: {
+    cursorKeyMode: "application",
+    kittyFlags: 0b00001,
+  },
+});
+````
+
 ## License
 
 - `libghostty-vt` code: Apache-2.0 — see [LICENSE](./LICENSE).
