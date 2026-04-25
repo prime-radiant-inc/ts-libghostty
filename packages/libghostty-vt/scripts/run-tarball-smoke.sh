@@ -48,7 +48,7 @@ EOF
 bun install --silent
 
 cat > run.ts <<'EOF'
-import { Terminal, Formatter, RenderState, encodeFocus } from "libghostty-vt";
+import { Terminal, Formatter, RenderState, encodeFocus, KeyEncoder } from "libghostty-vt";
 
 // Pass 1 — Terminal + Formatter
 using term = new Terminal({ cols: 10, rows: 3 });
@@ -82,6 +82,17 @@ const focusBytes = encodeFocus("in");
 if (focusBytes[0] !== 0x1B) {
   console.error("expected encodeFocus('in') to start with ESC, got:", Array.from(focusBytes));
   process.exit(1);
+}
+
+// Pass 4 — KeyEncoder
+{
+  using enc = new KeyEncoder({ options: {} });
+  const bytes = enc.encode({ key: "KeyC", utf8: "c", unshiftedCodepoint: 0x63 });
+  if (bytes.length !== 1 || bytes[0] !== 0x63) {
+    console.error("KeyEncoder smoke failed: expected [0x63], got", Array.from(bytes));
+    process.exit(1);
+  }
+  console.log("KeyEncoder smoke OK");
 }
 
 console.log("OK");
