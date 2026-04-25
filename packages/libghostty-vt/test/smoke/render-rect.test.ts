@@ -101,3 +101,18 @@ test("never-updated RenderState has 0×0 source and throws on any non-zero dest"
     renderRect(rs, { row: 1, col: 1, cols: 4, rows: 2 }, {}),
   ).toThrow(RectSizeMismatch);
 });
+
+test("RenderState.toAnsiRect produces same output as renderRect helper", () => {
+  const { rs } = stateOf(4, 1, (t) => writeStr(t, "\x1b[1;31mABCD"));
+  const direct = renderRect(rs, { row: 1, col: 1, cols: 4, rows: 1 }, {});
+  const viaMethod = rs.toAnsiRect({ row: 1, col: 1, cols: 4, rows: 1 });
+  expect(viaMethod).toBe(direct);
+});
+
+test("RenderState.toAnsiRect throws UseAfterCloseError after close", () => {
+  const rs = new RenderState();
+  rs.close();
+  expect(() =>
+    rs.toAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 }),
+  ).toThrow(/has been closed/);
+});

@@ -15,6 +15,7 @@ import {
 import { GhosttyError, UseAfterCloseError, getResultCodeName } from "./errors";
 import { readRenderStateColors, readStyle } from "./internal/sized-struct";
 import { rawStyleToCellStyle, isDefaultRawStyle } from "./internal/style";
+import { renderRect } from "./render-rect";
 import type {
   RGB,
   TerminalColors,
@@ -22,6 +23,8 @@ import type {
   CellStyle,
   RenderRow,
   RenderCell,
+  RectRenderOptions,
+  RenderRect,
 } from "./types";
 import type { Terminal } from "./terminal";
 
@@ -231,6 +234,23 @@ export class RenderState {
   size(): { cols: number; rows: number } {
     this.#assertOpen();
     return { cols: this.#cols, rows: this.#rowCount };
+  }
+
+  /**
+   * Render the cached cell grid as ANSI bytes that paint into `dest`.
+   * Pure transformation; no FFI calls, no `update()`. Caller controls
+   * when `update()` runs.
+   *
+   * Throws `RectSizeMismatch` if `dest` dimensions don't equal this
+   * render state's source cols × rows. Throws `UseAfterCloseError`
+   * if this RenderState has been closed.
+   *
+   * See `Terminal.renderToAnsiRect` for a convenience that manages a
+   * cached RenderState per Terminal.
+   */
+  toAnsiRect(dest: RenderRect, opts?: RectRenderOptions): string {
+    this.#assertOpen();
+    return renderRect(this, dest, opts ?? {});
   }
 
   /**
