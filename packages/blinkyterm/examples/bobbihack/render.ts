@@ -74,11 +74,12 @@ function drawBox(parts: string[], box: Box, title: string): void {
 }
 
 function drawNethackContent(parts: string[], box: Box, screenAnsi: string): void {
-  // libghostty emits rows separated by "\r\n"; splitting on "\n" leaves a
-  // trailing "\r" on each row. Writing that "\r" inline jumps the cursor
-  // back to column 1, so any subsequent padding/margin writes clobber the
-  // left pane border and the start of the line. Strip them.
-  const lines = screenAnsi.split("\n").map((l) => l.replace(/\r/g, ""));
+  // libghostty emits rows separated by "\r\n" and may include cursor-control
+  // CSI sequences from the underlying program (e.g. NetHack appends
+  // "\x1b[20;10H" to position its cursor). Letting either reach the host
+  // terminal lets the cursor escape our pane and clobber borders or content
+  // elsewhere. Keep SGR (ends in 'm'); strip everything else.
+  const lines = screenAnsi.split("\n").map(sanitizeForInline);
   // Layout reserves 1 cell of horizontal padding on each side inside the box,
   // so content occupies cols [box.col+2 .. box.col+box.cols-3]. The margin
   // cells (box.col+1 and box.col+box.cols-2) are always blank.
@@ -182,4 +183,18 @@ function wrapText(text: string, width: number): string[] {
 
 function stripAnsi(s: string): string {
   return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
+}
+
+/**
+ * Make a line safe to splice inline into our rendered output. Strips
+ * carriage returns and any CSI sequence that isn't SGR (`...m`). SGR
+ * is preserved so colors and attributes survive. Cursor-positioning
+ * sequences (e.g. `\x1b[20;10H`) and erases (`\x1b[K`) are stripped
+ * because they would let the embedded program's cursor escape our
+ * pane and clobber the host screen.
+ */
+export function sanitizeForInline(s: string): string {
+  return s
+    .replace(/\r/g, "")
+    .replace(/\x1b\[[0-9;]*[a-ln-zA-Z]/g, ""); // CSI ending in any ASCII letter except 'm'
 }

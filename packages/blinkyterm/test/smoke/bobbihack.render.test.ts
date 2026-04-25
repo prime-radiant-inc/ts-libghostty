@@ -59,6 +59,27 @@ test("render strips CR so trailing \\r in toAnsi() rows doesn't clobber the left
   expect(out).not.toContain("\r");
 });
 
+test("render strips non-SGR CSI sequences (e.g. cursor-positioning) but keeps SGR", () => {
+  // NetHack appends a cursor-position sequence at the end of its render
+  // (e.g. `\x1b[20;10H`). If we wrote that inline, the host cursor would
+  // jump to host row 20 col 10 and our subsequent padding would clobber
+  // the right border (and anything else at that location).
+  let s = initSide();
+  s = onChildFrame(
+    s,
+    frame("ROW1\x1b[1;31mRED\x1b[0m\nROW2\x1b[20;10H"),
+  );
+  const out = render(s);
+  // Cursor-positioning sequence MUST NOT survive into the rendered output.
+  expect(out).not.toContain("\x1b[20;10H");
+  // SGR sequences should be preserved.
+  expect(out).toContain("\x1b[1;31m");
+  // Visible text content survives.
+  expect(out).toContain("ROW1");
+  expect(out).toContain("RED");
+  expect(out).toContain("ROW2");
+});
+
 test("render shows current turn streaming text in live area", () => {
   let s = initSide();
   s = onTurnStart(s, { turn: 7, frameReason: "cellChange" });

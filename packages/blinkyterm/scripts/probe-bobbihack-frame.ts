@@ -32,8 +32,14 @@ for await (const frame of runner.frames()) {
   const lines = ansi.split("\n");
   console.log(`=== frame ${frames}, lines.length=${lines.length} ===`);
   for (let i = 0; i < lines.length; i++) {
-    const visible = lines[i]!.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-    console.log(`row ${String(i).padStart(2)} (vis=${String(visible.length).padStart(3)}): ${JSON.stringify(visible)}`);
+    const raw = lines[i]!;
+    const escaped = raw
+      .replace(/\x1b/g, "<ESC>")
+      .replace(/\r/g, "<CR>")
+      .replace(/\x07/g, "<BEL>")
+      .replace(/\x08/g, "<BS>");
+    const visible = raw.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "").replace(/\r/g, "");
+    console.log(`row ${String(i).padStart(2)} (vis=${String(visible.length).padStart(3)}, raw=${String(raw.length).padStart(3)}): ${JSON.stringify(escaped)}`);
   }
   break;
 }
