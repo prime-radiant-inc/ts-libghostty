@@ -225,6 +225,15 @@ export class RenderState {
   }
 
   /**
+   * Returns the source dimensions captured at the most recent `update()`.
+   * Returns {cols: 0, rows: 0} if `update()` has never been called.
+   */
+  size(): { cols: number; rows: number } {
+    this.#assertOpen();
+    return { cols: this.#cols, rows: this.#rowCount };
+  }
+
+  /**
    * Free the native render state handle. Safe to call multiple times.
    * After close(), all other methods throw UseAfterCloseError.
    */
