@@ -5,6 +5,7 @@ import {
   UnsupportedPlatformError,
   LibraryCompatibilityError,
   UseAfterCloseError,
+  EncodeError,
 } from "../../src/errors";
 
 describe("GhosttyError hierarchy", () => {
@@ -57,5 +58,17 @@ describe("GhosttyError hierarchy", () => {
     expect(e).toBeInstanceOf(GhosttyError);
     expect(e.code).toBe("use_after_close");
     expect(e.handleType).toBe("Terminal");
+  });
+
+  it("EncodeError carries 'encode_failed' code by default", () => {
+    const err = new EncodeError("encoder returned -1", { code: "encode_failed" });
+    expect(err.code).toBe("encode_failed");
+    expect(err.name).toBe("EncodeError");
+    expect(err).toBeInstanceOf(GhosttyError);
+  });
+
+  it("EncodeError carries 'invalid_utf8' code for contract violations", () => {
+    const err = new EncodeError("utf8 contains C0 control", { code: "invalid_utf8" });
+    expect(err.code).toBe("invalid_utf8");
   });
 });

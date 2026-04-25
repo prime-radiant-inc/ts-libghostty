@@ -21,6 +21,8 @@ export type GhosttyErrorCode =
   | "library_incompatible"
   | "unsupported_platform"
   | "use_after_close"
+  | "encode_failed"
+  | "invalid_utf8"
   | "unknown";
 
 export interface GhosttyErrorOptions {
@@ -90,5 +92,12 @@ export class UseAfterCloseError extends GhosttyError {
     super(message, { code: "use_after_close", cause: opts.cause });
     this.name = "UseAfterCloseError";
     this.handleType = opts.handleType;
+  }
+}
+
+export class EncodeError extends GhosttyError {
+  constructor(message: string, opts: GhosttyErrorOptions) {
+    super(message, opts);
+    this.name = "EncodeError";
   }
 }
