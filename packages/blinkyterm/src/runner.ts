@@ -1,6 +1,6 @@
 import { KeyEncoder, RenderState, Terminal } from "libghostty-vt";
 
-import { DisposedError, SpawnError } from "./errors";
+import { DisposedError, FirstFrameTimeoutError, SpawnError } from "./errors";
 import type { SpawnOptions } from "./types";
 import { realClock } from "./internal/clock";
 import { Scheduler } from "./internal/scheduler";
@@ -109,6 +109,13 @@ export class Runner {
     const rows = opts.rows ?? 24;
     const cwd = opts.cwd ?? process.cwd();
     const clock = opts.clock ?? realClock;
+    const firstFrameTimeoutMs = opts.firstFrameTimeoutMs ?? 10000;
+
+    // Tracks whether the child has produced any output. The first-frame
+    // handshake distinguishes "silent child" / "exit-before-output" (both
+    // reject) from "produced output then exited" (proceed with a forced
+    // quiesce so the first iterator frame is reason: "initial").
+    let firstByteSeen = false;
 
     // Forward-reference the scheduler and write queue so the Terminal and
     // Bun.Terminal callbacks can close over them. Effects fire from
@@ -155,6 +162,10 @@ export class Runner {
       rows,
       data(_t, chunk) {
         terminal.vtWrite(chunk);
+        if (!firstByteSeen) {
+          firstByteSeen = true;
+          scheduler!.noteInitial();
+        }
         scheduler!.notePtyChunk();
       },
       drain() {
@@ -224,6 +235,59 @@ export class Runner {
       // proc.exited is documented to always resolve (never reject); guard
       // anyway.
     });
+
+    // First-frame handshake. Per the state machine in spec §3.5, a child
+    // that produces no output OR exits before producing output rejects
+    // with FirstFrameTimeoutError — there is no [spawning] -> [exited]
+    // direct edge.
+    type RaceWinner = "ready" | "timeout" | "exited";
+    const ready: Promise<RaceWinner> = scheduler.awaitReady().then(() => "ready" as const);
+    let timeoutHandle: ReturnType<typeof setTimeout> | undefined;
+    const timeout: Promise<RaceWinner> = new Promise<RaceWinner>((resolve) => {
+      timeoutHandle = setTimeout(() => resolve("timeout"), firstFrameTimeoutMs);
+    });
+    const earlyExit: Promise<RaceWinner> = proc.exited.then(() => "exited" as const);
+    const winner = await Promise.race([ready, timeout, earlyExit]);
+    if (timeoutHandle !== undefined) clearTimeout(timeoutHandle);
+
+    const partialCleanup = async (): Promise<void> => {
+      if (!runner.#exited) {
+        try { proc.kill("SIGKILL"); } catch { /* ignore */ }
+        let killTimer: ReturnType<typeof setTimeout> | undefined;
+        const killTimeout = new Promise<void>((resolve) => {
+          killTimer = setTimeout(resolve, 2000);
+        });
+        try {
+          await Promise.race([proc.exited.then(() => {}), killTimeout]);
+        } finally {
+          if (killTimer !== undefined) clearTimeout(killTimer);
+        }
+      }
+      try { pty.close(); } catch { /* ignore */ }
+      try { renderState[Symbol.dispose](); } catch { /* ignore */ }
+      try { encoder[Symbol.dispose](); } catch { /* ignore */ }
+      try { terminal[Symbol.dispose](); } catch { /* ignore */ }
+      scheduler!.dispose();
+      writeQueueInstance.dispose();
+      runner.#disposed = true;
+    };
+
+    if (winner === "timeout") {
+      await partialCleanup();
+      throw new FirstFrameTimeoutError(firstFrameTimeoutMs);
+    }
+    if (winner === "exited" && !firstByteSeen) {
+      await partialCleanup();
+      throw new FirstFrameTimeoutError(firstFrameTimeoutMs);
+    }
+    if (winner === "exited" && firstByteSeen) {
+      // Child produced output then exited before quiesce fired. Run the
+      // quiesce-equivalent once so the first iterator frame still surfaces
+      // reason: "initial"; the terminal frame follows on the next next().
+      renderState.update(terminal);
+      if (renderState.dirty() !== "none") scheduler.noteCellChange();
+      scheduler.maybeYield();
+    }
 
     return runner;
   }

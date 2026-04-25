@@ -20,3 +20,15 @@ test("async dispose is idempotent", async () => {
   await runner[Symbol.asyncDispose]();
   expect(runner.disposed).toBe(true);
 });
+
+test("silent child rejects with FirstFrameTimeoutError", async () => {
+  await expect(Runner.spawn(["bash", "-lc", "sleep 1"], {
+    firstFrameTimeoutMs: 50,
+  })).rejects.toThrow("initial frame");
+});
+
+test("child that exits before output also rejects with FirstFrameTimeoutError", async () => {
+  await expect(Runner.spawn(["bash", "-lc", "exit 0"], {
+    firstFrameTimeoutMs: 50,
+  })).rejects.toThrow("initial frame");
+});
