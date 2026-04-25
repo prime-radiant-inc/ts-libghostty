@@ -34,6 +34,7 @@ const ENCODE_BUFFER_SIZE = 64;
 
 export class KeyEncoder implements Disposable {
   #handle: Pointer | null = null;
+  #boundTerminal: Terminal | null = null;
   // Pre-allocated reusable buffers; encode() copies into a fresh Uint8Array
   // before returning, so reuse here is safe.
   readonly #buf = new Uint8Array(ENCODE_BUFFER_SIZE);
@@ -51,8 +52,16 @@ export class KeyEncoder implements Disposable {
     }
     this.#handle = Number(out[0]) as Pointer;
 
-    // Bound mode wiring lands in Task 11; for now, accept the option but no-op.
-    void opts;
+    if ("terminal" in opts) {
+      this.#boundTerminal = opts.terminal;
+      // Initial sync. setopt_from_terminal is void per the C header — no rc
+      // to check.
+      lib.symbols.ghostty_key_encoder_setopt_from_terminal(
+        this.#handle, opts.terminal._handle,
+      );
+    } else if (opts.options) {
+      // Standalone mode option setters land in Task 12; for now, no-op (empty options bag).
+    }
   }
 
   encode(event: KeyEvent): Uint8Array {
@@ -69,6 +78,13 @@ export class KeyEncoder implements Disposable {
           { code: "invalid_utf8" },
         );
       }
+    }
+
+    if (this.#boundTerminal !== null) {
+      // setopt_from_terminal is void per the C header — no rc to check.
+      lib.symbols.ghostty_key_encoder_setopt_from_terminal(
+        this.#handle!, this.#boundTerminal._handle,
+      );
     }
 
     // Build the C event
@@ -134,6 +150,14 @@ export class KeyEncoder implements Disposable {
     } finally {
       lib.symbols.ghostty_key_event_free(ev);
     }
+  }
+
+  syncFromTerminal(terminal: Terminal): void {
+    this.#assertOpen();
+    // setopt_from_terminal is void per the C header — no rc to check.
+    getLib().symbols.ghostty_key_encoder_setopt_from_terminal(
+      this.#handle!, terminal._handle,
+    );
   }
 
   [Symbol.dispose](): void {

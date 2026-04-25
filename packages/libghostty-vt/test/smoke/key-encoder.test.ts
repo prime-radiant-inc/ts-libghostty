@@ -80,3 +80,36 @@ describe("KeyEncoder — modified keys (golden table)", () => {
     });
   }
 });
+
+import { Terminal } from "../../src";
+
+describe("KeyEncoder — bound mode (terminal sync)", () => {
+  test("ArrowUp encodes ESC[A in normal mode (DECCKM off)", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    using enc = new KeyEncoder({ terminal: term });
+    const bytes = enc.encode({ key: "ArrowUp" });
+    expect(Array.from(bytes)).toEqual([0x1b, 0x5b, 0x41]);   // ESC [ A
+  });
+
+  test("ArrowUp encodes ESC O A in application mode (DECCKM on)", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    using enc = new KeyEncoder({ terminal: term });
+    // Flip DECCKM on
+    term.vtWrite(new TextEncoder().encode("\x1b[?1h"));
+    const bytes = enc.encode({ key: "ArrowUp" });
+    expect(Array.from(bytes)).toEqual([0x1b, 0x4f, 0x41]);   // ESC O A
+  });
+
+  test("encoder picks up mode changes between encodes", () => {
+    using term = new Terminal({ cols: 80, rows: 24 });
+    using enc = new KeyEncoder({ terminal: term });
+    // First encode — normal mode
+    const a = enc.encode({ key: "ArrowUp" });
+    expect(Array.from(a)).toEqual([0x1b, 0x5b, 0x41]);
+    // Flip DECCKM on
+    term.vtWrite(new TextEncoder().encode("\x1b[?1h"));
+    // Second encode — same key, application mode now
+    const b = enc.encode({ key: "ArrowUp" });
+    expect(Array.from(b)).toEqual([0x1b, 0x4f, 0x41]);
+  });
+});
