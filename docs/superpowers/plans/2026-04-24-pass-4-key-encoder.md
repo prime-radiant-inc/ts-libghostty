@@ -68,15 +68,15 @@ docs/superpowers/specs/2026-04-24-agent-tui-runner-design.md
 - Write: `.worktrees/pass-4-key-encoder/` (new git worktree)
 - Write: `.tmp/preflight-pass4.txt` (gitignored)
 
-- [ ] **Step 1: Verify main is clean and at the post-Plan-A merge point**
+- [ ] **Step 1: Verify main is clean and at the post-plan-commit head**
 
 ```bash
 git status --short
 git rev-parse --abbrev-ref HEAD
-git log --oneline -1
+git log --oneline -3
 ```
 
-Expected: clean tree (only gitignored stragglers), branch is `main`, latest commit is `d289338` ("ci(monorepo): update workflow paths") — i.e., the Plan A merge head. If you see anything else, **stop** and check with the orchestrator.
+Expected: clean tree (only gitignored stragglers), branch is `main`, and `git log` shows this Pass 4 plan as the most recent commit (`plan: Pass 4 — KeyEncoder for libghostty-vt` at SHA `8f73dac`), with the Plan A merge head (`d289338`, "ci(monorepo): update workflow paths") two commits behind it. If main is at a later commit (e.g., other Codex-review fixes have landed), the worktree should still branch from the current `main` HEAD — that's correct. If main is *behind* `8f73dac` (the plan commit isn't there yet), **stop** and re-pull.
 
 - [ ] **Step 2: Create the worktree on a new branch**
 
@@ -256,8 +256,9 @@ const lib = dlopen(dylibPath, {
   ghostty_terminal_vt_write: { args: [FFIType.ptr, FFIType.ptr, FFIType.u64], returns: FFIType.void },
   ghostty_key_encoder_new: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   ghostty_key_encoder_free: { args: [FFIType.ptr], returns: FFIType.void },
-  ghostty_key_encoder_setopt: { args: [FFIType.ptr, FFIType.i32, FFIType.ptr], returns: FFIType.i32 },
-  ghostty_key_encoder_setopt_from_terminal: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
+  // setopt + setopt_from_terminal are void per ghostty/vt/key/encoder.h
+  ghostty_key_encoder_setopt: { args: [FFIType.ptr, FFIType.i32, FFIType.ptr], returns: FFIType.void },
+  ghostty_key_encoder_setopt_from_terminal: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.void },
   ghostty_key_encoder_encode: { args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr], returns: FFIType.i32 },
   ghostty_key_event_new: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.i32 },
   ghostty_key_event_free: { args: [FFIType.ptr], returns: FFIType.void },
@@ -317,14 +318,14 @@ const written2 = new BigUint64Array(1);
 r = lib.symbols.ghostty_key_encoder_encode(enc, ev, ptr(buf2), BigInt(buf2.length), ptr(written2));
 log("encode_deterministic", r === SUCCESS && Number(written2[0]) === w && buf2[0] === buf[0], `rc=${r}`);
 
-// Q3: setopt with KITTY_FLAGS (u8 by ref)
+// Q3: setopt with KITTY_FLAGS (u8 by ref). setopt is void — no rc.
 const kittyFlags = new Uint8Array([0b00001]);   // disambiguate-escape
-r = lib.symbols.ghostty_key_encoder_setopt(enc, OPT_KITTY_FLAGS, ptr(kittyFlags));
-log("setopt_kitty_flags_u8", r === SUCCESS, `rc=${r}`);
+lib.symbols.ghostty_key_encoder_setopt(enc, OPT_KITTY_FLAGS, ptr(kittyFlags));
+log("setopt_kitty_flags_u8", true, "void return — no error possible");
 
 const cursorAppMode = new Uint8Array([1]);     // bool by ref
-r = lib.symbols.ghostty_key_encoder_setopt(enc, OPT_CURSOR_KEY_APPLICATION, ptr(cursorAppMode));
-log("setopt_cursor_key_application", r === SUCCESS, `rc=${r}`);
+lib.symbols.ghostty_key_encoder_setopt(enc, OPT_CURSOR_KEY_APPLICATION, ptr(cursorAppMode));
+log("setopt_cursor_key_application", true, "void return");
 
 // Q4: setopt_from_terminal picks up live state
 // First flip DECCKM on the terminal via VT write (ESC[?1h):
@@ -334,8 +335,8 @@ lib.symbols.ghostty_terminal_vt_write(term, ptr(decckmOn), BigInt(decckmOn.lengt
 const enc2Out = new BigUint64Array(1);
 lib.symbols.ghostty_key_encoder_new(null, ptr(enc2Out));
 const enc2 = Number(enc2Out[0]) as Pointer;
-r = lib.symbols.ghostty_key_encoder_setopt_from_terminal(enc2, term);
-log("setopt_from_terminal_returns_ok", r === SUCCESS, `rc=${r}`);
+lib.symbols.ghostty_key_encoder_setopt_from_terminal(enc2, term);   // void — no rc
+log("setopt_from_terminal_called", true, "void return");
 
 // Encode ArrowUp through enc2 — DECCKM on means application-mode: ESC O A (3 bytes), 0x1b 0x4f 0x41
 const evArrowUpOut = new BigUint64Array(1);
@@ -469,13 +470,14 @@ In `packages/libghostty-vt/src/ffi.ts`, find the existing `SYMBOLS = { ... }` bl
     args: [FFIType.ptr],                // (handle)
     returns: FFIType.void,
   },
+  // setopt + setopt_from_terminal are void per ghostty/vt/key/encoder.h
   ghostty_key_encoder_setopt: {
     args: [FFIType.ptr, FFIType.i32, FFIType.ptr],   // (encoder, opt_id, &value)
-    returns: FFIType.i32,
+    returns: FFIType.void,
   },
   ghostty_key_encoder_setopt_from_terminal: {
     args: [FFIType.ptr, FFIType.ptr],   // (encoder, terminal)
-    returns: FFIType.i32,
+    returns: FFIType.void,
   },
   ghostty_key_encoder_encode: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.ptr],
@@ -1376,7 +1378,7 @@ Create `packages/libghostty-vt/src/key-encoder.ts`:
 ```ts
 import { ptr, type Pointer } from "bun:ffi";
 import { getLib } from "./ffi";
-import { GhosttyError, EncodeError, getResultCodeName } from "./errors";
+import { GhosttyError, EncodeError, UseAfterCloseError, getResultCodeName } from "./errors";
 import { GhosttyKeyActionValues } from "./internal/generated";
 import { keyToGhosttyId, type Key } from "./internal/key-names";
 import { packMods, type Mods } from "./internal/mods-pack";
@@ -1474,22 +1476,41 @@ export class KeyEncoder implements Disposable {
         lib.symbols.ghostty_key_event_set_utf8(ev, null as unknown as Pointer, 0n);
       }
 
+      // Try with the pre-allocated 64B buffer first.
+      let buf = this.#buf;
+      let written: BigUint64Array = this.#written;
       rc = lib.symbols.ghostty_key_encoder_encode(
         this.#handle!,
         ev,
-        ptr(this.#buf),
-        BigInt(this.#buf.length),
-        ptr(this.#written),
+        ptr(buf),
+        BigInt(buf.length),
+        ptr(written),
       );
+      // OUT_OF_SPACE (-3): the C API set *written to the required size.
+      // Retry once with that size (Pass 4 has no expected encodings near 64B,
+      // so this branch is defensive — but a future Kitty protocol extension
+      // or long associated text could legitimately need it).
+      if (rc === -3) {
+        const required = Number(written[0]);
+        buf = new Uint8Array(required);
+        written = new BigUint64Array(1);
+        rc = lib.symbols.ghostty_key_encoder_encode(
+          this.#handle!,
+          ev,
+          ptr(buf),
+          BigInt(buf.length),
+          ptr(written),
+        );
+      }
       if (rc !== 0) {
         throw new EncodeError(
           `ghostty_key_encoder_encode returned ${getResultCodeName(rc)}`,
           { code: "encode_failed" },
         );
       }
-      const written = Number(this.#written[0]);
+      const writtenN = Number(written[0]);
       // Fresh allocation so callers can hold the result across encode() calls.
-      return new Uint8Array(this.#buf.slice(0, written));
+      return new Uint8Array(buf.slice(0, writtenN));
     } finally {
       lib.symbols.ghostty_key_event_free(ev);
     }
@@ -1503,7 +1524,7 @@ export class KeyEncoder implements Disposable {
 
   #assertOpen(): void {
     if (this.#handle === null) {
-      throw new GhosttyError("KeyEncoder is closed", { code: "closed" });
+      throw new UseAfterCloseError("KeyEncoder has been closed", { handleType: "KeyEncoder" });
     }
   }
 }
@@ -1565,8 +1586,6 @@ Append to `packages/libghostty-vt/test/smoke/key-encoder.test.ts`:
 
 ```ts
 describe("KeyEncoder — modified keys (golden table)", () => {
-  using enc = new KeyEncoder({ options: {} });
-
   // Each row: [name, KeyEvent, expected bytes (hex array)]
   const cases: Array<[string, import("../../src/key-encoder").KeyEvent, number[]]> = [
     // Ctrl+C → ETX (0x03)
@@ -1581,8 +1600,13 @@ describe("KeyEncoder — modified keys (golden table)", () => {
     ["Ctrl+BracketLeft", { key: "BracketLeft", mods: { ctrl: true }, utf8: "[", unshiftedCodepoint: 0x5b }, [0x1b]],
   ];
 
+  // Each test owns its encoder. A `using` declaration in the describe
+  // callback would dispose the encoder when describe finishes registering
+  // tests (before any test callback runs); per-test construction avoids
+  // that footgun.
   for (const [name, event, expected] of cases) {
     test(name, () => {
+      using enc = new KeyEncoder({ options: {} });
       const bytes = enc.encode(event);
       expect(Array.from(bytes)).toEqual(expected);
     });
@@ -1680,16 +1704,11 @@ Edit `packages/libghostty-vt/src/key-encoder.ts`. Replace the `void opts;` line 
 ```ts
     if ("terminal" in opts) {
       this.#boundTerminal = opts.terminal;
-      // Initial sync.
-      const rc = lib.symbols.ghostty_key_encoder_setopt_from_terminal(
+      // Initial sync. setopt_from_terminal is void per the C header — no rc
+      // to check.
+      lib.symbols.ghostty_key_encoder_setopt_from_terminal(
         this.#handle, opts.terminal._handle,
       );
-      if (rc !== 0) {
-        throw new GhosttyError(
-          "ghostty_key_encoder_setopt_from_terminal failed at init",
-          { code: getResultCodeName(rc), functionName: "ghostty_key_encoder_setopt_from_terminal" },
-        );
-      }
     } else if (opts.options) {
       // Standalone mode option setters land in Task 12; for now, no-op (empty options bag).
     }
@@ -1705,15 +1724,10 @@ In the `encode()` method, **before** building the event, add:
 
 ```ts
     if (this.#boundTerminal !== null) {
-      const rc = lib.symbols.ghostty_key_encoder_setopt_from_terminal(
+      // setopt_from_terminal is void per the C header — no rc to check.
+      lib.symbols.ghostty_key_encoder_setopt_from_terminal(
         this.#handle!, this.#boundTerminal._handle,
       );
-      if (rc !== 0) {
-        throw new GhosttyError(
-          "ghostty_key_encoder_setopt_from_terminal failed during encode",
-          { code: getResultCodeName(rc), functionName: "ghostty_key_encoder_setopt_from_terminal" },
-        );
-      }
     }
 ```
 
@@ -1722,15 +1736,10 @@ Add a public method:
 ```ts
   syncFromTerminal(terminal: Terminal): void {
     this.#assertOpen();
-    const rc = getLib().symbols.ghostty_key_encoder_setopt_from_terminal(
+    // setopt_from_terminal is void per the C header — no rc to check.
+    getLib().symbols.ghostty_key_encoder_setopt_from_terminal(
       this.#handle!, terminal._handle,
     );
-    if (rc !== 0) {
-      throw new GhosttyError(
-        "ghostty_key_encoder_setopt_from_terminal failed",
-        { code: getResultCodeName(rc), functionName: "ghostty_key_encoder_setopt_from_terminal" },
-      );
-    }
   }
 ```
 
@@ -1793,7 +1802,7 @@ Per `GhosttyKeyEncoderOptionValues` from generated.ts, the eight options are:
 - `MACOS_OPTION_AS_ALT` (6) — enum (we type as a string union)
 - `BACKARROW_KEY_MODE` (7) — enum (string union)
 
-For Pass 4, we expose the **first six** (the most commonly-needed for TUI driving). `MACOS_OPTION_AS_ALT` and `BACKARROW_KEY_MODE` are deferred to a future pass — they involve enums whose underlying numeric layout isn't documented in the C header we have, so we'd need a probe to verify. Note this in the PR description.
+For Pass 4, we expose all eight. `MACOS_OPTION_AS_ALT` is documented in the C header as a `GhosttyOptionAsAlt` enum (FALSE=0, TRUE=1, LEFT=2, RIGHT=3); `BACKARROW_KEY_MODE` is documented as a bool (false → backspace emits 0x7f, true → 0x08).
 
 - [ ] **Step 1: Write failing test**
 
@@ -1846,7 +1855,13 @@ export interface KeyEncoderOptions {
   altEscPrefix?: boolean;
   modifyOtherKeysState2?: boolean;
   kittyFlags?: number;     // u8 bitmask; see Kitty keyboard protocol
+  macosOptionAsAlt?: "false" | "true" | "left" | "right";  // GhosttyOptionAsAlt
+  backarrowKeyMode?: boolean;       // false=BS emits 0x7f, true=0x08
 }
+
+const OPTION_AS_ALT_VALUES = {
+  false: 0, true: 1, left: 2, right: 3,
+} as const;
 ```
 
 In the constructor, after `this.#handle = ...`, replace the `else if (opts.options)` branch with:
@@ -1863,25 +1878,20 @@ Add the `#applyOptions` private method:
   #applyOptions(o: KeyEncoderOptions): void {
     const lib = getLib();
     const O = GhosttyKeyEncoderOptionValues;
+    // ghostty_key_encoder_setopt is void per the C header — these helpers
+    // don't check rc.
     const setBool = (optId: number, value: boolean) => {
       const buf = new Uint8Array([value ? 1 : 0]);
-      const rc = lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
-      if (rc !== 0) {
-        throw new GhosttyError(
-          `ghostty_key_encoder_setopt failed for option ${optId}`,
-          { code: getResultCodeName(rc), functionName: "ghostty_key_encoder_setopt" },
-        );
-      }
+      lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
     };
     const setU8 = (optId: number, value: number) => {
       const buf = new Uint8Array([value & 0xff]);
-      const rc = lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
-      if (rc !== 0) {
-        throw new GhosttyError(
-          `ghostty_key_encoder_setopt failed for option ${optId}`,
-          { code: getResultCodeName(rc), functionName: "ghostty_key_encoder_setopt" },
-        );
-      }
+      lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
+    };
+    const setEnumI32 = (optId: number, value: number) => {
+      // GhosttyOptionAsAlt is enum-typed, passed by reference to its int value.
+      const buf = new Int32Array([value]);
+      lib.symbols.ghostty_key_encoder_setopt(this.#handle!, optId, ptr(buf));
     };
     if (o.cursorKeyMode !== undefined)         setBool(O.GHOSTTY_KEY_ENCODER_OPT_CURSOR_KEY_APPLICATION,    o.cursorKeyMode === "application");
     if (o.keypadKeyMode !== undefined)         setBool(O.GHOSTTY_KEY_ENCODER_OPT_KEYPAD_KEY_APPLICATION,    o.keypadKeyMode === "application");
@@ -1889,6 +1899,8 @@ Add the `#applyOptions` private method:
     if (o.altEscPrefix !== undefined)          setBool(O.GHOSTTY_KEY_ENCODER_OPT_ALT_ESC_PREFIX,            o.altEscPrefix);
     if (o.modifyOtherKeysState2 !== undefined) setBool(O.GHOSTTY_KEY_ENCODER_OPT_MODIFY_OTHER_KEYS_STATE_2, o.modifyOtherKeysState2);
     if (o.kittyFlags !== undefined)            setU8(O.GHOSTTY_KEY_ENCODER_OPT_KITTY_FLAGS,                 o.kittyFlags);
+    if (o.macosOptionAsAlt !== undefined)      setEnumI32(O.GHOSTTY_KEY_ENCODER_OPT_MACOS_OPTION_AS_ALT,    OPTION_AS_ALT_VALUES[o.macosOptionAsAlt]);
+    if (o.backarrowKeyMode !== undefined)      setBool(O.GHOSTTY_KEY_ENCODER_OPT_BACKARROW_KEY_MODE,        o.backarrowKeyMode);
   }
 ```
 
@@ -1916,18 +1928,17 @@ Expected: 3 pass / 0 fail.
 git add packages/libghostty-vt/src/key-encoder.ts packages/libghostty-vt/test/smoke/key-encoder.test.ts
 git commit -m "feat(pass-4): KeyEncoder standalone-mode options
 
-KeyEncoderOptions surface for callers without a Terminal binding.
-Six options wired via ghostty_key_encoder_setopt:
+KeyEncoderOptions surface for callers without a Terminal binding. All
+eight encoder options wired via ghostty_key_encoder_setopt (which is
+void per the C header — no rc check):
   - cursorKeyMode (DECCKM equivalent)
   - keypadKeyMode (DECNKM equivalent)
   - ignoreKeypadWithNumLock
   - altEscPrefix
   - modifyOtherKeysState2
   - kittyFlags (u8 bitmask)
-
-MACOS_OPTION_AS_ALT and BACKARROW_KEY_MODE deferred — both are enums
-whose numeric layout isn't documented in the headers we have; needs
-a probe before exposing.
+  - macosOptionAsAlt (GhosttyOptionAsAlt enum: false/true/left/right)
+  - backarrowKeyMode (bool: false=BS emits 0x7f, true=0x08)
 
 [your Co-Authored-By]
 "
@@ -2268,8 +2279,9 @@ Add a new section above `## [0.3.0]`:
 
 ### Notes
 
-- `MACOS_OPTION_AS_ALT` and `BACKARROW_KEY_MODE` encoder options
-  remain unexposed pending a probe of their numeric ABI.
+- All eight `ghostty_key_encoder_setopt` options are surfaced via
+  `KeyEncoderOptions`. Mouse encoding, paste/OSC 52, and IME
+  composition remain explicitly out of Pass 4 scope.
 ```
 
 - [ ] **Step 3: Commit**
