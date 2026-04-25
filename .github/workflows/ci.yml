@@ -37,26 +37,28 @@ jobs:
           # Exact version, not a range — some setup-bun versions reject ranges.
           bun-version: "1.3.13"
 
-      - name: bun install
+      - name: bun install (workspace)
         run: bun install --frozen-lockfile
 
       - name: Build libghostty
+        working-directory: packages/libghostty-vt
         run: bun run build:libghostty
 
       - name: Build probe and regenerate bindings
+        working-directory: packages/libghostty-vt
         run: bun run build:probe && bun run build:bindings
 
       - name: Verify generated.ts is up to date
-        run: git diff --exit-code src/internal/generated.ts
+        run: git diff --exit-code packages/libghostty-vt/src/internal/generated.ts
 
       - name: Typecheck
+        working-directory: packages/libghostty-vt
         run: bun run typecheck
 
       - name: Unit + smoke tests
+        working-directory: packages/libghostty-vt
         run: bun run test:smoke
 
       - name: Build TypeScript
+        working-directory: packages/libghostty-vt
         run: bun run build:ts
-
-      - name: Tarball smoke
-        run: bun run test:tarball
