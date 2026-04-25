@@ -74,7 +74,11 @@ function drawBox(parts: string[], box: Box, title: string): void {
 }
 
 function drawNethackContent(parts: string[], box: Box, screenAnsi: string): void {
-  const lines = screenAnsi.split("\n");
+  // libghostty emits rows separated by "\r\n"; splitting on "\n" leaves a
+  // trailing "\r" on each row. Writing that "\r" inline jumps the cursor
+  // back to column 1, so any subsequent padding/margin writes clobber the
+  // left pane border and the start of the line. Strip them.
+  const lines = screenAnsi.split("\n").map((l) => l.replace(/\r/g, ""));
   // Layout reserves 1 cell of horizontal padding on each side inside the box,
   // so content occupies cols [box.col+2 .. box.col+box.cols-3]. The margin
   // cells (box.col+1 and box.col+box.cols-2) are always blank.

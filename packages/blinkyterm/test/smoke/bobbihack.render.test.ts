@@ -46,6 +46,19 @@ test("render places NetHack content row by row at the right offsets", () => {
   expect(out).toContain("\x1b[2;2H");
 });
 
+test("render strips CR so trailing \\r in toAnsi() rows doesn't clobber the left border", () => {
+  // libghostty separates rows with "\r\n"; splitting on "\n" leaves the
+  // "\r" trailing each line. A naive render sends that "\r" through to
+  // the host terminal, jumping the cursor to column 1 and letting
+  // subsequent padding overwrite the left pane border.
+  let s = initSide();
+  s = onChildFrame(s, frame("ABCDEFG\r\nHIJKLMN\r"));
+  const out = render(s);
+  expect(out).toContain("ABCDEFG");
+  expect(out).toContain("HIJKLMN");
+  expect(out).not.toContain("\r");
+});
+
 test("render shows current turn streaming text in live area", () => {
   let s = initSide();
   s = onTurnStart(s, { turn: 7, frameReason: "cellChange" });
