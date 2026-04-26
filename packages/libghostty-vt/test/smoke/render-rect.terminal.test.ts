@@ -47,16 +47,21 @@ test("Terminal.renderToAnsiRect picks up resize", () => {
   ).not.toThrow();
 });
 
-test("Terminal.close disposes cached RenderState", () => {
+test("Terminal.renderToAnsiRect picks up many sequential writes", () => {
+  // Regression: an earlier implementation cached one RenderState and reused
+  // it across calls; under a real pty-driven Terminal, ghostty_render_state_update
+  // returned success but the cell grid stayed frozen on the first frame.
+  // Now the convenience method allocates fresh per call. This test proves the
+  // sequence is genuinely fresh by hashing successive rect renders after each
+  // write and asserting they all differ.
   const term = new Terminal({ cols: 4, rows: 2 });
-  // Trigger cache allocation
-  term.renderToAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 });
-  // Close the terminal
-  term.close();
-  // Subsequent calls throw
-  expect(() =>
-    term.renderToAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 }),
-  ).toThrow(/closed/);
+  const seen = new Set<string>();
+  for (const ch of ["A", "B", "C", "D", "E", "F", "G", "H"]) {
+    writeStr(term, ch);
+    seen.add(term.renderToAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 }));
+  }
+  // Eight writes → eight distinct rendered strings (cell content differs each time).
+  expect(seen.size).toBe(8);
 });
 
 test("Terminal.renderToAnsiRect throws UseAfterCloseError after close", () => {

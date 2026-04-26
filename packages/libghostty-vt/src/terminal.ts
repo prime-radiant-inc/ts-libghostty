@@ -165,12 +165,6 @@ export class Terminal {
   // from inside a callback. Spec §5.4 + Pass-2 plan "Concurrency and re-entry".
   #inCallback = false;
 
-  // Cached RenderState for the convenience `renderToAnsiRect` method. Lazily
-  // allocated on first call; disposed in close() BEFORE the Terminal handle is
-  // freed (libghostty's render-state handle is derived from the Terminal handle,
-  // so disposal must happen first).
-  #cachedRenderState: RenderState | null = null;
-
   constructor(opts: TerminalOptions) {
     const fn = "Terminal.constructor";
     // cols/rows are uint16_t per ABI §4 + §11 (struct field types). They must
@@ -347,14 +341,6 @@ export class Terminal {
   close(): void {
     this.#assertNotInCallback("close");
     if (this.#handle === null) return;
-
-    // Pass 4: dispose the cached RenderState BEFORE the Terminal handle is
-    // freed so libghostty's render-state handle (which is derived from the
-    // Terminal handle) is released first.
-    if (this.#cachedRenderState !== null) {
-      try { this.#cachedRenderState.close(); } catch {}
-      this.#cachedRenderState = null;
-    }
 
     const lib = getLib();
     const h = this.#handle;
@@ -826,10 +812,7 @@ export class Terminal {
 
   /**
    * Render this Terminal's current state as ANSI bytes that paint into
-   * `dest`. Convenience over `RenderState.toAnsiRect`: maintains a
-   * cached `RenderState` per Terminal and `update()`s it on every call,
-   * so the rendered content always reflects the Terminal's current
-   * state (including after resize / vtWrite).
+   * `dest`. Convenience over `RenderState.toAnsiRect`.
    *
    * Throws `RectSizeMismatch` if `dest.cols`/`dest.rows` don't equal
    * `this.snapshot().cols`/`rows`. Throws `UseAfterCloseError` if the
@@ -838,14 +821,24 @@ export class Terminal {
    * For consumers that want to manage the RenderState explicitly
    * (e.g. for diff rendering later), use
    * `new RenderState(); state.update(term); state.toAnsiRect(...)`.
+   *
+   * Implementation note: an earlier version cached one RenderState per
+   * Terminal and called `update()` per invocation. That hits a libghostty
+   * bug where `ghostty_render_state_update` returns success but the
+   * cached cell grid stays frozen on the first frame's content (verified
+   * empirically against a real pty-driven Terminal). Until the upstream
+   * caching path is fixed, we allocate a fresh RenderState per call —
+   * cheap (one FFI handle alloc) and always correct.
    */
   renderToAnsiRect(dest: RenderRect, opts?: RectRenderOptions): string {
     this.#assertOpen();
-    if (this.#cachedRenderState === null) {
-      this.#cachedRenderState = new RenderState();
+    const rs = new RenderState();
+    try {
+      rs.update(this);
+      return rs.toAnsiRect(dest, opts);
+    } finally {
+      rs.close();
     }
-    this.#cachedRenderState.update(this);
-    return this.#cachedRenderState.toAnsiRect(dest, opts);
   }
 
   /** Map a coordinateSpace string to its GhosttyPointTag numeric value. */
