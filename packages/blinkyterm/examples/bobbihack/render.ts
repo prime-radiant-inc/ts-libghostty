@@ -10,6 +10,12 @@ const goto = (row: number, col: number) => `${ESC}${row};${col}H`;
 
 const TL = "┌", TR = "┐", BL = "└", BR = "┘", H = "─", V = "│";
 
+// Per-pane border colors. Cyan for the NetHack pane (the "screen"),
+// magenta for the agent pane (the "thinker"). Tweak here if the
+// palette needs adjusting.
+const NETHACK_BORDER = `${ESC}36m`; // cyan
+const AGENT_BORDER = `${ESC}35m`;   // magenta
+
 /**
  * Compose the bobbihack TUI as ANSI bytes.
  *
@@ -33,7 +39,7 @@ export function render(state: ViewState, nethackContent: string): string {
 
   // Agent pane
   const agentTitle = currentTurnTitle(state);
-  drawBox(parts, state.layout.thinking, agentTitle);
+  drawBox(parts, state.layout.thinking, agentTitle, AGENT_BORDER);
   drawAgentContent(parts, state.layout.thinking, state);
 
   if (state.errorBanner !== null) {
@@ -59,23 +65,27 @@ function renderTooSmall(state: ViewState): string {
   ].join("");
 }
 
-function drawBox(parts: string[], box: Box, title: string): void {
+function drawBox(parts: string[], box: Box, title: string, color: string): void {
   parts.push(goto(box.row, box.col));
+  parts.push(color);
   const topInner = H.repeat(Math.max(0, box.cols - 2));
   const t = ` ${title.trim()} `;
   const fitted = t.length <= topInner.length ? t : t.slice(0, topInner.length);
   const top = TL + fitted + topInner.slice(fitted.length) + TR;
   parts.push(top);
+  parts.push(RESET);
 
   for (let r = 1; r < box.rows - 1; r++) {
     parts.push(goto(box.row + r, box.col));
-    parts.push(V);
+    parts.push(color + V + RESET);
     parts.push(goto(box.row + r, box.col + box.cols - 1));
-    parts.push(V);
+    parts.push(color + V + RESET);
   }
 
   parts.push(goto(box.row + box.rows - 1, box.col));
+  parts.push(color);
   parts.push(BL + H.repeat(Math.max(0, box.cols - 2)) + BR);
+  parts.push(RESET);
 }
 
 /**
@@ -99,7 +109,7 @@ function drawNethackPane(
   const recent = lastTurn !== undefined
     ? ` — turn ${lastTurn.number} → ${lastTurn.decision}`
     : "";
-  drawBox(parts, box, ` NetHack — pid=${pid}${recent} `);
+  drawBox(parts, box, ` NetHack — pid=${pid}${recent} `, NETHACK_BORDER);
 
   const innerRows = box.rows - 2;
   for (let i = 0; i < innerRows; i++) {
@@ -121,7 +131,10 @@ function currentTurnTitle(state: ViewState): string {
 function drawAgentContent(parts: string[], box: Box, state: ViewState): void {
   const innerCols = box.cols - 2;
   const innerRows = box.rows - 2;
-  const liveRows = Math.max(1, Math.min(8, Math.floor(innerRows / 3)));
+  // Top third = live thinking, bottom two thirds = history. The
+  // divider line takes one row from the history section so the live
+  // area gets exactly floor(innerRows/3) lines.
+  const liveRows = Math.max(1, Math.floor(innerRows / 3));
   const dividerRow = box.row + 1 + liveRows;
   const historyStartRow = dividerRow + 1;
   const historyRows = Math.max(0, innerRows - liveRows - 1);
@@ -138,7 +151,7 @@ function drawAgentContent(parts: string[], box: Box, state: ViewState): void {
   }
 
   parts.push(goto(dividerRow, box.col + 1));
-  parts.push(H.repeat(innerCols));
+  parts.push(AGENT_BORDER + H.repeat(innerCols) + RESET);
 
   for (let i = 0; i < historyRows; i++) {
     const rec = state.history[i];

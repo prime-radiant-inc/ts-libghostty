@@ -1,4 +1,6 @@
 #!/usr/bin/env bun
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 import { Runner } from "../../src/index";
 import { hasNethack, nethackEnv } from "../shared/nethack-setup";
 import { detectPrompt } from "../shared/prompt-detect";
@@ -192,20 +194,38 @@ async function main(): Promise<void> {
   console.log(`[bobbihack] done; turns=${turnCounter}`);
 }
 
+function loadSystemPrompt(): string | undefined {
+  // Tunable system prompt for the AnthropicAgent. Lives next to main.ts so
+  // it's editable without touching code; missing/unreadable file falls
+  // through to the agent's compiled-in default.
+  try {
+    return readFileSync(join(import.meta.dir, "system-prompt.txt"), "utf8");
+  } catch {
+    return undefined;
+  }
+}
+
 function pickAgent(): Agent {
   const choice = process.env.BOBBIHACK_AGENT;
   const model = process.env.BOBBIHACK_MODEL;
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (choice === "mock") return new MockAgent();
+  const systemPrompt = loadSystemPrompt();
+  const buildAnthropic = (key: string): AnthropicAgent => {
+    const opts: { apiKey: string; model?: string; systemPrompt?: string } = { apiKey: key };
+    if (model !== undefined) opts.model = model;
+    if (systemPrompt !== undefined) opts.systemPrompt = systemPrompt;
+    return new AnthropicAgent(opts);
+  };
   if (choice === "anthropic") {
     if (apiKey === undefined || apiKey === "") {
       console.error("[bobbihack] BOBBIHACK_AGENT=anthropic requires ANTHROPIC_API_KEY");
       process.exit(1);
     }
-    return new AnthropicAgent(model === undefined ? { apiKey } : { apiKey, model });
+    return buildAnthropic(apiKey);
   }
   if (apiKey !== undefined && apiKey !== "") {
-    return new AnthropicAgent(model === undefined ? { apiKey } : { apiKey, model });
+    return buildAnthropic(apiKey);
   }
   return new MockAgent();
 }
