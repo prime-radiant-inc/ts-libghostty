@@ -4,6 +4,40 @@ All notable changes to `ts-libghostty-vt` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] — 2026-04-25
+
+### Added
+
+- `RenderState.toAnsiRect(dest, opts)` — render the cached cell grid as
+  ANSI bytes that paint into a destination rectangle. Pure transformation;
+  consumer controls when `update()` runs. Walks the cell grid and emits
+  its own goto + reset-prefixed SGR + char output, so the embedded
+  program's own escape sequences are consumed by the parser and never
+  appear in the output. The foundation for tmux-class composition.
+- `RenderState.cursorInRect(dest)` — translate the viewport cursor into
+  1-based host coordinates relative to `dest`, returning `null` when
+  the cursor is unset.
+- `RenderState.size()` — read the source dimensions captured at the
+  most recent `update()`.
+- `Terminal.renderToAnsiRect(dest, opts)` — convenience that maintains
+  a cached `RenderState` per Terminal and `update()`s it on every call.
+  The cached state is disposed by `Terminal.close()`.
+- `RectSizeMismatch` error — thrown when destination dimensions don't
+  equal source dimensions. New `"rect_size_mismatch"` member added to
+  the `GhosttyErrorCode` union.
+- New types: `RenderRect`, `RectRenderOptions`, `RectCursor`.
+
+### Changed
+
+- `Terminal.close()` now disposes a cached `RenderState` (allocated by
+  the first `renderToAnsiRect` call) before freeing the Terminal handle.
+
+### Notes
+
+- `colorDepth` option supports `"preserve"` (default) and `"none"`.
+  Color downsampling between depths and diff rendering are deferred
+  to a future release.
+
 ## [0.4.0] - 2026-04-24
 
 ### Added
