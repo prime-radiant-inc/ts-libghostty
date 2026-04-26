@@ -4,6 +4,38 @@ All notable changes to `ts-libghostty-vt` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] — 2026-04-25
+
+### Changed
+
+- `Terminal.renderToAnsiRect` JSDoc rewritten to accurately describe its
+  behavior. The 0.5.0 entry described it as "maintains a cached
+  `RenderState` per Terminal"; commit `44ee3cd` switched to
+  allocate-fresh-per-call to dodge a multi-consumer collision in
+  libghostty's per-row dirty tracking, but the JSDoc and CHANGELOG
+  weren't updated to match. The new JSDoc explains the constraint and
+  steers consumers with a `Runner` toward `runner.renderState.toAnsiRect()`
+  for the upstream-canonical "one cached `RenderState` per `Terminal`,
+  used forever" pattern. No public API change.
+- `RenderState.update` JSDoc now documents the multi-consumer
+  constraint: when more than one `RenderState` updates against the
+  same `Terminal` between writes, only the first updater each cycle
+  copies fresh cells; subsequent updaters see "no dirty rows" and skip
+  the copy.
+
+### Added
+
+- Multi-consumer collision contract test in
+  `test/smoke/render-state.test.ts`. Pins libghostty's
+  "second-updater-loses" semantics so a future Ghostty pin that
+  changes consumption flags a regression in this binding's test
+  suite.
+
+### Notes
+
+Root-cause analysis at
+`docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md`.
+
 ## [0.5.0] — 2026-04-25
 
 ### Added
