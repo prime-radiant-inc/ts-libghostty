@@ -64,15 +64,22 @@ program's escape bytes touch the host.
 
 ```
 packages/blinkyterm/examples/bobbihack/
-  main.ts          MODIFIED — call runner.terminal.renderToAnsiRect per paint
-  render.ts        MODIFIED — accept nethackContent param; drop sanitization
-  state.ts         MODIFIED — drop nethack.screenAnsi field
-  state.test.ts    MODIFIED — drop the test that asserted screenAnsi update
-  render.test.ts   MODIFIED — drop \r / CSI tests; update content placement test
+  main.ts                                  MODIFIED — call runner.terminal.renderToAnsiRect per paint
+  render.ts                                MODIFIED — accept nethackContent param; drop sanitization
+  state.ts                                 MODIFIED — drop nethack.screenAnsi field
+
+packages/blinkyterm/test/smoke/
+  bobbihack.render.test.ts                 MODIFIED — drop \r / CSI tests; update content placement test for new render signature
+  bobbihack.state.test.ts                  MODIFIED — drop the test that asserted screenAnsi update on onChildFrame
 ```
 
-No new files. ~150 LOC removed, ~30 added, 4 tests deleted, 2
-adapted.
+**Untouched:** `agent.ts`, `agents/mock.ts`, `agents/anthropic.ts`,
+`events.ts`, `layout.ts`, `bobbihack.layout.test.ts`,
+`bobbihack.mock.test.ts`, `bobbihack.events.test.ts`,
+`bobbihack.anthropic.test.ts`. The agent's input still flows through
+`frame.snapshot.toAnsi()` (see §2 for the naming-collision warning).
+
+No new files. ~150 LOC removed, ~30 added, 4 tests deleted, 2 adapted.
 
 ## 2. Two consumers of screen state
 
@@ -98,6 +105,21 @@ The semantic distinction is clean:
   for LLMs to read.
 - The spectator UI reads the *live* Terminal — refreshed every paint,
   composed into a rectangular host region.
+
+**⚠ Naming-collision warning for implementers.** Two fields are named
+`screenAnsi`, and Pass 6 removes one but keeps the other:
+
+| Field | Source | Pass 6 action |
+|---|---|---|
+| `state.nethack.screenAnsi` | `state.ts` (NethackPane) | **DELETE** |
+| `AgentInput.screenAnsi` | `agent.ts` | **KEEP** — agents still receive this |
+
+A naive global rename or "drop all `screenAnsi`" sweep will break the
+agent loop. Specifically: `main.ts` line ~125 passes
+`screenAnsi: frame.snapshot.toAnsi()` into `agent.decide(...)`. That
+call site stays. `agents/anthropic.ts` reads `input.screenAnsi`.
+That stays. The only `screenAnsi` removed is the one on
+`NethackPane`.
 
 ## 3. Data flow change
 
@@ -182,9 +204,16 @@ function drawNethackPane(
 ```
 
 **Deletions:**
-- `sanitizeForInline()` helper (no longer needed — renderToAnsiRect
-  output is parser-clean per Verity's integration tests).
-- The line-by-line content loop with `stripAnsi` length math.
+- `sanitizeForInline()` helper.
+- `stripAnsi()` helper (was only used by `sanitizeForInline` and the
+  per-cell length math; both go away).
+- The line-by-line content loop in the old `drawNethackContent`.
+
+The `goto()` helper at the top of `render.ts` is unchanged — it's
+shared with the agent pane drawing.
+
+`renderToAnsiRect` output is parser-clean per Verity's integration
+tests in libghostty-vt; bobbihack doesn't need belt-and-suspenders.
 
 ## 5. `main.ts` changes
 
@@ -216,12 +245,17 @@ const requestPaint = (): void => {
 };
 ```
 
-The bare `try/catch` is intentional — `renderToAnsiRect` has two
-known throw conditions (`UseAfterCloseError` if the Terminal is
-disposed, `RectSizeMismatch` if the size races a layout change), and
-the right behavior in both cases is "render an empty pane this
-frame, recover next frame." We don't want a paint to crash the
-program over a transient race.
+**Why the bare `try/catch`:** the only condition that can fire on
+bobbihack as wired today is `UseAfterCloseError` during teardown — a
+paint that's already debounced when `runner[Symbol.asyncDispose]()`
+runs in the `finally` block. Bobbihack does NOT call
+`runner.resize()` on SIGWINCH (it only updates the host-side layout;
+NetHack's pty stays at 80×24 for the lifetime of the run), so the
+strict-size-match `RectSizeMismatch` cannot fire in practice. The
+`try/catch` is belt-and-suspenders that also guards future code that
+might add a `runner.resize()` call. Worst case: one frame of empty
+NetHack pane immediately before bobbihack restores the host terminal
+and exits.
 
 ## 6. `state.ts` changes
 
@@ -251,21 +285,27 @@ the `screenAnsi` write.
 
 ## 7. Tests
 
-**`render.test.ts` updates:**
-- Existing test cases that pass an empty `frame()` for setup → still
-  call them with empty `nethackContent: ""`, assert structure of the
-  borders / agent pane unchanged.
-- Existing test "render places NetHack content row by row at the
-  right offsets" → adapt: pass a synthetic `nethackContent` like
-  `"\x1b[2;3HABCD"` and assert it appears verbatim in the output.
-- **Delete** the two regression tests added in commits `c434481`
-  and `1f4fd06` that asserted on the `\r` strip and CSI strip — those
-  guard a defense that no longer exists.
+**`packages/blinkyterm/test/smoke/bobbihack.render.test.ts` updates:**
+- All `render(s)` calls (single-arg) → `render(s, "")` (two-arg) for
+  tests that don't care about the NetHack content.
+- The "render places NetHack content row by row at the right offsets"
+  test currently calls `onChildFrame(s, frame("ABCDEFG\nHIJKLMN"))`
+  to populate `state.nethack.screenAnsi`. With Pass 6, that field
+  doesn't exist; instead, pass a synthetic `nethackContent` directly:
+  `render(s, "\x1b[2;3HABCDEFG\x1b[3;3HHIJKLMN")` and assert those
+  substrings appear verbatim in the output. The cursor-position
+  assertion (`\x1b[2;2H`) becomes "the test passes through whatever
+  positioned content we give it."
+- **Delete** the two regression tests at the end of the file
+  (`render strips CR…` and `render strips non-SGR CSI sequences…`,
+  added in commits `c434481` and `1f4fd06`) — they guard a defense
+  that no longer exists.
 
-**`state.test.ts` updates:**
+**`packages/blinkyterm/test/smoke/bobbihack.state.test.ts` updates:**
 - **Delete** the `onChildFrame updates the NetHack pane content` test.
-- Other state tests are unaffected (turn lifecycle, history ring,
-  resize, exit).
+  Other state tests (initial state, turn lifecycle, history ring,
+  onResize, onChildExited, the sticky-currentTurn behavior added
+  earlier) are unaffected.
 
 **No new tests for `renderToAnsiRect` itself** — Pass 5's
 `render-rect.terminal.test.ts` and `render-rect.integration.test.ts`
