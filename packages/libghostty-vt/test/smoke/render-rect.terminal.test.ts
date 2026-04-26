@@ -66,3 +66,10 @@ test("Terminal.renderToAnsiRect throws UseAfterCloseError after close", () => {
     term.renderToAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 }),
   ).toThrow(/closed/);
 });
+
+test("public exports include the new render-rect surface", async () => {
+  const mod = await import("../../src/index");
+  expect(typeof mod.RectSizeMismatch).toBe("function");
+  // Type-only exports don't appear at runtime; this test guards the
+  // value-shaped exports only. Types are checked at compile time.
+});

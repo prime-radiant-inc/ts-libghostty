@@ -7,6 +7,7 @@ export {
   UnsupportedPlatformError,
   LibraryCompatibilityError,
   UseAfterCloseError,
+  RectSizeMismatch,
 } from "./errors";
 export type { GhosttyErrorCode } from "./errors";
 export {
@@ -35,6 +36,9 @@ export type {
   ViewportCursor,
   RenderRow,
   RenderCell,
+  RenderRect,
+  RectRenderOptions,
+  RectCursor,
 } from "./types";
 export { pinnedCommit } from "./internal/generated";
 export { encodeFocus } from "./focus";
