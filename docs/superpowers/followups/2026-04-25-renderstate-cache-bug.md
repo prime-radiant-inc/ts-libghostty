@@ -3,7 +3,68 @@
 **For:** the Next Bob
 **From:** Sancho (Bob 811efc4e)
 **Date:** 2026-04-25
-**Status:** workaround in place at `44ee3cd`; root cause unknown
+**Status:** **RESOLVED** 2026-04-25 by Dirk (Bob `1dffecf5`) — see resolution below
+
+---
+
+## Resolution (2026-04-25)
+
+Investigation showed this is a **multi-consumer collision in libghostty's
+per-row dirty tracking**, not a single-`RenderState` cache invalidation:
+libghostty's `RenderState.update()` consumes Terminal-side per-row dirty
+bits as a single-consumer marker. When two `RenderState`s update the
+same `Terminal` between writes, only the first updater each cycle
+copies fresh cells. **libghostty is working as designed** — upstream's
+own renderer caches a single `RenderState` per `Terminal` for its
+lifetime (`vendor/ghostty/src/renderer/generic.zig:223`).
+
+The 0.5.0 binding inadvertently created a multi-consumer scenario by
+caching a `RenderState` inside `Terminal.renderToAnsiRect` while
+consumers (e.g. `Runner`) had their own. The current allocate-fresh
+workaround at `44ee3cd` is structurally correct and stays in place.
+
+Shipped in **`libghostty-vt@0.5.1`** (commits `7bce614`, `162a5fb`,
+`f4890a9`):
+
+- Corrected JSDoc on `Terminal.renderToAnsiRect` and `RenderState.update`
+  explaining the multi-consumer constraint and steering `Runner`-having
+  consumers toward `runner.renderState.toAnsiRect()` (single-consumer
+  pattern, matches upstream).
+- Multi-consumer contract test in `test/smoke/render-state.test.ts`
+  pinning the second-updater-loses semantics (constraint canary for
+  future Ghostty pin changes).
+- Bobbihack switched from `Terminal.renderToAnsiRect` to
+  `runner.renderState.toAnsiRect` — demonstrates the canonical pattern
+  and eliminates per-paint allocation.
+
+Full root-cause analysis at
+`docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md`.
+
+**Hypothesis disposition:** H1 (dirty interference) was the mechanism;
+H3 (multi-RS collision) was the symptom-level framing. H2 and H4
+refuted by Zig source reading and probes.
+
+**Bonus follow-up disposition:**
+- B1 (probe scripts) — diagnostic probe at
+  `packages/libghostty-vt/.tmp/probe-cache.ts` is gitignored; left
+  in place for future debugging. Sancho's mentioned
+  `probe-render-cache.ts`/`probe-no-cache.ts` were not recovered;
+  the new `.tmp/probe-cache.ts` covers the same ground (Probes A/B/C).
+- B2 (augment Pass 5 test) — handled: existing 8-writes test stays
+  as `Terminal.renderToAnsiRect`'s contract test; the new multi-RS
+  test in `render-state.test.ts` is the constraint canary.
+- B3 (`close()` cache disposal) — moot: `Terminal.renderToAnsiRect`
+  no longer caches an RS.
+- B4 (other consumers) — answered: the `Runner` is "first updater"
+  in production; anything querying after it loses. The bobbihack
+  refactor sidesteps this by sharing the Runner's RS.
+
+— Dirk
+
+---
+
+## Original handoff (preserved for reference)
+
 
 ---
 
