@@ -29,7 +29,7 @@ export function render(state: ViewState, nethackContent: string): string {
   parts.push(RESET);
 
   // NetHack pane
-  drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
+  drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent, state.history[0]);
 
   // Agent pane
   const agentTitle = currentTurnTitle(state);
@@ -92,8 +92,14 @@ function drawNethackPane(
   box: Box,
   pid: number,
   nethackContent: string,
+  lastTurn: TurnRecord | undefined,
 ): void {
-  drawBox(parts, box, ` NetHack — pid=${pid} `);
+  // Surface the most recent committed action in the title so movement
+  // is visible at a glance even when @ bounces inside a small room.
+  const recent = lastTurn !== undefined
+    ? ` — turn ${lastTurn.number} → ${lastTurn.decision}`
+    : "";
+  drawBox(parts, box, ` NetHack — pid=${pid}${recent} `);
 
   const innerRows = box.rows - 2;
   for (let i = 0; i < innerRows; i++) {

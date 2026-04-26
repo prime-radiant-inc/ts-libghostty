@@ -125,7 +125,18 @@ async function main(): Promise<void> {
       if (ac.signal.aborted) {
         if (!cleanQuitSent && !runner.exited) {
           cleanQuitSent = true;
-          await runner.sendText("#quit\r y\r y\r");
+          // Robust quit dance — works regardless of NetHack's current prompt state:
+          //   ESC ESC  → cancel any in-progress selection / extended command
+          //   Space    → dismiss --More-- if up (no-op otherwise)
+          //   #quit\r  → enter extended command "quit"
+          //   y\r y\r  → confirm "Really quit?" and any follow-up confirmation
+          await runner.sendText("\x1b\x1b #quit\r y\r y\r");
+          const r = await runner.waitExit({ timeoutMs: 3000 });
+          if (!r.exited && !runner.exited) {
+            // NetHack still alive (stuck on an unexpected prompt or wedged).
+            // Escalate to SIGTERM-then-SIGKILL so we don't hang the alt-screen.
+            await runner.terminate({ thenAfterMs: 1000 });
+          }
         }
         continue;
       }
