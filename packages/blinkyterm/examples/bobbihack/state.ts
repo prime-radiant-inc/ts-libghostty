@@ -6,7 +6,6 @@ const DEFAULT_HISTORY_CAPACITY = 200;
 const SUMMARY_LEN = 60;
 
 export interface NethackPane {
-  readonly screenAnsi: string;
   readonly pid: number;
   readonly bellsCumulative: number;
   readonly title: string;
@@ -52,7 +51,6 @@ export function initialState(args: InitArgs): ViewState {
     layout: layout(args.hostCols, args.hostRows),
     status: "running",
     nethack: {
-      screenAnsi: "",
       pid: args.pid,
       bellsCumulative: 0,
       title: "",
@@ -70,7 +68,6 @@ export function onChildFrame(state: ViewState, frame: Frame): ViewState {
     ...state,
     nethack: {
       ...state.nethack,
-      screenAnsi: frame.snapshot.toAnsi(),
       bellsCumulative: state.nethack.bellsCumulative + frame.snapshot.bellsSinceLast,
       title: frame.snapshot.title || state.nethack.title,
     },

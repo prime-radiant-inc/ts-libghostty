@@ -3,29 +3,10 @@ import {
   initialState,
   onAgentEvent,
   onChildExited,
-  onChildFrame,
   onResize,
   onTurnEnd,
   onTurnStart,
 } from "../../examples/bobbihack/state";
-import type { Frame } from "../../src/types";
-
-const fakeSnapshot = (text: string) => ({
-  text,
-  title: "",
-  cursor: { x: 0, y: 0, visible: true },
-  bellsSinceLast: 0,
-  titleChangesSinceLast: [],
-  toAnsi: () => text,
-  toHtml: () => `<pre>${text}</pre>`,
-  toVt: () => text,
-  cellAt: () => null,
-});
-
-const fakeFrame = (text: string, reason = "cellChange" as const): Frame => ({
-  reason,
-  snapshot: fakeSnapshot(text) as Frame["snapshot"],
-});
 
 test("initialState has empty pane and history", () => {
   const s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 999 });
@@ -34,12 +15,6 @@ test("initialState has empty pane and history", () => {
   expect(s.currentTurn).toBeNull();
   expect(s.agentLabel).toBe("mock");
   expect(s.layout.kind).toBe("side");
-});
-
-test("onChildFrame updates the NetHack pane content", () => {
-  const s0 = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
-  const s1 = onChildFrame(s0, fakeFrame("hello"));
-  expect(s1.nethack.screenAnsi).toBe("hello");
 });
 
 test("onTurnStart sets currentTurn with empty streamingText", () => {

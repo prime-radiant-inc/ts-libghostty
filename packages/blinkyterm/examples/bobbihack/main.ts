@@ -60,7 +60,22 @@ async function main(): Promise<void> {
     if (writePending !== null) return;
     writePending = setImmediate(() => {
       writePending = null;
-      process.stdout.write(render(state));
+      let nethackContent = "";
+      if (state.layout.kind !== "tooSmall") {
+        const box = state.layout.nethack;
+        try {
+          nethackContent = runner.terminal.renderToAnsiRect({
+            row: box.row + 1,
+            col: box.col + 2,
+            cols: 80,
+            rows: 24,
+          });
+        } catch {
+          // Runner disposed mid-paint, or strict size match failed.
+          // Render with empty pane; next paint catches up.
+        }
+      }
+      process.stdout.write(render(state, nethackContent));
     });
   };
 
