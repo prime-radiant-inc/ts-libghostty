@@ -48,7 +48,7 @@ EOF
 bun install --silent
 
 cat > run.ts <<'EOF'
-import { Terminal, Formatter, RenderState, encodeFocus, KeyEncoder } from "libghostty-vt";
+import { Terminal, Formatter, RenderState, RectSizeMismatch, encodeFocus, KeyEncoder } from "libghostty-vt";
 
 // Pass 1 — Terminal + Formatter
 using term = new Terminal({ cols: 10, rows: 3 });
@@ -93,6 +93,36 @@ if (focusBytes[0] !== 0x1B) {
     process.exit(1);
   }
   console.log("KeyEncoder smoke OK");
+}
+
+// Pass 4 / 0.4.0 surface — render-rect
+{
+  using t = new Terminal({ cols: 4, rows: 2 });
+  t.vtWrite(new TextEncoder().encode("AB"));
+
+  // Convenience method
+  const out = t.renderToAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 });
+  if (!out.includes("AB")) throw new Error("renderToAnsiRect missing content");
+
+  // Primitive path
+  using rrs = new RenderState();
+  rrs.update(t);
+  const primitive = rrs.toAnsiRect({ row: 1, col: 1, cols: 4, rows: 2 });
+  if (out !== primitive) {
+    throw new Error("convenience and primitive paths diverged");
+  }
+
+  // Cursor helper
+  const c = rrs.cursorInRect({ row: 1, col: 1, cols: 4, rows: 2 });
+  if (c === null) throw new Error("cursorInRect returned null unexpectedly");
+
+  // Error path
+  let threw = false;
+  try { rrs.toAnsiRect({ row: 1, col: 1, cols: 5, rows: 2 }); }
+  catch (e) { if (e instanceof RectSizeMismatch) threw = true; }
+  if (!threw) throw new Error("RectSizeMismatch not thrown on size mismatch");
+
+  console.log("render-rect smoke passed");
 }
 
 console.log("OK");
