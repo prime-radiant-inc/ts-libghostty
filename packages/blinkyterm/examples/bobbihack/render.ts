@@ -10,7 +10,18 @@ const goto = (row: number, col: number) => `${ESC}${row};${col}H`;
 
 const TL = "┌", TR = "┐", BL = "└", BR = "┘", H = "─", V = "│";
 
-export function render(state: ViewState): string {
+/**
+ * Compose the bobbihack TUI as ANSI bytes.
+ *
+ * `nethackContent` is the pre-positioned ANSI rendering of NetHack's pane,
+ * produced by `runner.terminal.renderToAnsiRect({...nethack-content-rect})`
+ * in main.ts. Its embedded goto sequences place each row at the right
+ * host coordinates already; render() just splices it in after drawing
+ * the pane border and clearing the 1-cell horizontal padding columns.
+ *
+ * Pass an empty string when there's no Runner yet or during teardown.
+ */
+export function render(state: ViewState, nethackContent: string): string {
   if (state.layout.kind === "tooSmall") return renderTooSmall(state);
 
   const parts: string[] = [];
@@ -18,15 +29,13 @@ export function render(state: ViewState): string {
   parts.push(RESET);
 
   // NetHack pane
-  drawBox(parts, state.layout.nethack, ` NetHack — pid=${state.nethack.pid} `);
-  drawNethackContent(parts, state.layout.nethack, state.nethack.screenAnsi);
+  drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
 
   // Agent pane
   const agentTitle = currentTurnTitle(state);
   drawBox(parts, state.layout.thinking, agentTitle);
   drawAgentContent(parts, state.layout.thinking, state);
 
-  // Error banner (if present) — appended below history, last-line in pane
   if (state.errorBanner !== null) {
     drawErrorBanner(parts, state.layout.thinking, state.errorBanner);
   }
@@ -51,16 +60,13 @@ function renderTooSmall(state: ViewState): string {
 }
 
 function drawBox(parts: string[], box: Box, title: string): void {
-  // Top
   parts.push(goto(box.row, box.col));
   const topInner = H.repeat(Math.max(0, box.cols - 2));
-  // overlay title at left, truncated to fit
   const t = ` ${title.trim()} `;
   const fitted = t.length <= topInner.length ? t : t.slice(0, topInner.length);
   const top = TL + fitted + topInner.slice(fitted.length) + TR;
   parts.push(top);
 
-  // Sides
   for (let r = 1; r < box.rows - 1; r++) {
     parts.push(goto(box.row + r, box.col));
     parts.push(V);
@@ -68,37 +74,36 @@ function drawBox(parts: string[], box: Box, title: string): void {
     parts.push(V);
   }
 
-  // Bottom
   parts.push(goto(box.row + box.rows - 1, box.col));
   parts.push(BL + H.repeat(Math.max(0, box.cols - 2)) + BR);
 }
 
-function drawNethackContent(parts: string[], box: Box, screenAnsi: string): void {
-  // libghostty emits rows separated by "\r\n" and may include cursor-control
-  // CSI sequences from the underlying program (e.g. NetHack appends
-  // "\x1b[20;10H" to position its cursor). Letting either reach the host
-  // terminal lets the cursor escape our pane and clobber borders or content
-  // elsewhere. Keep SGR (ends in 'm'); strip everything else.
-  const lines = screenAnsi.split("\n").map(sanitizeForInline);
-  // Layout reserves 1 cell of horizontal padding on each side inside the box,
-  // so content occupies cols [box.col+2 .. box.col+box.cols-3]. The margin
-  // cells (box.col+1 and box.col+box.cols-2) are always blank.
-  const NETHACK_HPAD = 1;
-  const contentCols = box.cols - 2 - 2 * NETHACK_HPAD;
+/**
+ * Draw the NetHack pane: border + title, blank the 1-cell horizontal padding
+ * columns, then splice in the pre-positioned nethackContent.
+ *
+ * The padding-column blanks are defensive — `renderToAnsiRect` only writes
+ * the 80×24 content area at the inner content cols, so if anything ever
+ * wrote into the padding cells, the next paint would still leave them dirty.
+ * A single space per row keeps them clean.
+ */
+function drawNethackPane(
+  parts: string[],
+  box: Box,
+  pid: number,
+  nethackContent: string,
+): void {
+  drawBox(parts, box, ` NetHack — pid=${pid} `);
+
   const innerRows = box.rows - 2;
   for (let i = 0; i < innerRows; i++) {
-    const line = lines[i] ?? "";
-    // Left margin cell
     parts.push(goto(box.row + 1 + i, box.col + 1));
-    parts.push(" ");
-    // Content
-    parts.push(line);
-    parts.push(RESET);
-    const visible = stripAnsi(line).length;
-    if (visible < contentCols) parts.push(" ".repeat(contentCols - visible));
-    // Right margin cell
-    parts.push(" ");
+    parts.push(" ");                                  // left padding cell
+    parts.push(goto(box.row + 1 + i, box.col + box.cols - 2));
+    parts.push(" ");                                  // right padding cell
   }
+
+  parts.push(nethackContent);
 }
 
 function currentTurnTitle(state: ViewState): string {
@@ -115,7 +120,6 @@ function drawAgentContent(parts: string[], box: Box, state: ViewState): void {
   const historyStartRow = dividerRow + 1;
   const historyRows = Math.max(0, innerRows - liveRows - 1);
 
-  // Live area
   const liveLines = wrapText(state.currentTurn?.streamingText ?? "", innerCols - 2);
   for (let i = 0; i < liveRows; i++) {
     parts.push(goto(box.row + 1 + i, box.col + 1));
@@ -127,11 +131,9 @@ function drawAgentContent(parts: string[], box: Box, state: ViewState): void {
     if (used < innerCols) parts.push(" ".repeat(innerCols - used));
   }
 
-  // Divider
   parts.push(goto(dividerRow, box.col + 1));
   parts.push(H.repeat(innerCols));
 
-  // History
   for (let i = 0; i < historyRows; i++) {
     const rec = state.history[i];
     parts.push(goto(historyStartRow + i, box.col + 1));
@@ -150,7 +152,7 @@ function drawErrorBanner(parts: string[], box: Box, banner: string): void {
   const lastRow = box.row + box.rows - 2;
   parts.push(goto(lastRow, box.col + 1));
   const trimmed = banner.length > innerCols ? banner.slice(0, innerCols) : banner;
-  parts.push(`${ESC}33m${trimmed}${RESET}`);  // yellow
+  parts.push(`${ESC}33m${trimmed}${RESET}`);
   if (trimmed.length < innerCols) parts.push(" ".repeat(innerCols - trimmed.length));
 }
 
@@ -179,22 +181,4 @@ function wrapText(text: string, width: number): string[] {
   }
   if (current !== "") lines.push(current);
   return lines;
-}
-
-function stripAnsi(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
-}
-
-/**
- * Make a line safe to splice inline into our rendered output. Strips
- * carriage returns and any CSI sequence that isn't SGR (`...m`). SGR
- * is preserved so colors and attributes survive. Cursor-positioning
- * sequences (e.g. `\x1b[20;10H`) and erases (`\x1b[K`) are stripped
- * because they would let the embedded program's cursor escape our
- * pane and clobber the host screen.
- */
-export function sanitizeForInline(s: string): string {
-  return s
-    .replace(/\r/g, "")
-    .replace(/\x1b\[[0-9;]*[a-ln-zA-Z]/g, ""); // CSI ending in any ASCII letter except 'm'
 }
