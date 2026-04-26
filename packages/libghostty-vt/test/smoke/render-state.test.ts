@@ -280,3 +280,36 @@ describe("RenderState alt-screen dirty=all", () => {
     expect(rs.dirty()).toBe("all");
   });
 });
+
+describe("RenderState multi-consumer collision (libghostty design constraint)", () => {
+  // libghostty's RenderState.update() consumes Terminal-side per-row dirty
+  // bits as a single-consumer marker (vendor/ghostty/src/terminal/render.zig:460-461).
+  // When two RenderStates update against the same Terminal between writes,
+  // only the first updater each cycle copies fresh cells. This test pins
+  // that constraint so a future Ghostty pin that changes consumption
+  // semantics flags a regression. See
+  // docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md.
+  test("second updater each cycle sees stale cells; first updater stays fresh", () => {
+    using term = new Terminal({ cols: 4, rows: 2 });
+    using first = new RenderState();
+    using second = new RenderState();
+    const enc = new TextEncoder();
+    const rect = { row: 1, col: 1, cols: 4, rows: 2 };
+
+    const firstSeen = new Set<string>();
+    const secondSeen = new Set<string>();
+    for (const ch of ["A", "B", "C", "D", "E", "F", "G", "H"]) {
+      term.vtWrite(enc.encode(ch));
+      first.update(term);
+      second.update(term);
+      firstSeen.add(first.toAnsiRect(rect));
+      secondSeen.add(second.toAnsiRect(rect));
+    }
+
+    // The first updater each cycle gets fresh cells: 8 distinct renders.
+    expect(firstSeen.size).toBe(8);
+    // The second updater each cycle is starved: every render is the
+    // same frozen frame from the first iteration.
+    expect(secondSeen.size).toBe(1);
+  });
+});

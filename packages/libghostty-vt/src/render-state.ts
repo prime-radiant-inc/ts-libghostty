@@ -90,6 +90,19 @@ export class RenderState {
    * Snapshot the terminal's current render state into this object.
    * Updates the dirty state, per-row cache, viewport cursor, and lazily
    * invalidates the colors cache.
+   *
+   * **Multi-consumer constraint.** libghostty's `RenderState.update()`
+   * consumes Terminal-side per-row dirty bits as a single-consumer
+   * marker. When more than one `RenderState` calls `update(term)`
+   * against the same `Terminal` between writes, only the first updater
+   * each cycle copies fresh cells; subsequent updaters see "no dirty
+   * rows" and skip the copy. The upstream-canonical pattern is one
+   * cached `RenderState` per `Terminal`, used forever (see
+   * `vendor/ghostty/src/renderer/generic.zig:223`). If you have a
+   * `Runner`, use `runner.renderState`; don't allocate a second one
+   * against the same `Terminal`. See
+   * `docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md`
+   * for the full analysis.
    */
   update(term: Terminal): void {
     this.#assertOpen();

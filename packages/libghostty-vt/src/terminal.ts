@@ -812,23 +812,35 @@ export class Terminal {
 
   /**
    * Render this Terminal's current state as ANSI bytes that paint into
-   * `dest`. Convenience over `RenderState.toAnsiRect`.
+   * `dest`. Convenience over `RenderState.toAnsiRect` for the
+   * one-off / unknown-environment case.
    *
    * Throws `RectSizeMismatch` if `dest.cols`/`dest.rows` don't equal
    * `this.snapshot().cols`/`rows`. Throws `UseAfterCloseError` if the
    * Terminal has been closed.
    *
-   * For consumers that want to manage the RenderState explicitly
-   * (e.g. for diff rendering later), use
-   * `new RenderState(); state.update(term); state.toAnsiRect(...)`.
+   * **If you have a `Runner`, prefer `runner.renderState.toAnsiRect(dest, opts)`.**
+   * The Runner already owns and updates a `RenderState` per frame; reading
+   * directly from it avoids a per-paint allocation and matches the
+   * upstream-canonical "one `RenderState` per `Terminal`, cached forever"
+   * pattern (`vendor/ghostty/src/renderer/generic.zig`).
    *
-   * Implementation note: an earlier version cached one RenderState per
-   * Terminal and called `update()` per invocation. That hits a libghostty
-   * bug where `ghostty_render_state_update` returns success but the
-   * cached cell grid stays frozen on the first frame's content (verified
-   * empirically against a real pty-driven Terminal). Until the upstream
-   * caching path is fixed, we allocate a fresh RenderState per call —
-   * cheap (one FFI handle alloc) and always correct.
+   * For consumers without a Runner who want to manage the RenderState
+   * explicitly (e.g. for diff rendering later), construct one yourself:
+   * `using rs = new RenderState(); rs.update(term); rs.toAnsiRect(...)`.
+   *
+   * Implementation note: this method allocates a fresh `RenderState` per
+   * call rather than caching. libghostty's `RenderState.update()`
+   * consumes Terminal-side per-row dirty bits as a single-consumer
+   * marker (see `vendor/ghostty/src/terminal/render.zig:460-461`). When
+   * more than one `RenderState` updates against the same `Terminal` —
+   * common when a `Runner` is in play — only the first updater each
+   * cycle gets fresh cells; the second sees no dirty rows and skips the
+   * copy. Allocating a fresh state per call sidesteps the collision (a
+   * fresh state's screen-key mismatch always forces a full redraw).
+   * Cost is one FFI alloc + free per paint; negligible at human cadence.
+   * See `docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md`
+   * for the full analysis.
    */
   renderToAnsiRect(dest: RenderRect, opts?: RectRenderOptions): string {
     this.#assertOpen();
