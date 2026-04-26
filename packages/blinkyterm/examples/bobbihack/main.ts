@@ -64,7 +64,14 @@ async function main(): Promise<void> {
       if (state.layout.kind !== "tooSmall") {
         const box = state.layout.nethack;
         try {
-          nethackContent = runner.terminal.renderToAnsiRect({
+          // Read directly from the Runner's RenderState — the Runner is the
+          // sole consumer that calls update(term) per frame, matching
+          // upstream Ghostty's "one cached RenderState per Terminal"
+          // pattern. Allocating a second RenderState (e.g. via
+          // term.renderToAnsiRect) would race for libghostty's per-row
+          // dirty bits and starve whichever one runs second. See
+          // docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md.
+          nethackContent = runner.renderState.toAnsiRect({
             row: box.row + 1,
             col: box.col + 2,
             cols: 80,

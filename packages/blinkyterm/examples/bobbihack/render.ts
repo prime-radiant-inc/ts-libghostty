@@ -14,7 +14,7 @@ const TL = "┌", TR = "┐", BL = "└", BR = "┘", H = "─", V = "│";
  * Compose the bobbihack TUI as ANSI bytes.
  *
  * `nethackContent` is the pre-positioned ANSI rendering of NetHack's pane,
- * produced by `runner.terminal.renderToAnsiRect({...nethack-content-rect})`
+ * produced by `runner.renderState.toAnsiRect({...nethack-content-rect})`
  * in main.ts. Its embedded goto sequences place each row at the right
  * host coordinates already; render() just splices it in after drawing
  * the pane border and clearing the 1-cell horizontal padding columns.
@@ -82,7 +82,7 @@ function drawBox(parts: string[], box: Box, title: string): void {
  * Draw the NetHack pane: border + title, blank the 1-cell horizontal padding
  * columns, then splice in the pre-positioned nethackContent.
  *
- * The padding-column blanks are defensive — `renderToAnsiRect` only writes
+ * The padding-column blanks are defensive — `toAnsiRect` only writes
  * the 80×24 content area at the inner content cols, so if anything ever
  * wrote into the padding cells, the next paint would still leave them dirty.
  * A single space per row keeps them clean.
