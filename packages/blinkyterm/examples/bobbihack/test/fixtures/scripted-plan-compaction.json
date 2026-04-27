@@ -1,0 +1,600 @@
+[
+  {
+    "text": "step 1, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 2, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 3, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 4, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 5, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 6, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 7, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 8, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 9, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 10, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 11, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 12, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 13, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 14, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 15, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 16, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 17, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 18, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 19, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 20, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 21, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 22, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 23, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 24, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 25, going east.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "east"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 26, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 27, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 28, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 29, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 30, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 31, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 32, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 33, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 34, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 35, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 36, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 37, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 38, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 39, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 40, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 41, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 42, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 43, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 44, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 45, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 46, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 47, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 48, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 49, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "step 50, going west.",
+    "toolUses": [
+      {
+        "name": "move",
+        "input": {
+          "direction": "west"
+        }
+      }
+    ]
+  },
+  {
+    "text": "search 1",
+    "toolUses": [
+      {
+        "name": "search",
+        "input": {}
+      }
+    ]
+  },
+  {
+    "text": "search 2",
+    "toolUses": [
+      {
+        "name": "search",
+        "input": {}
+      }
+    ]
+  },
+  {
+    "text": "search 3",
+    "toolUses": [
+      {
+        "name": "search",
+        "input": {}
+      }
+    ]
+  },
+  {
+    "text": "search 4",
+    "toolUses": [
+      {
+        "name": "search",
+        "input": {}
+      }
+    ]
+  },
+  {
+    "text": "search 5",
+    "toolUses": [
+      {
+        "name": "search",
+        "input": {}
+      }
+    ]
+  },
+  {
+    "text": "Done with the long compaction smoke run. Stopping."
+  }
+]
