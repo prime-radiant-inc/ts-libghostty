@@ -49,6 +49,7 @@ function mockCtx(turns: MockTurn[]): { ctx: ToolContext; sentKeys: string[] } {
     map,
     runState: { gameOver: false, endReason: null },
     signal: ac.signal,
+    journalDir: "",
     sendKeysAndWait: async (keys: string) => {
       sentKeys.push(keys);
       const t = turns[turnIdx] ?? {};

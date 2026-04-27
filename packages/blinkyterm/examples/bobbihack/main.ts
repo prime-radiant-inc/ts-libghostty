@@ -50,6 +50,12 @@ import {
   handleExtendedCommand,
   handleCommand,
 } from "./tools/items-misc";
+import {
+  handleJournalRead,
+  handleJournalWrite,
+  JOURNAL_SECTIONS,
+} from "./tools/journal";
+import { handleQueryTerrain } from "./tools/query";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 import {
@@ -340,6 +346,42 @@ const TOOL_SCHEMAS: ToolSchema[] = [
       required: ["keys"],
     },
   },
+  {
+    name: "journal_read",
+    description:
+      "FREE action — read one of the six fixed markdown journal sections. Returns {section, content}. Missing files return content:''. Use after a compaction marker to recover Goals and Knowledge.",
+    input_schema: {
+      type: "object",
+      properties: {
+        section: { type: "string", enum: [...JOURNAL_SECTIONS] },
+      },
+      required: ["section"],
+    },
+  },
+  {
+    name: "journal_write",
+    description:
+      "FREE action — replace one of the six fixed markdown journal sections atomically. Content must be ≤64KB. Use to record discoveries that should survive context compaction (Knowledge), running plan (Goals), per-floor features (Dungeon), open questions (Hypotheses), identity (Character), or current carry (Inventory).",
+    input_schema: {
+      type: "object",
+      properties: {
+        section: { type: "string", enum: [...JOURNAL_SECTIONS] },
+        content: { type: "string", maxLength: 65536 },
+      },
+      required: ["section", "content"],
+    },
+  },
+  {
+    name: "query_terrain",
+    description:
+      "FREE action — recall a previously-explored floor's terrain. With {floor: 'D2'} returns {floor, ascii, features} where ascii is the recorded plain-ASCII map and features is a list of {glyph, x, y, kind} for stairs/altars/fountains/etc. With no args, returns {floors: [{id, firstTurn, lastTurn, tileCount}]} listing every visited floor. Use after a compaction marker to recover terrain memory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        floor: { type: "string" },
+      },
+    },
+  },
 ];
 
 function loadSystemPrompt(): string {
@@ -493,6 +535,7 @@ async function main(): Promise<void> {
     map,
     runState,
     signal: ac.signal,
+    journalDir: dirs.journalDir,
     sendKeysAndWait: async (keys: string) => {
       if (runner.exited) {
         runState.gameOver = true;
@@ -571,6 +614,9 @@ async function main(): Promise<void> {
     force_fight: wrap("force_fight", handleForceFight as ToolHandler),
     extended_command: wrap("extended_command", handleExtendedCommand as ToolHandler),
     command: wrap("command", handleCommand as ToolHandler),
+    journal_read: wrap("journal_read", handleJournalRead as ToolHandler),
+    journal_write: wrap("journal_write", handleJournalWrite as ToolHandler),
+    query_terrain: wrap("query_terrain", handleQueryTerrain as ToolHandler),
   };
 
   // Conductor → state.ts event translation. The conductor's natural

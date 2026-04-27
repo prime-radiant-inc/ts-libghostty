@@ -65,6 +65,7 @@ function setup(plan: ScriptedTurn[]): {
     map,
     runState,
     signal: ac.signal,
+    journalDir: "",
     sendKeysAndWait: async (_keys: string) => {
       const rows = Array.from({ length: 24 }, () => " ".repeat(80));
       const s = status({ turn: calls.length + 1 });
