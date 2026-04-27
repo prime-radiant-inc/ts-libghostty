@@ -164,7 +164,7 @@ async function main(): Promise<void> {
   const firstFrame = await frameIter.next();
   if (!firstFrame.done) {
     const rows = firstFrame.value.snapshot.text.split("\n");
-    paintScreen(firstFrame.value.snapshot.toAnsi());
+    paintRunner(runner);
     const stat = parseStatusLine(rows[rows.length - 2] ?? "", rows[rows.length - 1] ?? "");
     const msg = parseMessageLine(rows[0] ?? "");
     map.updateFromFrame(rows, stat, msg);
@@ -196,7 +196,7 @@ async function main(): Promise<void> {
       }
       const frame = next.value;
       const screenAnsi = frame.snapshot.toAnsi();
-      paintScreen(screenAnsi);
+      paintRunner(runner);
       const rows = frame.snapshot.text.split("\n");
       const message = parseMessageLine(rows[0] ?? "");
       const status = parseStatusLine(
@@ -272,12 +272,24 @@ async function main(): Promise<void> {
   console.log(`[bobbihack] artifacts: ${dirs.runDir}`);
 }
 
-function paintScreen(ansi: string): void {
-  // Repaint the alt-screen with the latest nethack screen. This is the
-  // bare-minimum visual feedback during a conductor run; Phase 3 will
-  // restore the layered TUI (NetHack pane + agent pane).
-  process.stdout.write("\x1b[H\x1b[2J");
-  process.stdout.write(ansi);
+function paintRunner(runner: Runner): void {
+  // Use runner.renderState.toAnsiRect() — the same primitive the legacy
+  // bobbihack TUI uses. Each row gets explicit absolute positioning so
+  // the screen actually repaints between frames. (An earlier version
+  // used frame.snapshot.toAnsi() which doesn't position absolutely and
+  // left the screen looking frozen.)
+  process.stdout.write("\x1b[?25l\x1b[H\x1b[2J");
+  try {
+    const ansi = runner.renderState.toAnsiRect({
+      row: 1,
+      col: 1,
+      cols: 80,
+      rows: 24,
+    });
+    process.stdout.write(ansi);
+  } catch {
+    // Runner disposed mid-paint or size mismatch; skip this paint.
+  }
 }
 
 const restoreOnUnhandled = (): void => {
