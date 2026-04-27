@@ -32,6 +32,7 @@ import { GameMap } from "./game-map";
 import { parseStatusLine, parseMessageLine } from "./parsers";
 import { runConductor, type ToolHandler } from "./conductor";
 import { handleMove, handleSearch, handlePickup } from "./tools/move";
+import { handleRespondPrompt } from "./tools/respond-prompt";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 
@@ -77,6 +78,23 @@ const TOOL_SCHEMAS: ToolSchema[] = [
     name: "pickup",
     description: "Pick up whatever is on your current tile.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "respond_prompt",
+    description:
+      "Send a literal short keystroke sequence (≤8 chars) to NetHack to answer a modal prompt. Use this for `--More--` (send ' '), [yn] questions (send 'y' or 'n'), letter-selection menus, direction prompts, etc. Read the screen to determine what response the prompt expects.",
+    input_schema: {
+      type: "object",
+      properties: {
+        keys: {
+          type: "string",
+          description: "Literal characters to send (≤8 chars). Use \\r for return, ' ' for space, 'y'/'n' for yes/no.",
+          minLength: 1,
+          maxLength: 8,
+        },
+      },
+      required: ["keys"],
+    },
   },
 ];
 
@@ -231,6 +249,7 @@ async function main(): Promise<void> {
     move: wrap("move", handleMove as ToolHandler),
     search: wrap("search", handleSearch as ToolHandler),
     pickup: wrap("pickup", handlePickup as ToolHandler),
+    respond_prompt: wrap("respond_prompt", handleRespondPrompt as ToolHandler),
   };
 
   // Best-effort cleanup if the user hits ^C.

@@ -1,0 +1,23 @@
+[
+  {
+    "text": "Dismissing the intro --More-- prompt.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Dismissing again in case there's another --More--.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Now I should be in the dungeon. Heading east.",
+    "toolUses": [{ "name": "move", "input": { "direction": "east" } }]
+  },
+  {
+    "text": "Continuing east to explore.",
+    "toolUses": [{ "name": "move", "input": { "direction": "east" } }]
+  },
+  {
+    "text": "Trying south.",
+    "toolUses": [{ "name": "move", "input": { "direction": "south" } }]
+  },
+  { "text": "Smoke complete. Stopping." }
+]
