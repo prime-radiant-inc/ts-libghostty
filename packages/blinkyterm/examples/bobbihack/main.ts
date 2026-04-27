@@ -63,6 +63,7 @@ import {
   type ViewState,
 } from "./state";
 import { render } from "./render";
+import { formatToolResult } from "./tool-result";
 import type { AgentDecision } from "./agent";
 
 const ENTER_ALT = "\x1b[?1049h";
@@ -464,7 +465,11 @@ async function main(): Promise<void> {
   const frameIter = runner.frames()[Symbol.asyncIterator]();
   let lastFrameReason: FrameReason = "initial";
 
-  // Drain initial frame.
+  // Drain the initial frame so the conductor's first message can carry
+  // the starting screen as context. Anthropic's API rejects empty
+  // messages arrays — we MUST seed with a user message.
+  let initialUserMessage =
+    "You are starting a new NetHack game. Please begin playing.";
   const firstFrame = await frameIter.next();
   if (!firstFrame.done) {
     state = onChildFrame(state, firstFrame.value);
@@ -473,6 +478,12 @@ async function main(): Promise<void> {
     const stat = parseStatusLine(rows[rows.length - 2] ?? "", rows[rows.length - 1] ?? "");
     const msg = parseMessageLine(rows[0] ?? "");
     map.updateFromFrame(rows, stat, msg);
+    initialUserMessage = formatToolResult({
+      summary: "Game start. Read the screen carefully — there may be intro --More-- prompts to dismiss.",
+      screenAnsi: firstFrame.value.snapshot.toAnsi(),
+      map,
+      status: stat,
+    });
   }
   requestPaint();
 
@@ -625,6 +636,7 @@ async function main(): Promise<void> {
       toolSchemas: TOOL_SCHEMAS,
       messagesPath: join(dirs.runDir, "messages.json"),
       model: label,
+      initialUserMessage,
       events,
     });
   } finally {

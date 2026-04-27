@@ -103,6 +103,7 @@ function setup(plan: ScriptedTurn[]): {
     toolSchemas: [],
     messagesPath,
     model: "test-model",
+    initialUserMessage: "Test run start.",
     backoffSleeper: async (_sec) => {
       // No real sleeping in tests.
     },
@@ -163,7 +164,7 @@ describe("runConductor — multiple tool_uses per assistant turn", () => {
       content: { type: string; tool_use_id?: string }[];
     }[];
     const assistantMsg = messages.find((m) => m.role === "assistant");
-    const userMsg = messages.find((m) => m.role === "user");
+    const userMsg = messages.findLast((m) => m.role === "user");
     expect(assistantMsg?.content.filter((b) => b.type === "tool_use").length).toBe(2);
     expect(userMsg?.content.filter((b) => b.type === "tool_result").length).toBe(2);
     rmSync(tmpDir, { recursive: true, force: true });
@@ -194,7 +195,7 @@ describe("runConductor — game-over mid-batch", () => {
       content: { type: string }[];
     }[];
     const assistantMsg = messages.find((m) => m.role === "assistant");
-    const userMsg = messages.find((m) => m.role === "user");
+    const userMsg = messages.findLast((m) => m.role === "user");
     expect(assistantMsg?.content.filter((b) => b.type === "tool_use").length).toBe(3);
     expect(userMsg?.content.filter((b) => b.type === "tool_result").length).toBe(3);
     rmSync(tmpDir, { recursive: true, force: true });
@@ -229,7 +230,7 @@ describe("runConductor — abort signal mid-batch", () => {
       role: string;
       content: { type: string }[];
     }[];
-    const userMsg = messages.find((m) => m.role === "user");
+    const userMsg = messages.findLast((m) => m.role === "user");
     expect(userMsg?.content.filter((b) => b.type === "tool_result").length).toBe(3);
     rmSync(tmpDir, { recursive: true, force: true });
   });
@@ -274,7 +275,7 @@ describe("runConductor — invalid tool name", () => {
       role: string;
       content: { type: string; content?: string; is_error?: boolean }[];
     }[];
-    const userMsg = messages.find((m) => m.role === "user");
+    const userMsg = messages.findLast((m) => m.role === "user");
     const result = userMsg?.content.find((b) => b.type === "tool_result");
     expect(result?.is_error).toBe(true);
     rmSync(tmpDir, { recursive: true, force: true });

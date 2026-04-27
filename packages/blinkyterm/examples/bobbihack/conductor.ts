@@ -42,6 +42,10 @@ export interface ConductorDeps {
   toolSchemas: ToolSchema[];
   messagesPath: string;
   model: string;
+  // First user message — required by Anthropic's API; empty messages
+  // arrays are rejected with HTTP 400. Typically the formatted starting
+  // screen ("Game start. Here's what you see: ...").
+  initialUserMessage: string;
   // Optional; tests inject a no-op sleeper. Production uses a real sleep.
   backoffSleeper?: (sec: number) => Promise<void>;
   events?: ConductorEvents;
@@ -80,10 +84,13 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
     toolSchemas,
     messagesPath,
     model,
+    initialUserMessage,
     backoffSleeper = defaultSleeper,
     events,
   } = deps;
-  const messages: Message[] = [];
+  const messages: Message[] = [
+    { role: "user", content: initialUserMessage },
+  ];
   const backoff: BackoffState = { attempt: 0 };
   const cost = newCostState();
   const runId = `run-${Date.now()}`;
