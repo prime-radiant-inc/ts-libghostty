@@ -1,0 +1,23 @@
+[
+  {
+    "text": "Looks like a corridor. I'll head east.",
+    "toolUses": [{ "name": "move", "input": { "direction": "east" } }]
+  },
+  {
+    "text": "Continuing east.",
+    "toolUses": [{ "name": "move", "input": { "direction": "east" } }]
+  },
+  {
+    "text": "Let me try south now.",
+    "toolUses": [{ "name": "move", "input": { "direction": "south" } }]
+  },
+  {
+    "text": "Searching for hidden passages.",
+    "toolUses": [{ "name": "search", "input": {} }]
+  },
+  {
+    "text": "Picking up whatever's here.",
+    "toolUses": [{ "name": "pickup", "input": {} }]
+  },
+  { "text": "I'm satisfied with this dry-run. Stopping." }
+]
