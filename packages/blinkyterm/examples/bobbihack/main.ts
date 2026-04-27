@@ -50,7 +50,7 @@ import {
   handleExtendedCommand,
   handleCommand,
 } from "./tools/items-misc";
-import { handleAutopilotTo } from "./tools/autopilot";
+import { handleAutopilotTo, handleAutopilotExplore } from "./tools/autopilot";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 import {
@@ -361,6 +361,22 @@ const TOOL_SCHEMAS: ToolSchema[] = [
       required: ["floor", "x", "y"],
     },
   },
+  {
+    name: "autopilot_explore",
+    description:
+      "Walk a frontier-policy exploration of the current floor. Prefers adjacent unvisited walkable tiles (corridors > rooms; continues current direction); falls back to BFS toward the nearest known frontier tile. Halts on any interrupt or when the floor is fully explored. Refuses Sokoban / Rogue level / walkability-suspect floors. Does NOT auto-descend stairs — use move(down) explicitly.",
+    input_schema: {
+      type: "object",
+      properties: {
+        stepCap: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Maximum steps before halting (default 50).",
+        },
+      },
+    },
+  },
 ];
 
 function loadSystemPrompt(): string {
@@ -593,6 +609,7 @@ async function main(): Promise<void> {
     extended_command: wrap("extended_command", handleExtendedCommand as ToolHandler),
     command: wrap("command", handleCommand as ToolHandler),
     autopilot_to: wrap("autopilot_to", handleAutopilotTo as ToolHandler),
+    autopilot_explore: wrap("autopilot_explore", handleAutopilotExplore as ToolHandler),
   };
 
   // Conductor → state.ts event translation. The conductor's natural
