@@ -702,6 +702,15 @@ async function main(): Promise<void> {
         requestPaint();
       }
     },
+    onCostUpdate: (line, _cost) => {
+      // Reflect cost line in the agent-pane title via the agentLabel
+      // field. State.ts treats agentLabel as opaque; render.ts shows
+      // it inside the box title. Updating it per-turn keeps the cost
+      // visible without adding a new UI primitive.
+      const baseLabel = label;
+      state = { ...state, agentLabel: `${baseLabel} | ${line}` };
+      requestPaint();
+    },
   };
 
   const onSig = (): void => ac.abort();
@@ -723,6 +732,7 @@ async function main(): Promise<void> {
       model: label,
       initialUserMessage,
       events,
+      messagesDir: dirs.messagesDir,
     });
   } finally {
     if (!runner.exited) {

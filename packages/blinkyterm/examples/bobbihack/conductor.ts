@@ -11,7 +11,6 @@ import {
   type StreamArgs,
   type ToolSchema,
   type ToolUseBlock,
-  type UsageStats,
   isRecoverableApiError,
   nextBackoffSec,
   resetBackoff,
@@ -19,7 +18,13 @@ import {
 } from "./client";
 import type { ToolContext } from "./tool-context";
 import { type RunLog } from "./observability";
-import { accumulate, newCostState } from "./cost";
+import { accumulate, newCostState, formatCostLine, shouldStopForBudget, type CostState } from "./cost";
+import {
+  maybeCompact,
+  type CompactionMessage,
+  type CompactionRunState,
+  type MaybeCompactCtx,
+} from "./compaction";
 
 export type ToolHandler = (args: unknown, ctx: ToolContext) => Promise<string>;
 
@@ -31,6 +36,10 @@ export interface ConductorEvents {
   onToolStart?: (name: string, args: unknown, turn: number) => void;
   onToolComplete?: (name: string, summary: string, turn: number) => void;
   onRunEnd?: (reason: string) => void;
+  // Phase 8: per-turn cost summary line, e.g.
+  //   "tokens: in 1.2k (cache 8.0k) / out 56 — turn cost ~$0.003 — total $0.42"
+  // The UI surfaces this in the agent-pane title.
+  onCostUpdate?: (line: string, state: CostState) => void;
 }
 
 export interface ConductorDeps {
@@ -49,6 +58,13 @@ export interface ConductorDeps {
   // Optional; tests inject a no-op sleeper. Production uses a real sleep.
   backoffSleeper?: (sec: number) => Promise<void>;
   events?: ConductorEvents;
+  // Phase 8 — compaction is enabled when messagesDir is supplied.
+  // Tests that don't care about compaction can omit this; production
+  // (main.ts) always passes the per-run snapshot directory.
+  messagesDir?: string;
+  // Optional override for the model's context window in tokens.
+  // Defaults to 200_000 (haiku-4-5 / sonnet-4-6 effective window).
+  contextWindow?: number;
 }
 
 interface ToolResultBlock {
@@ -58,9 +74,38 @@ interface ToolResultBlock {
   is_error?: boolean;
 }
 
-type Message =
-  | { role: "user"; content: unknown[] | string }
-  | { role: "assistant"; content: ContentBlock[] };
+type Message = CompactionMessage;
+
+// Project the compaction module's _cacheControl annotation onto
+// the wire format. Anthropic's API accepts cache_control on a content
+// BLOCK (not on the message itself), so we tag the LAST content block
+// of the marked message. For messages with string content, we wrap
+// the string in a single text block so we can attach the marker.
+function projectMessagesForWire(messages: Message[]): unknown[] {
+  return messages.map((m) => {
+    if (m._cacheControl === undefined) {
+      // Strip private annotations even if absent — keeps downstream
+      // shape stable.
+      return { role: m.role, content: m.content };
+    }
+    const cc = m._cacheControl;
+    if (typeof m.content === "string") {
+      return {
+        role: m.role,
+        content: [
+          { type: "text", text: m.content, cache_control: cc },
+        ],
+      };
+    }
+    // Array content: clone and stamp cache_control on the LAST block.
+    const blocks = m.content.map((b) => ({ ...b }));
+    if (blocks.length > 0) {
+      const last = blocks[blocks.length - 1] as Record<string, unknown>;
+      last["cache_control"] = cc;
+    }
+    return { role: m.role, content: blocks };
+  });
+}
 
 const SYSTEM_PROMPT_HASH_PREFIX = "sha256:";
 
@@ -88,12 +133,25 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
     backoffSleeper = defaultSleeper,
     events,
   } = deps;
-  const messages: Message[] = [
+  let messages: Message[] = [
     { role: "user", content: initialUserMessage },
   ];
   const backoff: BackoffState = { attempt: 0 };
   const cost = newCostState();
   const runId = `run-${Date.now()}`;
+  const compactionRunState: CompactionRunState = {
+    turn: 0,
+    lastCompactionTurn: 0,
+    compactionSeq: 0,
+  };
+  const compactionEnabled = deps.messagesDir !== undefined;
+  const compactionCtx: MaybeCompactCtx | null = compactionEnabled
+    ? {
+        runDir: deps.messagesDir!,
+        runLog,
+        contextWindow: deps.contextWindow ?? 200_000,
+      }
+    : null;
 
   runLog.append({
     event: "run_start",
@@ -125,13 +183,32 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
             },
           ],
           tools: toolSchemas,
-          messages: messages as unknown[],
+          messages: projectMessagesForWire(messages),
         };
         const stream = client.messages.stream(args);
         stream.on("text", (delta) => events?.onTextDelta?.(delta));
         final = await stream.finalMessage();
         resetBackoff(backoff);
       } catch (err) {
+        // Phase 8: 400 invalid_request_error (typically context-length
+        // overflow) → force-compact aggressively (K=5) and retry once
+        // before falling through to the normal recoverable-error path.
+        if (compactionCtx !== null && isContextOverflow400(err)) {
+          runLog.append({
+            event: "error",
+            errorClass: "context_overflow",
+            message: (err as Error).message ?? String(err),
+            fatal: false,
+          });
+          compactionRunState.turn = turnCounter;
+          messages = (await maybeCompact(
+            messages,
+            compactionRunState,
+            compactionCtx,
+            { force: true },
+          )) as Message[];
+          continue; // retry the stream call with the compacted history
+        }
         if (!isRecoverableApiError(err)) {
           runLog.append({
             event: "error",
@@ -164,8 +241,17 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
       }
 
       // Append assistant message verbatim.
-      messages.push({ role: "assistant", content: final.content });
+      messages.push({ role: "assistant", content: final.content as ContentBlock[] });
       accumulate(cost, model, final.usage);
+      events?.onCostUpdate?.(formatCostLine(cost), cost);
+
+      // Hard budget kill switch (BOBBIHACK_MAX_USD).
+      if (shouldStopForBudget(cost)) {
+        toolCtx.runState.gameOver = true;
+        toolCtx.runState.endReason = "budget_exhausted";
+        await persistMessages(messagesPath, messages);
+        break;
+      }
 
       const toolUses: ToolUseBlock[] = final.content.filter(
         (b): b is ToolUseBlock => b.type === "tool_use",
@@ -253,7 +339,16 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
       messages.push({ role: "user", content: toolResults });
       await persistMessages(messagesPath, messages);
 
-      // (Phase 8 inserts maybeCompact here.)
+      // Phase 8: compaction check after each tool batch + persist.
+      // Returns the same array reference if no trigger fired.
+      if (compactionCtx !== null) {
+        compactionRunState.turn = turnCounter;
+        messages = (await maybeCompact(
+          messages,
+          compactionRunState,
+          compactionCtx,
+        )) as Message[];
+      }
     }
   } finally {
     const endReason = toolCtx.runState.endReason ?? (toolCtx.signal.aborted ? "aborted" : "exited");
@@ -285,4 +380,28 @@ function extractSummary(content: string): string {
     if (t.length > 0) return t;
   }
   return "";
+}
+
+// Detect Anthropic's "context_length_exceeded" / 400 invalid_request_error
+// shape so the conductor can force-compact before retrying. The SDK
+// surfaces these as 400-status errors with a message that mentions the
+// context window. Be conservative: only return true if status is 400
+// AND the message hints at a length problem.
+function isContextOverflow400(err: unknown): boolean {
+  if (err === null || typeof err !== "object") return false;
+  const e = err as { status?: unknown; message?: unknown; type?: unknown };
+  if (e.status !== 400) return false;
+  const msg = typeof e.message === "string" ? e.message.toLowerCase() : "";
+  if (
+    msg.includes("context") ||
+    msg.includes("too long") ||
+    msg.includes("max_tokens") ||
+    msg.includes("token") ||
+    msg.includes("invalid_request_error")
+  ) {
+    return true;
+  }
+  // Some SDK shapes carry the structured 'type' field.
+  if (typeof e.type === "string" && e.type === "invalid_request_error") return true;
+  return false;
 }
