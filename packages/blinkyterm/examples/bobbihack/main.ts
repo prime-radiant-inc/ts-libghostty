@@ -1,13 +1,34 @@
 #!/usr/bin/env bun
-import { readFileSync } from "node:fs";
+// bobbihack — stateful conductor-based agent playing NetHack.
+// The legacy per-turn-Agent entry is preserved at main-legacy.ts during
+// Phase 3; a future cleanup pass deletes it.
+
+import { readFileSync, mkdirSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { Runner } from "../../src/index";
+import type { FrameReason } from "../../src/types";
 import { hasNethack, nethackEnv } from "../shared/nethack-setup";
-import { detectPrompt } from "../shared/prompt-detect";
-import { toKeystroke, type BotMove } from "../shared/keymap";
-import type { Agent, AgentDecision } from "./agent";
-import { MockAgent } from "./agents/mock";
-import { AnthropicAgent } from "./agents/anthropic";
+import {
+  acquireRunLock,
+  generateRunId,
+  runDirs,
+  type RunLock,
+} from "./paths";
+import {
+  type AnthropicClient,
+  MockAnthropicClient,
+  createRealAnthropicClient,
+  type ScriptedTurn,
+  type ToolSchema,
+} from "./client";
+import { GameMap } from "./game-map";
+import { parseStatusLine, parseMessageLine } from "./parsers";
+import { runConductor, type ToolHandler, type ConductorEvents } from "./conductor";
+import { handleMove, handleSearch, handlePickup } from "./tools/move";
+import { handleRespondPrompt } from "./tools/respond-prompt";
+import { handleInventory } from "./tools/inventory";
+import { RunLog } from "./observability";
+import type { ToolContext, RunState } from "./tool-context";
 import {
   initialState,
   onAgentEvent,
@@ -19,11 +40,105 @@ import {
   type ViewState,
 } from "./state";
 import { render } from "./render";
-import { openKeyStream } from "./events";
+import type { AgentDecision } from "./agent";
 
 const ENTER_ALT = "\x1b[?1049h";
 const EXIT_ALT = "\x1b[?1049l";
 const SHOW_CURSOR = "\x1b[?25h";
+
+const TOOL_SCHEMAS: ToolSchema[] = [
+  {
+    name: "move",
+    description:
+      "Move one or more steps in a compass direction. Use 'up'/'down' to ascend/descend stairs (you must be standing on '<' or '>'). Walking into a closed door opens it; walking into a monster attacks it.",
+    input_schema: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: [
+            "north", "south", "east", "west",
+            "northeast", "northwest", "southeast", "southwest",
+            "up", "down",
+          ],
+        },
+        count: { type: "number", minimum: 1, maximum: 50 },
+      },
+      required: ["direction"],
+    },
+  },
+  {
+    name: "search",
+    description:
+      "Search adjacent walls and floor for hidden passages and traps.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "pickup",
+    description: "Pick up whatever is on your current tile.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "respond_prompt",
+    description:
+      "Send a literal short keystroke sequence (≤8 chars) to NetHack to answer a modal prompt. Use this for `--More--` (send ' '), [yn] questions ('y'/'n'), letter-selection menus, direction prompts, etc. Read the screen to determine what response the prompt expects.",
+    input_schema: {
+      type: "object",
+      properties: {
+        keys: {
+          type: "string",
+          description:
+            "Literal characters to send (≤8 chars). Use \\r for return, ' ' for space.",
+          minLength: 1,
+          maxLength: 8,
+        },
+      },
+      required: ["keys"],
+    },
+  },
+  {
+    name: "inventory",
+    description:
+      "Read your current carried inventory. FREE action — does NOT consume a NetHack turn. Returns {items: [{slot, description, category}]}.",
+    input_schema: { type: "object", properties: {} },
+  },
+];
+
+function loadSystemPrompt(): string {
+  try {
+    return readFileSync(join(import.meta.dir, "system-prompt.txt"), "utf8");
+  } catch {
+    return "You are an LLM agent playing NetHack. Use the available tools to act.";
+  }
+}
+
+function loadDryRunPlan(): ScriptedTurn[] {
+  const path = process.env.BOBBIHACK_DRY_RUN_PLAN;
+  if (path === undefined || path === "") {
+    console.error(
+      "[bobbihack] BOBBIHACK_DRY_RUN=1 requires BOBBIHACK_DRY_RUN_PLAN=<path-to-fixture.json>",
+    );
+    process.exit(1);
+  }
+  return JSON.parse(readFileSync(path, "utf8")) as ScriptedTurn[];
+}
+
+async function pickClient(): Promise<{ client: AnthropicClient; label: string }> {
+  if (process.env.BOBBIHACK_DRY_RUN === "1") {
+    return { client: new MockAnthropicClient(loadDryRunPlan()), label: "mock (dry-run)" };
+  }
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (apiKey === undefined || apiKey === "") {
+    console.error(
+      "[bobbihack] ANTHROPIC_API_KEY required (or set BOBBIHACK_DRY_RUN=1 with BOBBIHACK_DRY_RUN_PLAN)",
+    );
+    process.exit(1);
+  }
+  return {
+    client: await createRealAnthropicClient({ apiKey }),
+    label: process.env.BOBBIHACK_MODEL ?? "claude-haiku-4-5",
+  };
+}
 
 async function main(): Promise<void> {
   if (!hasNethack()) {
@@ -31,31 +146,38 @@ async function main(): Promise<void> {
     process.exit(0);
   }
 
-  const agent = pickAgent();
-  console.log(`[bobbihack] using agent: ${agent.name}`);
+  const rootDir = process.env.BOBBIHACK_ROOT ?? join(process.cwd(), ".bobbihack");
+  if (!existsSync(rootDir)) mkdirSync(rootDir, { recursive: true });
+  const runId = generateRunId();
+  const dirs = runDirs(rootDir, runId);
+  let lock: RunLock | null = null;
+  try {
+    lock = acquireRunLock(dirs);
+  } catch (err) {
+    console.error("[bobbihack]", (err as Error).message);
+    process.exit(1);
+  }
 
-  // Pin to 80x24 — NetHack 3.6 only paints 24 rows even when given a
-  // 25-row pty (probe confirmed lines.length=24 either way). The pane
-  // is sized to match exactly, so there's no blank row before the
-  // bottom border.
+  const { client, label } = await pickClient();
+
+  // Spawn nethack pinned to 80x24 — same as the legacy entry. NetHack
+  // 3.6 only paints 24 rows even with a 25-row pty.
   const runner = await Runner.spawn(["nethack"], {
     cols: 80,
     rows: 24,
     env: nethackEnv(),
-    frame: { minIntervalMs: 500, maxIntervalMs: 10_000, quiesceMs: 100 },
+    frame: { minIntervalMs: 100, maxIntervalMs: 5_000, quiesceMs: 100 },
   });
 
+  // Layered TUI state.
   const hostCols = process.stdout.columns ?? 200;
   const hostRows = process.stdout.rows ?? 60;
   let state: ViewState = initialState({
     hostCols,
     hostRows,
-    agentLabel: agent.name,
+    agentLabel: label,
     pid: runner.pid,
   });
-
-  const ac = new AbortController();
-  const keyStream = openKeyStream();
 
   let writePending: NodeJS.Immediate | null = null;
   const requestPaint = (): void => {
@@ -66,13 +188,6 @@ async function main(): Promise<void> {
       if (state.layout.kind !== "tooSmall") {
         const box = state.layout.nethack;
         try {
-          // Read directly from the Runner's RenderState — the Runner is the
-          // sole consumer that calls update(term) per frame, matching
-          // upstream Ghostty's "one cached RenderState per Terminal"
-          // pattern. Allocating a second RenderState (e.g. via
-          // term.renderToAnsiRect) would race for libghostty's per-row
-          // dirty bits and starve whichever one runs second. See
-          // docs/superpowers/specs/2026-04-25-renderstate-cache-fix-design.md.
           nethackContent = runner.renderState.toAnsiRect({
             row: box.row + 1,
             col: box.col + 2,
@@ -80,8 +195,7 @@ async function main(): Promise<void> {
             rows: 24,
           });
         } catch {
-          // Runner disposed mid-paint, or strict size match failed.
-          // Render with empty pane; next paint catches up.
+          // disposed mid-paint
         }
       }
       process.stdout.write(render(state, nethackContent));
@@ -93,141 +207,191 @@ async function main(): Promise<void> {
     requestPaint();
   };
 
+  process.stdout.write(ENTER_ALT);
+  process.on("SIGWINCH", onWinch);
+
   let restored = false;
   const restoreTerminal = (): void => {
     if (restored) return;
     restored = true;
-    keyStream.close();
     process.removeListener("SIGWINCH", onWinch);
     process.stdout.write(SHOW_CURSOR + EXIT_ALT);
   };
 
-  process.stdout.write(ENTER_ALT);
-  process.on("SIGWINCH", onWinch);
+  const ac = new AbortController();
+  const map = new GameMap();
+  const runState: RunState = { gameOver: false, endReason: null };
+  const runLog = new RunLog(dirs.runLog);
 
-  const userKeyTask = (async () => {
-    for await (const key of keyStream.keys()) {
-      if (key === "quit") { ac.abort(); return; }
-    }
-  })();
+  // Wire sendKeysAndWait to the runner's frame iterator.
+  const frameIter = runner.frames()[Symbol.asyncIterator]();
+  let lastFrameReason: FrameReason = "initial";
 
-  let turnCounter = 0;
-  let cleanQuitSent = false;
+  // Drain initial frame.
+  const firstFrame = await frameIter.next();
+  if (!firstFrame.done) {
+    state = onChildFrame(state, firstFrame.value);
+    lastFrameReason = firstFrame.value.reason;
+    const rows = firstFrame.value.snapshot.text.split("\n");
+    const stat = parseStatusLine(rows[rows.length - 2] ?? "", rows[rows.length - 1] ?? "");
+    const msg = parseMessageLine(rows[0] ?? "");
+    map.updateFromFrame(rows, stat, msg);
+  }
+  requestPaint();
 
-  try {
-    requestPaint();
-    for await (const frame of runner.frames()) {
+  let currentToolForLogging: { tool: string; args: unknown } | undefined;
+
+  const ctx: ToolContext = {
+    map,
+    runState,
+    signal: ac.signal,
+    sendKeysAndWait: async (keys: string) => {
+      if (runner.exited) {
+        runState.gameOver = true;
+        runState.endReason = "runner_exited";
+        throw new Error("runner exited");
+      }
+      await runner.sendText(keys);
+      const next = await frameIter.next();
+      if (next.done || next.value === undefined) {
+        runState.gameOver = true;
+        runState.endReason = "runner_frame_iterator_ended";
+        const blank = Array.from({ length: 24 }, () => " ".repeat(80));
+        return {
+          rows: blank,
+          status: parseStatusLine("", ""),
+          message: "",
+          frameReason: "exited" as const,
+          screenAnsi: "",
+        };
+      }
+      const frame = next.value;
+      lastFrameReason = frame.reason;
+      state = onChildFrame(state, frame);
+      const screenAnsi = frame.snapshot.toAnsi();
+      const rows = frame.snapshot.text.split("\n");
+      const message = parseMessageLine(rows[0] ?? "");
+      const status = parseStatusLine(
+        rows[rows.length - 2] ?? "",
+        rows[rows.length - 1] ?? "",
+      );
+      map.updateFromFrame(rows, status, message, currentToolForLogging);
+      requestPaint();
       if (frame.reason === "exited" || frame.reason === "crashed") {
         state = onChildExited(state, frame.reason, frame.exitCode);
+        runState.gameOver = true;
+        runState.endReason = "runner_exited";
         requestPaint();
-        break;
       }
+      return { rows, status, message, frameReason: frame.reason, screenAnsi };
+    },
+  };
 
-      state = onChildFrame(state, frame);
-      requestPaint();
-
-      const prompt = detectPrompt(frame.snapshot);
-      if (prompt === "more") { if (!runner.exited) await runner.sendKey("Space"); continue; }
-      if (prompt === "yn") { if (!runner.exited) await runner.sendText("n"); continue; }
-      if (prompt === "death") { break; }
-
-      if (ac.signal.aborted) {
-        if (!cleanQuitSent && !runner.exited) {
-          cleanQuitSent = true;
-          // Robust quit dance — works regardless of NetHack's current prompt state:
-          //   ESC ESC  → cancel any in-progress selection / extended command
-          //   Space    → dismiss --More-- if up (no-op otherwise)
-          //   #quit\r  → enter extended command "quit"
-          //   y\r y\r  → confirm "Really quit?" and any follow-up confirmation
-          await runner.sendText("\x1b\x1b #quit\r y\r y\r");
-          const r = await runner.waitExit({ timeoutMs: 3000 });
-          if (!r.exited && !runner.exited) {
-            // NetHack still alive (stuck on an unexpected prompt or wedged).
-            // Escalate to SIGTERM-then-SIGKILL so we don't hang the alt-screen.
-            await runner.terminate({ thenAfterMs: 1000 });
-          }
-        }
-        continue;
-      }
-
-      const turn = ++turnCounter;
-      state = onTurnStart(state, { turn, frameReason: frame.reason });
-      requestPaint();
-
-      let decision: AgentDecision = "search";
+  // Wrap each tool handler to stamp the precedingAction for trapdoor
+  // detection in GameMap.
+  const wrap =
+    (name: string, h: ToolHandler): ToolHandler =>
+    async (args, c) => {
+      currentToolForLogging = { tool: name, args };
       try {
-        for await (const event of agent.decide(
-          { turn, frameReason: frame.reason, screenAnsi: frame.snapshot.toAnsi() },
-          ac.signal,
-        )) {
-          state = onAgentEvent(state, event);
-          requestPaint();
-          if (event.kind === "action") decision = event.move;
-          if (event.kind === "error") { decision = "search"; break; }
-        }
-      } catch (err) {
-        if (!ac.signal.aborted) throw err;
+        return await h(args, c);
+      } finally {
+        currentToolForLogging = undefined;
       }
+    };
 
+  const toolHandlers: Record<string, ToolHandler> = {
+    move: wrap("move", handleMove as ToolHandler),
+    search: wrap("search", handleSearch as ToolHandler),
+    pickup: wrap("pickup", handlePickup as ToolHandler),
+    respond_prompt: wrap("respond_prompt", handleRespondPrompt as ToolHandler),
+    inventory: wrap("inventory", handleInventory as ToolHandler),
+  };
+
+  // Conductor → state.ts event translation. The conductor's natural
+  // unit is "tool call"; we treat each tool call as one TurnState.
+  // Streaming text on an assistant message is buffered until the first
+  // tool fires, then it goes onto that turn's streamingText.
+  let pendingThinking = "";
+  let conductorTurn = 0;
+  const events: ConductorEvents = {
+    onAssistantMessageStart: () => {
+      pendingThinking = "";
+    },
+    onTextDelta: (delta) => {
+      if (state.currentTurn !== null) {
+        state = onAgentEvent(state, { kind: "thinking", delta });
+        requestPaint();
+      } else {
+        pendingThinking += delta;
+      }
+    },
+    onToolStart: (_name, _args, _turn) => {
+      conductorTurn += 1;
+      state = onTurnStart(state, { turn: conductorTurn, frameReason: lastFrameReason });
+      if (pendingThinking.length > 0) {
+        state = onAgentEvent(state, { kind: "thinking", delta: pendingThinking });
+        pendingThinking = "";
+      }
+      requestPaint();
+    },
+    onToolComplete: (name, summary, _turn) => {
+      // Use the tool name as the "decision" — render.ts displays it as
+      // a string in formatHistoryLine. Append the summary so the
+      // history line carries useful context.
+      const decisionLabel = summary.length > 0 ? `${name} → ${summary.slice(0, 60)}` : name;
+      state = onAgentEvent(state, { kind: "action", move: decisionLabel as AgentDecision });
       state = onTurnEnd(state);
       requestPaint();
+    },
+    onRunEnd: (reason) => {
+      // Surface the end reason in the error banner if it wasn't a
+      // graceful end.
+      if (reason !== "model_stopped_without_tool_use" && reason !== "exited") {
+        state = { ...state, errorBanner: `run ended: ${reason}` };
+        requestPaint();
+      }
+    },
+  };
 
-      if (ac.signal.aborted) continue;
-      if (runner.exited) continue;
+  const onSig = (): void => ac.abort();
+  process.on("SIGINT", onSig);
+  process.on("SIGTERM", onSig);
 
-      if (decision === "quit") {
-        cleanQuitSent = true;
-        await runner.sendText("#quit\r y\r y\r");
+  console.log(`[bobbihack] run-id: ${runId}; client: ${label}`);
+  console.log(`[bobbihack] artifacts: ${dirs.runDir}`);
+
+  try {
+    await runConductor({
+      client,
+      toolCtx: ctx,
+      toolHandlers,
+      runLog,
+      systemPrompt: loadSystemPrompt(),
+      toolSchemas: TOOL_SCHEMAS,
+      messagesPath: join(dirs.runDir, "messages.json"),
+      model: label,
+      events,
+    });
+  } finally {
+    if (!runner.exited) {
+      try {
+        await runner.sendText("\x1b\x1b #quit\r y\r y\r");
         const r = await runner.waitExit({ timeoutMs: 3000 });
         if (!r.exited) await runner.terminate({ thenAfterMs: 1000 });
-        continue;
+      } catch {
+        /* best-effort */
       }
-
-      await runner.sendText(toKeystroke(decision as BotMove));
     }
-  } finally {
-    restoreTerminal();
     await runner[Symbol.asyncDispose]();
-    await userKeyTask.catch(() => {});
+    restoreTerminal();
+    lock?.released();
+    process.removeListener("SIGINT", onSig);
+    process.removeListener("SIGTERM", onSig);
   }
 
-  console.log(`[bobbihack] done; turns=${turnCounter}`);
-}
-
-function loadSystemPrompt(): string | undefined {
-  // Tunable system prompt for the AnthropicAgent. Lives next to main.ts so
-  // it's editable without touching code; missing/unreadable file falls
-  // through to the agent's compiled-in default.
-  try {
-    return readFileSync(join(import.meta.dir, "system-prompt.txt"), "utf8");
-  } catch {
-    return undefined;
-  }
-}
-
-function pickAgent(): Agent {
-  const choice = process.env.BOBBIHACK_AGENT;
-  const model = process.env.BOBBIHACK_MODEL;
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (choice === "mock") return new MockAgent();
-  const systemPrompt = loadSystemPrompt();
-  const buildAnthropic = (key: string): AnthropicAgent => {
-    const opts: { apiKey: string; model?: string; systemPrompt?: string } = { apiKey: key };
-    if (model !== undefined) opts.model = model;
-    if (systemPrompt !== undefined) opts.systemPrompt = systemPrompt;
-    return new AnthropicAgent(opts);
-  };
-  if (choice === "anthropic") {
-    if (apiKey === undefined || apiKey === "") {
-      console.error("[bobbihack] BOBBIHACK_AGENT=anthropic requires ANTHROPIC_API_KEY");
-      process.exit(1);
-    }
-    return buildAnthropic(apiKey);
-  }
-  if (apiKey !== undefined && apiKey !== "") {
-    return buildAnthropic(apiKey);
-  }
-  return new MockAgent();
+  console.log(`[bobbihack] done. run-id: ${runId}. reason: ${runState.endReason ?? "exited"}`);
+  console.log(`[bobbihack] artifacts: ${dirs.runDir}`);
 }
 
 const restoreOnUnhandled = (): void => {

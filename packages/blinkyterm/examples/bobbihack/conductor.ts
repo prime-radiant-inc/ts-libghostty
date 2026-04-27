@@ -23,6 +23,16 @@ import { accumulate, newCostState } from "./cost";
 
 export type ToolHandler = (args: unknown, ctx: ToolContext) => Promise<string>;
 
+// Event callbacks let the UI layer (main.ts) react to conductor lifecycle
+// without coupling state.ts to the conductor's internal types.
+export interface ConductorEvents {
+  onAssistantMessageStart?: () => void;
+  onTextDelta?: (delta: string) => void;
+  onToolStart?: (name: string, args: unknown, turn: number) => void;
+  onToolComplete?: (name: string, summary: string, turn: number) => void;
+  onRunEnd?: (reason: string) => void;
+}
+
 export interface ConductorDeps {
   client: AnthropicClient;
   toolCtx: ToolContext;
@@ -34,6 +44,7 @@ export interface ConductorDeps {
   model: string;
   // Optional; tests inject a no-op sleeper. Production uses a real sleep.
   backoffSleeper?: (sec: number) => Promise<void>;
+  events?: ConductorEvents;
 }
 
 interface ToolResultBlock {
@@ -70,6 +81,7 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
     messagesPath,
     model,
     backoffSleeper = defaultSleeper,
+    events,
   } = deps;
   const messages: Message[] = [];
   const backoff: BackoffState = { attempt: 0 };
@@ -94,6 +106,7 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
     ) {
       let final: AssistantMessage;
       try {
+        events?.onAssistantMessageStart?.();
         const args: StreamArgs = {
           model,
           max_tokens: 1024,
@@ -108,8 +121,7 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
           messages: messages as unknown[],
         };
         const stream = client.messages.stream(args);
-        // Subscribe to text deltas (no-op here; UI hooks would attach in main).
-        stream.on("text", () => {});
+        stream.on("text", (delta) => events?.onTextDelta?.(delta));
         final = await stream.finalMessage();
         resetBackoff(backoff);
       } catch (err) {
@@ -199,18 +211,21 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
         }
         try {
           turnCounter += 1;
+          events?.onToolStart?.(tu.name, tu.input, turnCounter);
           const content = await handler(tu.input, toolCtx);
           toolResults.push({
             type: "tool_result",
             tool_use_id: tu.id,
             content,
           });
+          const summary = extractSummary(content);
+          events?.onToolComplete?.(tu.name, summary, turnCounter);
           runLog.append({
             event: "turn",
             turn: turnCounter,
             tool: tu.name,
             args: tu.input,
-            summary: extractSummary(content),
+            summary,
             screenHash: "",  // populated in Phase 8 (compaction also uses it)
             usage: final.usage,
           });
@@ -234,9 +249,11 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
       // (Phase 8 inserts maybeCompact here.)
     }
   } finally {
+    const endReason = toolCtx.runState.endReason ?? (toolCtx.signal.aborted ? "aborted" : "exited");
+    events?.onRunEnd?.(endReason);
     runLog.append({
       event: "run_end",
-      reason: toolCtx.runState.endReason ?? (toolCtx.signal.aborted ? "aborted" : "exited"),
+      reason: endReason,
       totalTurns: turnCounter,
       totalCostUsd: cost.totalUsd,
     });
