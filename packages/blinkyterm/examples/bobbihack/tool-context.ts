@@ -22,6 +22,11 @@ export interface ToolContext {
   map: GameMap;
   runState: RunState;
   signal: AbortSignal;
+  // Per-run journal directory: <runDir>/journal/. Used by the
+  // journal_read / journal_write handlers (Phase 4) to load/store the
+  // six fixed markdown sections (Character, Inventory, Knowledge,
+  // Dungeon, Goals, Hypotheses).
+  journalDir: string;
   // Sends literal keystrokes to nethack and awaits the next quiesced frame.
   // Updates the GameMap as a side effect. The returned status/message/rows
   // are post-keystroke.

@@ -148,6 +148,7 @@ describe("handleInventory", () => {
       map,
       runState: { gameOver: false, endReason: null },
       signal: ac.signal,
+      journalDir: "",
       sendKeysAndWait: async (keys: string) => {
         sentKeys.push(keys);
         const frame = scriptedFrames[frameIdx] ?? scriptedFrames[scriptedFrames.length - 1];
