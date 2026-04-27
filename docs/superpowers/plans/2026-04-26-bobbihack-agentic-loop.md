@@ -14,6 +14,8 @@
 
 **Reporting checkpoints to Matt:** at the end of Phases 2, 3, 5, 8 — each is a natural spot where bobbihack runs and behavior is observable. The plan notes which checkpoints are "ready for testing."
 
+**Plan revisions:** rev 2 incorporates Bob-Strigoi's review findings — Phase 1 dropped the throwaway integration with the existing per-turn agent, Task 8.1 is broken into named sub-functions, several test cases added per phase (security caps, runner-exited mid-tool, gameOver propagation across batch, B2 cache placement, run-id collision, weird-message parser fixture, multi-page inventory, etc.), risks expanded.
+
 ---
 
 ## File map (full)
@@ -97,6 +99,7 @@ The existing `bobbihack.mock.test.ts`, `bobbihack.anthropic.test.ts`, `bobbihack
   - `detectBranch(messageLine)` returns a branch label or `null` for canonical NetHack messages (`"You enter the Gnomish Mines."`, `"Welcome to Sokoban!"`, etc.).
   - `detectRogueLevel(messageLine)` matches `"You enter what seems to be an older, more primitive world."`.
   - `detectPolymorph(messageLine)` matches `"You suddenly turn into..."`.
+  - **Weird-message fixture:** include at least one "production-shape" message that breaks naïve string-matching — e.g. multi-clause messages like `"There is a staircase down here.--More--"`, embedded color codes from libghostty, or a status line with negative HP. The parser must handle them or skip cleanly with a documented fallback.
 - [ ] **Step 2:** Run tests; confirm all fail.
 - [ ] **Step 3:** Implement `parsers.ts`. Pure functions, no side effects.
 - [ ] **Step 4:** Run tests; confirm all pass.
@@ -107,15 +110,18 @@ The existing `bobbihack.mock.test.ts`, `bobbihack.anthropic.test.ts`, `bobbihack
 - [ ] **Step 1:** Write failing tests in `bobbihack.game-map.test.ts`:
   - Construction: empty, no current floor.
   - `updateFromFrame` records terrain glyphs into the current FloorMap. Player tile gets `walkable: "by_inference"`.
+  - `lastSeenTurn` on each tile updates monotonically — assert tile freshness on a multi-frame replay.
   - Branch transitions allocate a new FloorMap and switch `current`.
+  - **`level_changed_unexpectedly` detection** — Dlvl change in a frame whose preceding action wasn't `move(up)`/`move(down)` flags the trapdoor case. Returns the new floor as fresh (allocates a new FloorMap). Test by simulating a Dlvl-jump after a `move(east)` action.
   - Boulder tracking — boulder moves between frames update prior + new tile.
   - Door state transitions (`+` → `'` on bump-open).
   - `pathfind` returns `null` for impossible targets, valid step list otherwise.
-  - 8-connectivity in pathfinding; diagonal-doorway rule (no diagonal through `door_*` tiles).
+  - 8-connectivity in pathfinding; diagonal-doorway rule (no diagonal through `door_*` tiles); no diagonal squeeze past boulders.
   - `renderAscii(floorId)` returns terrain glyphs only (no monsters/items/`@`).
   - `features(floorId)` lists stairs, altars, fountains, etc.
   - Polymorph sets `walkabilitySuspect`; pathfind returns error.
   - Rogue level detection sets `isRogueLevel`; renderAscii still works (recorded glyphs are whatever was painted).
+  - **Empty/zero-floor edge:** `query`-shaped methods return well-formed empty results before any frame has arrived (no `null` deref).
 - [ ] **Step 2:** Run tests; confirm all fail.
 - [ ] **Step 3:** Implement `game-map.ts`. The A* impl is small (priority-queue + grid). Use the diagonal-doorway rule from spec §autopilot.
 - [ ] **Step 4:** Run tests; confirm all pass.
@@ -147,21 +153,14 @@ The existing `bobbihack.mock.test.ts`, `bobbihack.anthropic.test.ts`, `bobbihack
 - [ ] **Step 4:** Run tests; confirm all pass.
 - [ ] **Step 5:** Commit: `feat(bobbihack): interrupt detection library`.
 
-### Task 1.6: Wire into existing AnthropicAgent (throwaway integration)
-
-- [ ] **Step 1:** Modify `agents/anthropic.ts`'s `decide()` to:
-  - Update an in-memory GameMap from each frame.
-  - Construct the user message body using `formatToolResult` (instead of the raw "Turn N (waking on: X). Current screen:\n\n${ansi}" string).
-- [ ] **Step 2:** Run existing `bobbihack.anthropic.test.ts` smoke; update to expect new prompt shape if it asserts on it.
-- [ ] **Step 3:** Manual smoke: `BOBBIHACK_AGENT=mock bun examples/bobbihack/main.ts` (mock smoke is unaffected, just verify it still runs). If `ANTHROPIC_API_KEY` is set locally, brief live smoke.
-- [ ] **Step 4:** Commit: `feat(bobbihack): enrich per-turn user message with map+status (Phase 1 wiring, throwaway)`.
-
 ### Phase 1 done-when:
 
-- All Phase 1 tests pass.
-- Existing smoke tests still pass.
+- All Phase 1 unit tests pass (parsers, game-map, tool-result, interrupts).
+- Existing blinkyterm smoke tests still pass (Phase 1 doesn't touch them).
 - `bun run typecheck` clean for blinkyterm.
-- bobbihack runs end-to-end with mock agent.
+- The current bobbihack still runs end-to-end with mock agent (we haven't changed it yet).
+
+**Phase 1 deliberately does NOT wire the new modules into the existing per-turn agent.** Per Strigoi's review: that would be a throwaway commit. Phase 2 wires everything into the new conductor in one clean step.
 
 ---
 
@@ -212,8 +211,16 @@ The existing `bobbihack.mock.test.ts`, `bobbihack.anthropic.test.ts`, `bobbihack
 
 - [ ] **Step 1:** Write failing tests in `bobbihack.observability.test.ts`:
   - `RunLog` writes to `run.jsonl`. Each `append(event)` is a single line. Concurrent writes serialize.
-  - All required event kinds (`run_start`, `run_end`, `turn`, `retry`, `compaction`, `interrupt`, `error`) round-trip correctly.
-  - System-prompt-hash is included in `run_start`.
+  - **Each event kind has a pinned JSON shape** (validated in tests):
+    - `{event: "run_start", ts, runId, model, systemPromptHash, specVersion, toolSchemaHash}`
+    - `{event: "turn", turn, ts, tool, args, summary, screenHash, usage: {input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens}}`
+    - `{event: "compaction", ts, compactedThroughTurn, liveTailSize, messagesBefore, messagesAfter, snapshotPath}`
+    - `{event: "retry", ts, attempt, delaySec, errorClass, statusCode?}`
+    - `{event: "interrupt", ts, tool, kind, detail, also: string[]}`
+    - `{event: "error", ts, errorClass, message, fatal: boolean}`
+    - `{event: "run_end", ts, reason, totalTurns, totalCostUsd}`
+  - System-prompt-hash + `specVersion` + `toolSchemaHash` (sha256 of TOOLS array) included in `run_start`.
+  - Tests assert byte-stable JSON shape per kind (extras allowed; required fields enforced).
 - [ ] **Step 2:** Write a minimal `cost.ts` returning hardcoded `0` for now (full impl in Phase 8).
 - [ ] **Step 3:** Run tests; confirm fail.
 - [ ] **Step 4:** Implement `observability.ts` and stub `cost.ts`.
@@ -225,35 +232,40 @@ The existing `bobbihack.mock.test.ts`, `bobbihack.anthropic.test.ts`, `bobbihack
 - [ ] **Step 1:** Write failing tests in `bobbihack.conductor.test.ts`:
   - End-to-end with a `MockAnthropicClient` scripted to emit `tool_use(move, north)` then `tool_use(move, east)` then text-only (graceful end). Conductor calls handlers in order, appends correct messages, persists messages, exits gracefully.
   - Multiple tool_uses in one assistant turn are batched into one user-message tool_results.
-  - When the mock injects a recoverable error (HTTP 500), the conductor retries with the documented backoff schedule (verify via fake timer or mocked `sleep`).
-  - Mid-batch game-over: stub tool_results are synthesized for unexecuted tools; persisted log is well-formed.
+  - **N-turn end-to-end run:** scripted plan with 50 turns of `move(...)`. Assert messages array stays well-formed throughout, RunLog accumulates correct `turn` events, no leaked file handles, conductor exits cleanly on mock-emitted graceful-end.
+  - When the mock injects a recoverable error (HTTP 500), the conductor retries with the documented backoff schedule (verify via fake timer or mocked `sleep`). Test against actual SDK error class (`APIError` / `RateLimitError`) instead of duck-typed `.status`.
+  - **Pty quiesce flake:** mock the runner to deliver duplicate frames or out-of-order frames; conductor doesn't double-fire keystrokes.
+  - Mid-batch game-over: stub tool_results are synthesized for unexecuted tools; persisted log is well-formed; `runState.gameOver` propagates correctly across the rest of the batch.
   - Mid-batch abort signal: same stub-result behavior.
+  - **runner.exited mid-tool-handler:** if the runner exits during `handleMove`, the handler returns a sentinel result and the conductor exits cleanly without trying to send more keystrokes.
   - Cancellation: `signal.aborted` exits the outer while loop cleanly.
+  - **Tool input validation:** model emits `move({direction: "northnorth"})` (invalid). Conductor returns a tool_result `{error: "invalid direction"}` to the model rather than crashing.
 - [ ] **Step 2:** Run tests; confirm all fail.
-- [ ] **Step 3:** Implement `conductor.ts` per spec §Conductor implementation sketch.
+- [ ] **Step 3:** Implement `conductor.ts` per spec §Conductor implementation sketch. Use Zod (or hand-written validators) for tool-input validation; reject malformed args with a structured error in tool_result.
 - [ ] **Step 4:** Tests pass.
 - [ ] **Step 5:** Commit: `feat(bobbihack): conductor — stateful messages.stream loop + backoff`.
 
-### Task 2.6: Rewire main.ts; delete Agent interface
+### Task 2.6: Rewire main.ts; delete Agent interface; create dry-run fixture
 
 - [ ] **Step 1:** Update `system-prompt.txt` to teach the model about the conductor's tool flow and the three new movement tools (`move`/`search`/`pickup` split). Keep it short — Phase 3 expands.
-- [ ] **Step 2:** Modify `main.ts`:
+- [ ] **Step 2:** Create `packages/blinkyterm/examples/bobbihack/test/fixtures/scripted-plan.json` — a small plan (10-20 turns) used by both the `BOBBIHACK_DRY_RUN` smoke and the conductor tests.
+- [ ] **Step 3:** Modify `main.ts`:
   - Remove `pickAgent()` Agent path.
-  - Add `pickClient()` returning real or mock client.
+  - Add `pickClient()` returning real or mock client. Honor `BOBBIHACK_DRY_RUN=1` + `BOBBIHACK_DRY_RUN_PLAN=<path>` to swap in MockAnthropicClient with the loaded plan.
   - Initialize Map, Journal stubs (Phase 4 makes them real), RunLog, RunState.
   - Instantiate `Conductor` and run.
-- [ ] **Step 3:** Delete `agent.ts`, `agents/anthropic.ts`, `agents/mock.ts` (their tests too).
-- [ ] **Step 4:** Update `bobbihack.render.test.ts` and `bobbihack.state.test.ts` expectations — UI events now include `tool_executing`.
-- [ ] **Step 5:** Run all blinkyterm tests; everything passes.
-- [ ] **Step 6:** Manual smoke: `BOBBIHACK_DRY_RUN=1 BOBBIHACK_DRY_RUN_PLAN=test/fixtures/scripted-plan.json bun examples/bobbihack/main.ts`. Optional live smoke if `ANTHROPIC_API_KEY` is set.
-- [ ] **Step 7:** Commit: `refactor(bobbihack): replace per-turn Agent with conductor (Phase 2)`.
+- [ ] **Step 4:** Delete `agent.ts`, `agents/anthropic.ts`, `agents/mock.ts` (their tests too).
+- [ ] **Step 5:** Update `bobbihack.render.test.ts` and `bobbihack.state.test.ts` expectations — UI events now include `tool_executing`.
+- [ ] **Step 6:** Run all blinkyterm tests; everything passes.
+- [ ] **Step 7:** Manual smoke: `BOBBIHACK_DRY_RUN=1 BOBBIHACK_DRY_RUN_PLAN=examples/bobbihack/test/fixtures/scripted-plan.json bun examples/bobbihack/main.ts` — runs end-to-end without API. This is the **non-conditional Phase 2 done-when gate** (works regardless of API-key availability). Optional live smoke if `ANTHROPIC_API_KEY` is set.
+- [ ] **Step 8:** Commit: `refactor(bobbihack): replace per-turn Agent with conductor (Phase 2)`.
 
 ### Phase 2 done-when:
 
 - All blinkyterm tests pass (including new conductor + client + tool tests).
 - Typecheck clean.
-- bobbihack runs against MockAnthropicClient with a scripted plan.
-- bobbihack runs against the real Anthropic API with a small smoke (if keys available).
+- `BOBBIHACK_DRY_RUN=1` smoke runs end-to-end against the scripted-plan fixture (this is the unconditional gate; no API key required).
+- bobbihack runs against the real Anthropic API with a small smoke (if `ANTHROPIC_API_KEY` is set).
 - Old per-turn Agent code is gone.
 - **STOP HERE AND REPORT TO MATT FOR FIRST TESTING.**
 
@@ -283,11 +295,12 @@ For each cluster (eat/quaff/read; zap/wear/wield; puton/takeoff/remove; drop/thr
 
 - [ ] **Step 1:** Write failing tests:
   - `handleInventory({}, ctx)` sends `i`, captures the inventory screen, parses items, sends `<esc>` or `<space>`, awaits frame to confirm dismissed, returns `{items: [...]}`.
-  - Inventory parser handles: empty, single-item, multi-page, item lines like `a - a +1 long sword (weapon in hand)`.
+  - Inventory parser handles: empty, single-item, item lines like `a - a +1 long sword (weapon in hand)`, BUC prefix markers (`* + ?`).
+  - **Multi-page inventory:** a separate test exercises the `(end)` and `(N of M)` page markers. Asserts that `<space>`-to-advance-page logic captures all items across pages before dismissing.
   - Free action — nethack's turn count doesn't advance.
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Tests pass.
-- [ ] **Step 4:** Commit: `feat(bobbihack): tools/items — inventory (free action)`.
+- [ ] **Step 4:** Commit: `feat(bobbihack): tools/items — inventory (free action, multi-page)`.
 
 ### Task 3.4: System prompt update
 
@@ -434,16 +447,67 @@ For each cluster (eat/quaff/read; zap/wear/wield; puton/takeoff/remove; drop/thr
 
 ### Task 8.1: compaction.ts
 
-- [ ] **Step 1:** Write failing tests in `bobbihack.compaction.test.ts`:
-  - Trigger periodic (every 50 turns) and token-budget (>80%) compaction.
-  - Live tail of K=20 kept verbatim; older `tool_result.content` replaced with stub.
-  - Compaction marker injected at the boundary.
-  - Compaction sequence numbered; snapshot written to `messages/NNNN.json`.
-  - `BOBBIHACK_KEEP_SNAPSHOTS` retention.
-  - Hard fail-safe (400 invalid_request_error) compacts aggressively to K=5 and retries once.
+The compaction module has four named sub-functions. Implement each as a separately-tested unit, then the orchestrator.
+
+#### 8.1a — `summarizeOldToolResult(turnIdx, toolUse, oldResult): string`
+
+Replaces a verbose `tool_result.content` with a one-line stub. Pure function, no side effects.
+
+- [ ] **Step 1:** Tests assert byte-stable stub format: `"<turn N — toolName(args-summary): outcome-summary>"`. Examples for `move`, `autopilot_to`, `journal_read`, etc.
 - [ ] **Step 2:** Implement.
 - [ ] **Step 3:** Tests pass.
-- [ ] **Step 4:** Commit: `feat(bobbihack): compaction — cache breakpoints, live tail, marker`.
+- [ ] **Step 4:** Commit: `feat(bobbihack): compaction — summarizeOldToolResult`.
+
+#### 8.1b — `placeBreakpoints(messages, liveTailStart): Message[]`
+
+Sets `cache_control: {type: "ephemeral", ttl: "1h"}` on B1 (system) and B2 (first message at or after `liveTailStart` that wasn't rewritten in this compaction). Returns a new messages array (immutable in).
+
+- [ ] **Step 1:** Tests:
+  - B1 stays on system prompt block.
+  - B2 placed correctly at `liveTailStart`.
+  - **Re-compaction moves B2 forward** — second compaction's B2 must be at the new boundary, not the old.
+  - **Byte-exact prefix invariant:** test that the messages-array prefix up to B2 is byte-identical to a prior request that ended at B2 (cache-eligible).
+- [ ] **Step 2:** Implement.
+- [ ] **Step 3:** Tests pass.
+- [ ] **Step 4:** Commit: `feat(bobbihack): compaction — placeBreakpoints`.
+
+#### 8.1c — `injectCompactionMarker(messages, atIdx, throughTurn): Message[]`
+
+Inserts a synthetic `user` message at the boundary between compacted history and live tail.
+
+- [ ] **Step 1:** Tests assert the marker text and position; idempotent (re-injection at the same idx replaces the existing marker rather than stacking).
+- [ ] **Step 2:** Implement.
+- [ ] **Step 3:** Tests pass.
+- [ ] **Step 4:** Commit: `feat(bobbihack): compaction — injectCompactionMarker`.
+
+#### 8.1d — `writeSnapshot(runDir, seqNum, messages): Promise<string>`
+
+Writes `messages/NNNN.json` (full snapshot, NNNN = compaction sequence). Honors `BOBBIHACK_KEEP_SNAPSHOTS` retention (deletes older snapshots beyond N).
+
+- [ ] **Step 1:** Tests:
+  - First call writes `0001.json`. Second `0002.json`. Sequence increments monotonically.
+  - With `BOBBIHACK_KEEP_SNAPSHOTS=2`, third call deletes `0001.json`.
+  - Atomic write (temp + rename); concurrent caller never sees a partial file.
+- [ ] **Step 2:** Implement.
+- [ ] **Step 3:** Tests pass.
+- [ ] **Step 4:** Commit: `feat(bobbihack): compaction — writeSnapshot + retention`.
+
+#### 8.1e — `maybeCompact(messages, runState, ctx): Promise<Message[]>` (orchestrator)
+
+Combines the four sub-functions. Triggered by:
+- Periodic: every 50 turns since last compaction.
+- Token budget: estimated input tokens > 80% of context window.
+- Hard fail-safe: caller passes `force: true` after a 400 invalid_request_error; aggressive K=5.
+
+- [ ] **Step 1:** Tests:
+  - Trigger conditions covered (turn count, token budget via mocked estimator, force).
+  - Hard fail-safe: K=5 instead of K=20.
+  - On no-trigger, returns input messages unchanged.
+  - Compaction event logged to RunLog.
+  - `also`-style enrichment of summary line preserved when condensing tool_results.
+- [ ] **Step 2:** Implement.
+- [ ] **Step 3:** Tests pass.
+- [ ] **Step 4:** Commit: `feat(bobbihack): compaction — maybeCompact orchestrator`.
 
 ### Task 8.2: Cost monitoring full impl
 
@@ -502,8 +566,13 @@ The spec has 5 open questions. Disposition during implementation:
 
 - **NetHack version drift.** The plan assumes NetHack 3.6 keystrokes and message strings. If the host has a different version (3.4, 3.7), tests + interrupts may fail. Document the version at the start of each run via `extended_command({name: "version"})` and stamp it into `run.jsonl`.
 - **SDK API drift.** `stream.finalMessage()` is part of `@anthropic-ai/sdk`; pin a version in `package.json` to avoid silent breakage.
-- **Pty quiesce sensitivity.** `runner.frames()` quiesce timing affects how many keystrokes the agent thinks succeeded. Phase 6/7 autopilots depend on this. If autopilot loops feel wrong, instrument with `runner.frames({quiesceMs: ...})` tuning.
-- **Worktree forgetfulness.** This is a 8-phase plan. Don't merge to main until Phase 8 done-when is satisfied (or Matt explicitly asks to merge an earlier phase). Each phase done-when is a natural rebase/merge candidate but only with explicit approval.
+- **SDK error class drift.** Anthropic's SDK wraps API errors in `APIError`/`RateLimitError`/etc. classes. `isRecoverableApiError` should match against these classes (and their `.status` accessor) rather than duck-typed `.status` — recent SDK versions may not expose status the same way on all error types. Phase 2 tests include this.
+- **Tool input parsing.** `tu.input` from the SDK is `unknown`-shaped; a malformed tool call (e.g. model emits `move({direction: "northnorth"})`) must fail safely with a `tool_result: {error}` rather than throw. Use Zod or hand-written validators per tool schema.
+- **Cache TTL economics.** 1h `ephemeral` TTL is supported but **costs more on cache write** than 5m. Phase 8 cost tests must verify cache-creation tokens are correctly counted in the running USD total — otherwise we under-bill ourselves.
+- **Pty quiesce sensitivity.** `runner.frames()` quiesce timing affects how many keystrokes the agent thinks succeeded. Phase 6/7 autopilots depend on this. Phase 2 tests include a quiesce-flake mock to verify the conductor doesn't double-fire on a flaky frame stream.
+- **Worktree forgetfulness.** This is an 8-phase plan. Don't merge to main until Phase 8 done-when is satisfied (or Matt explicitly asks to merge an earlier phase). Each phase done-when is a natural rebase/merge candidate but only with explicit approval. **Rebase the worktree onto `main` between phases** — main may move while you're 8 phases deep.
+- **CHANGELOG decision.** The repo's `libghostty-vt` package ships a CHANGELOG; `blinkyterm` does not (it's unpublished example-shaped code). Phase 8 doesn't add a blinkyterm CHANGELOG by default — if Matt wants one before this ships externally, it's a separate cleanup. Don't bikeshed it during the plan.
+- **Co-Authored-By footer.** Commits in this repo's recent history use `Co-Authored-By: <BobName> (Bob <id>/<model>)`. Honor that style on every commit during execution; the plan's commit-message examples omit it for brevity but the implementing Bob should add it.
 
 ---
 
