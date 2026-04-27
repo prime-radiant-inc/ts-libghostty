@@ -554,6 +554,120 @@ describe("maybeCompact — live tail preservation", () => {
   });
 });
 
+describe("conductor integration — compaction wired end-to-end", () => {
+  let tmpDir: string;
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), "bobbihack-conductor-compact-"));
+  });
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("51-turn scripted run logs at least one compaction event + writes a snapshot", async () => {
+    // Lazy-imports for types/values keep the top-of-file deps tight.
+    const { runConductor } = await import("../../examples/bobbihack/conductor");
+    const { MockAnthropicClient } = await import("../../examples/bobbihack/client");
+    const { GameMap } = await import("../../examples/bobbihack/game-map");
+    const fs = await import("node:fs");
+
+    // Build a 51-turn plan: 50 moves + a final text-only turn so the
+    // conductor exits cleanly.
+    const plan: { text?: string; toolUses?: { name: string; input: unknown }[] }[] = [];
+    for (let i = 1; i <= 50; i++) {
+      plan.push({
+        text: `step ${i}`,
+        toolUses: [{ name: "move", input: { direction: "east" } }],
+      });
+    }
+    plan.push({ text: "Done." });
+
+    const messagesDir = join(tmpDir, "messages");
+    fs.mkdirSync(messagesDir, { recursive: true });
+    const messagesPath = join(tmpDir, "messages.json");
+    const runLogPath = join(tmpDir, "run.jsonl");
+
+    const ac = new AbortController();
+    const map = new GameMap();
+    const runState: { gameOver: boolean; endReason: string | null } = {
+      gameOver: false,
+      endReason: null,
+    };
+
+    // Borrow the exact StatusLine shape used by the existing
+    // conductor smoke test; FrameAwaitResult is structural so the
+    // sendKeysAndWait return needs to match it precisely.
+    const statusLine = {
+      name: "Hero",
+      title: "Stripling",
+      attrs: { st: "18", dx: 11, co: 14, in: 11, wi: 13, ch: 7 },
+      alignment: "Lawful" as const,
+      ac: 7,
+      hp: 14,
+      hpMax: 14,
+      pw: 5,
+      pwMax: 5,
+      level: 1,
+      xp: 0,
+      dlvl: 1,
+      turn: 1,
+      gold: 0,
+      hunger: "ok" as const,
+      conditions: [] as string[],
+    };
+
+    const ctx = {
+      map,
+      runState,
+      signal: ac.signal,
+      sendKeysAndWait: async (_keys: string) => {
+        const rows = Array.from({ length: 24 }, () => " ".repeat(80));
+        return {
+          rows,
+          status: statusLine,
+          message: "",
+          frameReason: "cellChange",
+          screenAnsi: rows.join("\n"),
+        };
+      },
+    };
+
+    const handlers = {
+      move: async (_args: unknown, _c: unknown) =>
+        "== bobbihack tool_result v1 ==\nmove(east): walked.\n[fluffy padding]\n".repeat(10),
+    };
+
+    const client = new MockAnthropicClient(plan);
+    const runLog = new RunLog(runLogPath);
+
+    // Cast deps shape: ToolContext fields match structurally.
+    await runConductor({
+      client,
+      toolCtx: ctx as never,
+      toolHandlers: handlers as never,
+      runLog,
+      systemPrompt: "test prompt",
+      toolSchemas: [],
+      messagesPath,
+      model: "claude-haiku-4-5",
+      initialUserMessage: "go",
+      backoffSleeper: async (_s: number) => {},
+      messagesDir,
+    });
+
+    runLog.close();
+
+    const events = readFileSync(runLogPath, "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { event: string });
+    const compactionCount = events.filter((e) => e.event === "compaction").length;
+    expect(compactionCount).toBeGreaterThanOrEqual(1);
+
+    const snapshotFiles = readdirSync(messagesDir).filter((f) => /^\d{4}\.json$/.test(f));
+    expect(snapshotFiles.length).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("maybeCompact — BOBBIHACK_LIVE_TAIL env var", () => {
   let tmpDir: string;
   let runLog: RunLog;
