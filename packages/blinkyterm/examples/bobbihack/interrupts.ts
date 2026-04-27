@@ -1,0 +1,301 @@
+// Interrupt detection library. The autopilot tools loop until any
+// interrupt fires; the conductor reports the primary interrupt and any
+// co-occurring interrupts in the tool_result summary.
+
+import type { StatusLine } from "./parsers";
+
+export interface InterruptFrame {
+  rows: string[];
+  status: StatusLine;
+  message: string;
+  frameReason?: string;
+}
+
+export interface InterruptContext {
+  prev?: InterruptFrame;
+  cur: InterruptFrame & { frameReason: string };
+  // Map-derived signals.
+  enteredTrapTile?: boolean;
+  unexpectedLevelChange?: { from: string; to: string };
+  abortSignal?: boolean;
+}
+
+export type InterruptDetector = (ctx: InterruptContext) => boolean | string;
+
+export interface Interrupt {
+  name: string;
+  // Lower number = higher priority. Modal/lethal events first.
+  priority: number;
+  detect: InterruptDetector;
+}
+
+// Helpers ------------------------------------------------------------
+
+const MODAL_PATTERNS = [
+  /--More--/,
+  /\[yn[a-z]*\]/i,                    // [yn], [ynq], [ynaq]
+  /\[a-z[A-Z]*\b/i,                   // letter-selection menus  e.g. "[a-z A-Z]"
+  /In what direction\?/i,
+  /What do you want to (eat|drink|read|wear|put on|take off|remove|wield|drop|throw|apply|zap)\?/i,
+  /Pick (up|an? item)/i,
+];
+
+function detectMonsterAppeared(
+  prevRows: string[] | undefined,
+  curRows: string[],
+): string | false {
+  if (prevRows === undefined) return false;
+  for (let y = 0; y < curRows.length; y++) {
+    const cur = curRows[y]!;
+    const prev = prevRows[y] ?? "";
+    for (let x = 0; x < cur.length; x++) {
+      const ch = cur[x]!;
+      // Letter glyphs (other than @) are monsters in default NetHack charset.
+      if (/^[a-zA-Z]$/.test(ch) && ch !== "@") {
+        // Was it there in the prev frame at the same position?
+        if (prev[x] !== ch) {
+          return `${ch} at (${x},${y})`;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function detectNewItem(
+  prevRows: string[] | undefined,
+  curRows: string[],
+): string | false {
+  if (prevRows === undefined) return false;
+  const itemRe = /^[?!()=*$%/"\[\]]$/;
+  for (let y = 0; y < curRows.length; y++) {
+    const cur = curRows[y]!;
+    const prev = prevRows[y] ?? "";
+    for (let x = 0; x < cur.length; x++) {
+      const ch = cur[x]!;
+      if (itemRe.test(ch) && prev[x] !== ch) {
+        return `${ch} at (${x},${y})`;
+      }
+    }
+  }
+  return false;
+}
+
+function detectEngulfed(curRows: string[]): boolean {
+  // Heuristic: the player @ appears in the center surrounded by walls of an
+  // engulfer. We approximate by checking for "/-\\" / "|@|" / "\\-/" patterns
+  // — not exhaustive, but matches NetHack's engulfer rendering.
+  // Find @.
+  for (let y = 0; y < curRows.length; y++) {
+    const idx = curRows[y]!.indexOf("@");
+    if (idx < 0) continue;
+    // Check tiles around for engulfer-like glyphs (the inside of a swallower
+    // is rendered with characters specific to the monster — e.g. 'D' for
+    // dragon swallow, 'P' for purple worm. Detection is approximate.
+    if (y > 0 && y < curRows.length - 1) {
+      const above = curRows[y - 1]!;
+      const below = curRows[y + 1]!;
+      // Look for wall-like pattern surrounding the @.
+      const hasWalls =
+        (above[idx - 1] === "/" || above[idx - 1] === "-") &&
+        (above[idx] === "-" || above[idx] === "@") &&
+        (below[idx - 1] === "\\" || below[idx - 1] === "-");
+      if (hasWalls) return true;
+    }
+  }
+  return false;
+}
+
+// Definitions -------------------------------------------------------
+
+export const INTERRUPTS: Interrupt[] = [
+  // 0-99: critical / game-ending
+  {
+    name: "you_die",
+    priority: 0,
+    detect: (c) =>
+      /^You die/i.test(c.cur.message) ||
+      /Do you want your possessions identified/i.test(c.cur.message),
+  },
+  {
+    name: "you_ascend",
+    priority: 1,
+    detect: (c) =>
+      /You offer.*Amulet of Yendor/i.test(c.cur.message) ||
+      /Congratulations, you have ascended/i.test(c.cur.message),
+  },
+
+  // 100-199: modal / blocking input
+  {
+    name: "modal_prompt",
+    priority: 100,
+    detect: (c) => {
+      for (const re of MODAL_PATTERNS) {
+        if (re.test(c.cur.message)) return true;
+      }
+      return false;
+    },
+  },
+
+  // 200-299: combat / immediate danger
+  {
+    name: "engulfed",
+    priority: 200,
+    detect: (c) => detectEngulfed(c.cur.rows),
+  },
+  {
+    name: "low_hp",
+    priority: 210,
+    detect: (c) => {
+      const { hp, hpMax } = c.cur.status;
+      if (hpMax <= 0) return false;
+      return hp < Math.max(1, hpMax / 3) ? `${hp}/${hpMax}` : false;
+    },
+  },
+  {
+    name: "hp_drop",
+    priority: 220,
+    detect: (c) => {
+      if (c.prev === undefined) return false;
+      if (c.cur.status.hp < c.prev.status.hp) {
+        return `${c.prev.status.hp} → ${c.cur.status.hp}`;
+      }
+      return false;
+    },
+  },
+  {
+    name: "pet_attacking_you",
+    priority: 230,
+    detect: (c) =>
+      /Your .* (bites|attacks|hits) you/i.test(c.cur.message) ||
+      /Your .* misses you/i.test(c.cur.message),
+  },
+  {
+    name: "monster_visible",
+    priority: 240,
+    detect: (c) => detectMonsterAppeared(c.prev?.rows, c.cur.rows),
+  },
+
+  // 300-399: status effect onsets
+  {
+    name: "paralyzed",
+    priority: 300,
+    detect: (c) => /You can't move yourself!/i.test(c.cur.message),
+  },
+  {
+    name: "polymorphed",
+    priority: 310,
+    detect: (c) => /You suddenly turn into /i.test(c.cur.message),
+  },
+  {
+    name: "stunned",
+    priority: 320,
+    detect: (c) =>
+      /You stagger/i.test(c.cur.message) ||
+      (!c.prev?.status.conditions.includes("Stun") &&
+        c.cur.status.conditions.includes("Stun")),
+  },
+  {
+    name: "confused",
+    priority: 321,
+    detect: (c) =>
+      !c.prev?.status.conditions.includes("Conf") &&
+      c.cur.status.conditions.includes("Conf"),
+  },
+  {
+    name: "hallucinating",
+    priority: 322,
+    detect: (c) =>
+      !c.prev?.status.conditions.includes("Hallu") &&
+      c.cur.status.conditions.includes("Hallu"),
+  },
+  {
+    name: "blind",
+    priority: 323,
+    detect: (c) =>
+      !c.prev?.status.conditions.includes("Blind") &&
+      c.cur.status.conditions.includes("Blind"),
+  },
+  {
+    name: "weapon_cursed_welded",
+    priority: 330,
+    detect: (c) => /welds itself to your hand!/i.test(c.cur.message),
+  },
+  {
+    name: "armor_cursed_stuck",
+    priority: 331,
+    detect: (c) => /You can't .* (you are wearing|seems to be stuck)/i.test(c.cur.message),
+  },
+  {
+    name: "hunger_transition",
+    priority: 340,
+    detect: (c) => {
+      if (c.prev === undefined) return false;
+      if (c.prev.status.hunger !== c.cur.status.hunger) {
+        return `${c.prev.status.hunger} → ${c.cur.status.hunger}`;
+      }
+      return false;
+    },
+  },
+  {
+    name: "xp_levelup",
+    priority: 350,
+    detect: (c) => {
+      const m = c.cur.message.match(/Welcome to experience level (\d+)/i);
+      return m ? `level ${m[1]}` : false;
+    },
+  },
+
+  // 400-499: game state changes
+  {
+    name: "level_changed_unexpectedly",
+    priority: 400,
+    detect: (c) =>
+      c.unexpectedLevelChange !== undefined
+        ? `${c.unexpectedLevelChange.from} → ${c.unexpectedLevelChange.to}`
+        : false,
+  },
+  {
+    name: "entered_trap_tile",
+    priority: 410,
+    detect: (c) => c.enteredTrapTile === true,
+  },
+  {
+    name: "new_item_visible",
+    priority: 420,
+    detect: (c) => detectNewItem(c.prev?.rows, c.cur.rows),
+  },
+  {
+    name: "bell",
+    priority: 430,
+    detect: (c) => c.cur.frameReason === "bell",
+  },
+];
+
+// Public API --------------------------------------------------------
+
+export interface InterruptHit {
+  name: string;
+  detail: string | undefined;
+}
+
+export interface InterruptResult {
+  primary: InterruptHit | null;
+  also: InterruptHit[];
+}
+
+export function runInterruptChecks(c: InterruptContext): InterruptResult {
+  const hits: { interrupt: Interrupt; detail: string | undefined }[] = [];
+  for (const i of INTERRUPTS) {
+    const r = i.detect(c);
+    if (r === false) continue;
+    const detail = typeof r === "string" ? r : undefined;
+    hits.push({ interrupt: i, detail });
+  }
+  if (hits.length === 0) return { primary: null, also: [] };
+  hits.sort((a, b) => a.interrupt.priority - b.interrupt.priority);
+  return {
+    primary: { name: hits[0]!.interrupt.name, detail: hits[0]!.detail },
+    also: hits.slice(1).map((h) => ({ name: h.interrupt.name, detail: h.detail })),
+  };
+}
