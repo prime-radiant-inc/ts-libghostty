@@ -1,8 +1,8 @@
 # Bobbihack — Stateful Agentic Loop Design
 
-**Author:** Dirk (Bob `1dffecf5`), with NetHack research by Glyph (Bob-21), and review by Bob-Croesus (NetHack lens) and Bob-Hexley (generalist lens)
+**Author:** Dirk (Bob `1dffecf5`), with NetHack research by Glyph (Bob-21), and review by Bob-Croesus + Bob-Tycho (NetHack lens) and Bob-Hexley + Bob-Tycho (generalist lens)
 **Date:** 2026-04-26
-**Status:** draft — for review (revision 3)
+**Status:** draft — ready to plan against (revision 4)
 **Scope:** `packages/blinkyterm/examples/bobbihack/` — the smart-agent path
 **Replaces:** the current per-turn one-shot Anthropic invocation
 
@@ -107,8 +107,8 @@ Every item-action tool either takes an inventory slot letter directly (e.g. `eat
 | `apply({ slot })` | `a` | slot | Apply tool (whistle, horn, key, etc.). |
 | `kick({ direction })` | `^d` | direction | Kick — door, sink, monster. |
 | `pray({})` | `#pray` | none | Pray to deity. Has cooldowns and alignment requirements; agent learns timing. |
-| `force_fight({ direction })` | `F<dir>` | direction | Attack into a tile that may or may not have a monster. |
-| `extended_command({ name, args? })` | `#<name>` | string | Generic `#`-prefixed extended commands: `#chat`, `#dip`, `#loot`, `#offer`, `#sit`, `#turn`, `#name`, `#conduct`, `#enhance`, etc. `args` is a string passed verbatim after the command. |
+| `force_fight({ direction })` | `F<dir>` | direction (same enum as `move`, excluding `up`/`down`) | Attack into a tile that may or may not have a monster. |
+| `extended_command({ name, args? })` | `#<name>` | string | Generic `#`-prefixed extended commands: `#chat`, `#dip`, `#loot`, `#offer`, `#sit`, `#turn`, `#name`, `#conduct`, `#enhance`, `#quit`, etc. The handler sends `#<name>\r`. `args`, when given, is a literal string sent after the command (≤16 chars). If NetHack opens a sub-prompt mid-command (multi-step menus like `#name`), the next agent turn is expected to answer via `respond_prompt`. **Quit:** the agent issues `extended_command({name: "quit"})` to initiate the #quit dance; bobbihack does NOT auto-confirm the y/n prompts — the agent's next turn (an interrupt-stop on `modal_prompt`) responds with `respond_prompt({keys: "y"})` etc. |
 | `command({ keys })` | literal | string | Last-resort low-level escape hatch. `keys` is a literal NetHack key sequence (≤16 chars). The tool sends them verbatim. Use only when no higher-level tool fits. |
 
 `slot` is always a single character (`a`-`z`, `A`-`Z`, `*`, `$`, `#`, `?`, `-`).
@@ -125,7 +125,13 @@ Send a literal short key sequence (≤8 chars) to NetHack — used to answer mod
 #### `autopilot_to({ floor, x, y })`
 Pathfind from current tile to the named tile, sending one keystroke per step, interruptible.
 
-**Handler:** runs A* over the recorded Map (8-connectivity, with diagonal-blocked-through-doorways rule). Returns `{ error: "no path" | "unknown floor" | "unknown tile" }` if planning fails. Otherwise loops: send keystroke → await frame → check interrupt list → continue or break. On finish, returns standard tool_result with `summary: "autopilot_to(D1,29,7): arrived after 12 steps"` or `"...stopped after 4 steps. interrupt: monster_visible"`.
+**Handler:** runs A* over the recorded Map (8-connectivity). Returns `{ error: "no path" | "unknown floor" | "unknown tile" }` if planning fails. Otherwise loops: send keystroke → await frame → check interrupt list → continue or break. On finish, returns standard tool_result with `summary: "autopilot_to(D1,29,7): arrived after 12 steps"` or `"...stopped after 4 steps. interrupt: monster_visible"`.
+
+**Diagonal-movement rules** (NetHack 3.6, applied during pathfinding and step execution):
+- Cannot move diagonally through a doorway (open or closed). If the path between (x,y) and (x±1,y±1) requires passing through a `door_*` tile, that diagonal edge is removed from the graph.
+- Cannot move diagonally into or out of a shop entrance.
+- Cannot squeeze diagonally past a boulder (Sokoban relevance — autopilot already refuses Sokoban).
+- All other 8-connectivity is allowed.
 
 **Trap protection:** never plans a path through a tile classified as `trap_known`; if a previously-clear tile reveals a trap mid-traversal, halts via the `entered_trap_tile` interrupt before stepping in.
 
@@ -150,10 +156,12 @@ Replace the named section's content. Same enum.
 
 ### Map query
 
-#### `query_terrain({ floor })`
+#### `query_terrain({ floor? })`
 Returns the recorded **plain ASCII** terrain map of a floor + a feature list. (Renamed from `query_map` to reinforce that it returns terrain only, not the live view.)
 
-**Handler:** reads from the GameMap. If `floor` is omitted, returns a list of all visited floors with turn ranges. Otherwise returns `{ floor, ascii: "<rendered terrain>", features: [{glyph, x, y, kind}] }`. Returns `{ error: "no map recorded for floor 'D5'" }` for unvisited floors.
+`floor` is optional. When omitted, returns a list of visited floors instead of map content.
+
+**Handler:** reads from the GameMap. If `floor` is omitted, returns `{ floors: [{ id, firstTurn, lastTurn, tileCount }] }`. Otherwise returns `{ floor, ascii: "<rendered terrain>", features: [{glyph, x, y, kind}] }`. Returns `{ error: "no map recorded for floor 'D5'" }` for unvisited floors.
 
 **No color in the rendered ASCII.** Terrain glyphs are unambiguous on their own (closed/open is in the glyph; locked is invisible until you bump; altar alignment is only known after stepping on it and is recorded in `Dungeon.md`). Color matters for monsters and items on the **live screen** (yellow vs red dragon, etc.) — but the live screen is sent unchanged with full color in every tool_result. `query_terrain` is for terrain recall; the structured info that matters (altar alignment, trap types, fountain state) belongs in the Dungeon journal section.
 
@@ -334,7 +342,7 @@ Two signals, combined:
 1. **`Dlvl:` from the status line** — gives the depth in the main dungeon.
 2. **Branch / sub-level messages** — bobbihack watches the message line for canonical NetHack strings to label the current branch and special level.
 
-Combined floor ID: `<branch>:<sublabel-or-dlvl>`. Examples:
+Combined floor ID: `<branch>:<sublabel>` where `<sublabel>` is either a positive integer or a named subkey. Grammar: `<branch>(:<int>|:<named>)?`. The bare-branch form (e.g. `Castle`, `Bigroom`) is used for single-level branches. Examples:
 
 | ID                  | Source signal |
 |---------------------|---------------|
@@ -399,7 +407,7 @@ Both `autopilot_to` and `autopilot_explore` halt and return when any of:
 - **`modal_prompt`** — top message line matches `--More--`, `[yn]`, `[a-zA-Z $#?*]`, `In what direction?`, or any prompt the existing `detectPrompt` helper recognizes. The agent's next turn is expected to be `respond_prompt`.
 
 ### Combat & danger
-- **`monster_visible`** — a letter glyph appears that wasn't on the previous frame, or a known glyph moved into line-of-sight.
+- **`monster_visible`** — a letter glyph appears that wasn't on the previous frame, or a known glyph moved into line-of-sight. **Note:** this will fire on peaceful pets (your dog, cat, etc.) entering line-of-sight; that's intentional first-pass behavior — the agent decides whether to ignore. A future refinement could filter known-peaceful glyphs (NetHack's `Hilite_pet` option renders them differently when set).
 - **`hp_drop`** — HP decreased between frames (any amount).
 - **`low_hp`** — HP fell below `max(1, hpMax / 3)`. NetHack's conventional panic threshold.
 - **`pet_attacking_you`** — confused/hostile pet attacking; detected by message line.
@@ -437,7 +445,9 @@ Most interrupts are detected by:
 
 The `summary` line in the tool_result names the specific interrupt: `"autopilot_explore: 23 steps. stopped: monster_visible (k at (8,12))"`.
 
-The interrupt library lives in `packages/blinkyterm/examples/bobbihack/interrupts.ts` (new file). Each interrupt is a `{ name, detect(prevFrame, curFrame, prevStatus, curStatus): boolean | string }` — `string` return is an extra detail line for the summary.
+**Ordering & dedup:** if multiple interrupt conditions match the same frame, the autopilot stops on the *first* matching interrupt in the order listed above (modal/combat/status/game-state/operational). Subsequent matches in the same frame are listed in the summary as `also: [low_hp, hunger_transition]` so the agent doesn't lose information. The order is chosen so safety-critical interrupts (modal prompts that block input, low HP, you-die) are surfaced first.
+
+The interrupt library lives in `packages/blinkyterm/examples/bobbihack/interrupts.ts` (new file). Each interrupt is a `{ name, priority: number, detect(prevFrame, curFrame, prevStatus, curStatus): boolean | string }` — `string` return is an extra detail line for the summary; `priority` is used for ordering.
 
 ---
 
@@ -473,9 +483,33 @@ async function conductor(opts: ConductorOpts): Promise<void> {
       }
 
       // Execute every tool_use in order, accumulate tool_results.
+      // INVARIANT: every tool_use in the assistant message MUST have a
+      // matching tool_result in the next user message (Anthropic API
+      // schema requirement). If we abort or the game ends mid-batch,
+      // synthesize stub tool_results for the unexecuted tools so the
+      // persisted log stays well-formed.
       const toolResults: ToolResultBlock[] = [];
+      let stopBatchEarly = false;
       for (const tu of toolUses) {
-        if (ac.signal.aborted) break;
+        if (stopBatchEarly) {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: "[skipped: prior tool ended the run or aborted]",
+            is_error: true,
+          });
+          continue;
+        }
+        if (ac.signal.aborted) {
+          toolResults.push({
+            type: "tool_result",
+            tool_use_id: tu.id,
+            content: "[skipped: user aborted]",
+            is_error: true,
+          });
+          stopBatchEarly = true;
+          continue;
+        }
         const args = tu.input ?? {};  // SDK gives parsed input; no manual JSON.parse
         const content = await runTool(tu.name, args, { runner, map, journal, ac, runState });
         toolResults.push({
@@ -484,11 +518,11 @@ async function conductor(opts: ConductorOpts): Promise<void> {
           content,
         });
         ui.commitTurn(tu.name, content);
-        // If a game-ending tool fired, mark and stop running further tools.
-        if (runState.gameOver) break;
+        if (runState.gameOver) stopBatchEarly = true;
       }
 
-      // Single user message containing all tool_results from this assistant turn.
+      // Single user message containing all tool_results — well-formed
+      // even if some are stubs.
       messages.push({ role: "user", content: toolResults });
       await persistMessages(messages);
 
@@ -627,7 +661,7 @@ When `messages.stream()` (or any subsequent retrieve/raw-stream call) fails:
   Retry with exponential backoff: 1s, 2s, 4s, 8s, 16s (cap), max 5 attempts. Surface a `[bobbihack] anthropic api unavailable, retrying in Ns…` line in the agent pane between attempts. On final failure, fail loudly (exit non-zero with a clear message).
 - **Unrecoverable:** HTTP 4xx (other than 429), invalid API key, model-not-found, schema violations, etc. Fail immediately. No retry.
 
-The messages array is held in memory only during a run. We do persist `messages/NNNN.json` snapshots periodically (cheap, append-only, named by sequence number) so a process restart *could* in principle replay — but the matching nethack process is gone, so cross-process resumption is **not a goal**. The snapshot files are forensic, not load-bearing. We may use them for debugging post-mortem.
+The messages array is held in memory only during a run. We persist `messages/NNNN.json` as **full message-array snapshots** at compaction events (one snapshot per compaction; `NNNN` is the compaction sequence number). They are forensic, not load-bearing — a process restart *could* in principle replay from one, but the matching nethack process is gone, so cross-process resumption is **not a goal**. Older snapshots may be GC'd via `BOBBIHACK_KEEP_SNAPSHOTS=N` (default: keep all; set to a positive integer to limit retention).
 
 If you want serious long-running play across machine restarts, that's a future spec — it'd need NetHack save-file integration plus a way to verify the saved game matches the saved messages. Not solving that now.
 
@@ -692,6 +726,8 @@ A long-running stream burning tokens for hours is real money. Three mitigations:
 3. **Hard budget kill switch via env var:** `BOBBIHACK_MAX_USD=2.50` exits cleanly when the running total exceeds the cap. Prevents accidental runaway spending. Default: unset (no limit).
 
 Cost calculation uses Anthropic's posted per-token rates for the chosen model; bobbihack hard-codes the rates table at build time and warns if the model selected isn't in the table.
+
+**`BOBBIHACK_DRY_RUN=1`** swaps the real Anthropic SDK for `MockAnthropicClient` with a scripted plan loaded from `BOBBIHACK_DRY_RUN_PLAN=<path-to-yaml-or-json>`. Useful for local smoke testing without burning API tokens. The same mechanism the test suite uses; here it's exposed as a CLI escape hatch.
 
 ---
 
