@@ -27,6 +27,29 @@ import { runConductor, type ToolHandler, type ConductorEvents } from "./conducto
 import { handleMove, handleSearch, handlePickup } from "./tools/move";
 import { handleRespondPrompt } from "./tools/respond-prompt";
 import { handleInventory } from "./tools/inventory";
+import {
+  handleEat,
+  handleQuaff,
+  handleRead,
+} from "./tools/items-consume";
+import {
+  handleWear,
+  handlePuton,
+  handleTakeoff,
+  handleRemove,
+  handleWield,
+} from "./tools/items-equip";
+import {
+  handleZap,
+  handleDrop,
+  handleThrow,
+  handleApply,
+  handleKick,
+  handlePray,
+  handleForceFight,
+  handleExtendedCommand,
+  handleCommand,
+} from "./tools/items-misc";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 import {
@@ -101,6 +124,220 @@ const TOOL_SCHEMAS: ToolSchema[] = [
     description:
       "Read your current carried inventory. FREE action — does NOT consume a NetHack turn. Returns {items: [{slot, description, category}]}.",
     input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "eat",
+    description:
+      "Eat food from your inventory. If 'slot' is given, sends e<slot>; if omitted, NetHack will prompt you (use respond_prompt to answer).",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+    },
+  },
+  {
+    name: "quaff",
+    description:
+      "Quaff a potion (or drink from a fountain if standing on '{'). 'slot' optional — without it, NetHack may prompt.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+    },
+  },
+  {
+    name: "read",
+    description: "Read a scroll or spellbook from your inventory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "zap",
+    description:
+      "Zap a wand. If a 'direction' is given, NetHack uses it; otherwise NetHack may prompt for direction (answer with respond_prompt).",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+        direction: {
+          type: "string",
+          enum: [
+            "north", "south", "east", "west",
+            "northeast", "northwest", "southeast", "southwest",
+          ],
+        },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "wear",
+    description: "Wear an armor item from your inventory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "puton",
+    description: "Put on an accessory (ring, amulet, blindfold).",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "takeoff",
+    description:
+      "Take off an armor item. 'slot' optional — NetHack auto-picks if you have a single piece.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+    },
+  },
+  {
+    name: "remove",
+    description:
+      "Remove an accessory (ring, amulet). 'slot' optional — NetHack auto-picks if unambiguous.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+    },
+  },
+  {
+    name: "wield",
+    description:
+      "Wield a weapon. Use slot='-' to wield bare hands.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "drop",
+    description: "Drop one item from your inventory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "throw",
+    description: "Throw an item in a compass direction.",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+        direction: {
+          type: "string",
+          enum: [
+            "north", "south", "east", "west",
+            "northeast", "northwest", "southeast", "southwest",
+          ],
+        },
+      },
+      required: ["slot", "direction"],
+    },
+  },
+  {
+    name: "apply",
+    description: "Apply a tool (pick-axe, whistle, key, lamp, etc).",
+    input_schema: {
+      type: "object",
+      properties: {
+        slot: { type: "string", pattern: "^[a-zA-Z\\-$#?*]$" },
+      },
+      required: ["slot"],
+    },
+  },
+  {
+    name: "kick",
+    description: "Kick in a compass direction (doors, monsters, sinks).",
+    input_schema: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: [
+            "north", "south", "east", "west",
+            "northeast", "northwest", "southeast", "southwest",
+          ],
+        },
+      },
+      required: ["direction"],
+    },
+  },
+  {
+    name: "pray",
+    description:
+      "Pray to your deity. Use sparingly — gods get annoyed by frequent praying.",
+    input_schema: { type: "object", properties: {} },
+  },
+  {
+    name: "force_fight",
+    description:
+      "Force-fight in a compass direction. Attacks even if NetHack thinks the tile is empty (useful vs invisible monsters).",
+    input_schema: {
+      type: "object",
+      properties: {
+        direction: {
+          type: "string",
+          enum: [
+            "north", "south", "east", "west",
+            "northeast", "northwest", "southeast", "southwest",
+          ],
+        },
+      },
+      required: ["direction"],
+    },
+  },
+  {
+    name: "extended_command",
+    description:
+      "Run a NetHack '#' extended command (chat, dip, loot, offer, ...). Optional 'args' is sent literally after the command.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", pattern: "^[a-z]{1,16}$" },
+        args: { type: "string", maxLength: 32 },
+      },
+      required: ["name"],
+    },
+  },
+  {
+    name: "command",
+    description:
+      "ESCAPE HATCH: send up to 16 literal keystrokes. Use ONLY when no other tool fits.",
+    input_schema: {
+      type: "object",
+      properties: {
+        keys: { type: "string", minLength: 1, maxLength: 16 },
+      },
+      required: ["keys"],
+    },
   },
 ];
 
@@ -306,6 +543,23 @@ async function main(): Promise<void> {
     pickup: wrap("pickup", handlePickup as ToolHandler),
     respond_prompt: wrap("respond_prompt", handleRespondPrompt as ToolHandler),
     inventory: wrap("inventory", handleInventory as ToolHandler),
+    eat: wrap("eat", handleEat as ToolHandler),
+    quaff: wrap("quaff", handleQuaff as ToolHandler),
+    read: wrap("read", handleRead as ToolHandler),
+    zap: wrap("zap", handleZap as ToolHandler),
+    wear: wrap("wear", handleWear as ToolHandler),
+    puton: wrap("puton", handlePuton as ToolHandler),
+    takeoff: wrap("takeoff", handleTakeoff as ToolHandler),
+    remove: wrap("remove", handleRemove as ToolHandler),
+    wield: wrap("wield", handleWield as ToolHandler),
+    drop: wrap("drop", handleDrop as ToolHandler),
+    throw: wrap("throw", handleThrow as ToolHandler),
+    apply: wrap("apply", handleApply as ToolHandler),
+    kick: wrap("kick", handleKick as ToolHandler),
+    pray: wrap("pray", handlePray as ToolHandler),
+    force_fight: wrap("force_fight", handleForceFight as ToolHandler),
+    extended_command: wrap("extended_command", handleExtendedCommand as ToolHandler),
+    command: wrap("command", handleCommand as ToolHandler),
   };
 
   // Conductor → state.ts event translation. The conductor's natural

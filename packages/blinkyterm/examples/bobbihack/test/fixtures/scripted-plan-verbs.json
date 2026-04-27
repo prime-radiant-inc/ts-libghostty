@@ -1,0 +1,19 @@
+[
+  {
+    "text": "Dismissing the intro --More--.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Reading inventory before acting.",
+    "toolUses": [{ "name": "inventory", "input": {} }]
+  },
+  {
+    "text": "Trying to eat slot d (likely won't have anything; smoke just verifies dispatch).",
+    "toolUses": [{ "name": "eat", "input": { "slot": "d" } }]
+  },
+  {
+    "text": "Praying — gods may answer or scold.",
+    "toolUses": [{ "name": "pray", "input": {} }]
+  },
+  { "text": "Smoke complete. Stopping." }
+]
