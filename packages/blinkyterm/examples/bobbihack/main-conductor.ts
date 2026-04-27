@@ -33,6 +33,7 @@ import { parseStatusLine, parseMessageLine } from "./parsers";
 import { runConductor, type ToolHandler } from "./conductor";
 import { handleMove, handleSearch, handlePickup } from "./tools/move";
 import { handleRespondPrompt } from "./tools/respond-prompt";
+import { handleInventory } from "./tools/inventory";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 
@@ -95,6 +96,12 @@ const TOOL_SCHEMAS: ToolSchema[] = [
       },
       required: ["keys"],
     },
+  },
+  {
+    name: "inventory",
+    description:
+      "Read your current carried inventory. This is a FREE action — does NOT consume a NetHack turn. Returns a list of items with slot letter, description, and category. Use this when you need to see what's in slot 'a', or check identification state, or count items.",
+    input_schema: { type: "object", properties: {} },
   },
 ];
 
@@ -250,6 +257,7 @@ async function main(): Promise<void> {
     search: wrap("search", handleSearch as ToolHandler),
     pickup: wrap("pickup", handlePickup as ToolHandler),
     respond_prompt: wrap("respond_prompt", handleRespondPrompt as ToolHandler),
+    inventory: wrap("inventory", handleInventory as ToolHandler),
   };
 
   // Best-effort cleanup if the user hits ^C.

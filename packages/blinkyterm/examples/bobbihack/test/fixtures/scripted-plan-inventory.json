@@ -1,0 +1,15 @@
+[
+  {
+    "text": "Dismissing intro --More--.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Checking my starting inventory.",
+    "toolUses": [{ "name": "inventory", "input": {} }]
+  },
+  {
+    "text": "Now heading east to explore.",
+    "toolUses": [{ "name": "move", "input": { "direction": "east" } }]
+  },
+  { "text": "Smoke complete." }
+]
