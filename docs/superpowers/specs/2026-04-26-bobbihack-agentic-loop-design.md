@@ -1,8 +1,8 @@
 # Bobbihack — Stateful Agentic Loop Design
 
-**Author:** Dirk (Bob `1dffecf5`), with NetHack research by Glyph (Bob-21)
+**Author:** Dirk (Bob `1dffecf5`), with NetHack research by Glyph (Bob-21), and review by Bob-Croesus (NetHack lens) and Bob-Hexley (generalist lens)
 **Date:** 2026-04-26
-**Status:** draft — for review (revision 2)
+**Status:** draft — for review (revision 3)
 **Scope:** `packages/blinkyterm/examples/bobbihack/` — the smart-agent path
 **Replaces:** the current per-turn one-shot Anthropic invocation
 
@@ -64,47 +64,118 @@ There is no per-turn `Agent` interface anymore. The conductor is a single long-r
 
 ## Tool surface
 
-Six tools. The system prompt teaches when to use each.
+NetHack's command set is large. The agent needs verbs for movement, item interaction, modal-prompt response, autopilot, journal, and map. The system prompt teaches when to use each.
 
-### `move({ direction })`
-Single-step movement. `direction` ∈ `{north, south, east, west, search, pickup, quit}`.
+### Movement & exploration
 
-**Handler:** sends the vi-key keystroke, awaits next quiesced frame, updates Map from the new screen, returns the standard tool_result payload (see "Tool result format" below). `quit` triggers the `#quit\r y\r y\r` sequence and ends the game.
+#### `move({ direction, count? })`
+One step (default) or up to `count` steps in the same direction (NetHack's count-prefix semantics — sends `<count><viKey>`, e.g. `5l` for "east 5 times" — and stops at the first obstruction or interesting event).
 
-### `autopilot_to({ floor, x, y })`
+`direction` ∈ `{ north, northeast, east, southeast, south, southwest, west, northwest, up, down }`.
+
+`count` is optional; default 1; max 50.
+
+**Notes:**
+- All eight compass directions are supported. Diagonals are required for NetHack — fighting in corners, traversing diagonal doorways, Sokoban solutions all depend on them.
+- `up` and `down` are *travel up/down stairs* (`<` / `>` keys when standing on stairs). They are explicit — `move(down)` will not fire just because you're walking past a `>`. Walking onto stairs is `move(<dir>)` to land there; descending is a separate `move(down)`.
+- Walking into a wall is *truly free* (no game turn consumed) per NetHack 3.6 — but it consumes one of our LLM cycles, so prefer not to.
+
+#### `search({})`
+Search adjacent walls and floor for hidden passages and traps. Sends `s`. Single-turn.
+
+#### `pickup({})`
+Pick up whatever is on the current tile. Sends `,`. May surface a multi-item selection prompt — handled by `respond_prompt`.
+
+### Item & inventory actions
+
+Every item-action tool either takes an inventory slot letter directly (e.g. `eat({ slot: "c" })` sends `e` then `c`), takes a follow-up direction where applicable (`zap`, `throw`), or sends the action and yields to the prompt loop if NetHack's response is ambiguous.
+
+| Tool | NetHack key | Args | Notes |
+|---|---|---|---|
+| `inventory({})` | `i` | none | Read-only view of current carry. Free action; bobbihack captures the inventory screen, parses it, sends `<esc>` or space to dismiss, returns `{ items: [{slot, appearance, count, BUC, enchant, charges}] }`. Does not consume a game turn. |
+| `eat({ slot? })` | `e` | optional slot | If `slot` given, eats from inventory; if omitted, sends `e` and yields (NetHack may prompt for slot or try ground). |
+| `quaff({ slot? })` | `q` | optional slot | Drink potion. Same yielding semantics. May trigger fountain prompt. |
+| `read({ slot })` | `r` | slot | Read scroll or spellbook. |
+| `zap({ slot, direction? })` | `z` | slot + optional direction | Direction handled by follow-up `respond_prompt` if NetHack asks. |
+| `wear({ slot })` | `W` | slot | Wear armor. |
+| `puton({ slot })` | `P` | slot | Put on accessory (ring, amulet). |
+| `takeoff({ slot? })` | `T` | optional | Take off armor. May surface menu if multiple. |
+| `remove({ slot? })` | `R` | optional | Remove accessory. |
+| `wield({ slot })` | `w` | slot | Wield weapon. `slot: "-"` for bare hands. |
+| `drop({ slot })` | `d` | slot | Drop one item. |
+| `throw({ slot, direction })` | `t` | slot + direction | Throw item in direction. |
+| `apply({ slot })` | `a` | slot | Apply tool (whistle, horn, key, etc.). |
+| `kick({ direction })` | `^d` | direction | Kick — door, sink, monster. |
+| `pray({})` | `#pray` | none | Pray to deity. Has cooldowns and alignment requirements; agent learns timing. |
+| `force_fight({ direction })` | `F<dir>` | direction | Attack into a tile that may or may not have a monster. |
+| `extended_command({ name, args? })` | `#<name>` | string | Generic `#`-prefixed extended commands: `#chat`, `#dip`, `#loot`, `#offer`, `#sit`, `#turn`, `#name`, `#conduct`, `#enhance`, etc. `args` is a string passed verbatim after the command. |
+| `command({ keys })` | literal | string | Last-resort low-level escape hatch. `keys` is a literal NetHack key sequence (≤16 chars). The tool sends them verbatim. Use only when no higher-level tool fits. |
+
+`slot` is always a single character (`a`-`z`, `A`-`Z`, `*`, `$`, `#`, `?`, `-`).
+
+### Modal prompts
+
+#### `respond_prompt({ keys })`
+Send a literal short key sequence (≤8 chars) to NetHack — used to answer modal prompts (More--, [yn], menus, direction queries, item-letter selection). bobbihack does not validate `keys` against the prompt content; the agent is expected to read the screen and pick appropriate responses.
+
+**Why a separate tool?** Modal prompts are a distinct mode (the screen shows a question, not a dungeon view). Bundling prompt-response into `move` or per-action tools confuses the agent. Modal-prompt detection is on the autopilot interrupt list; when an autopilot stops on a prompt, the next agent turn is expected to be `respond_prompt`.
+
+### Autopilot
+
+#### `autopilot_to({ floor, x, y })`
 Pathfind from current tile to the named tile, sending one keystroke per step, interruptible.
 
-**Handler:** runs A* over the recorded Map. Returns `{ error: "no path" | "unknown floor" | "unknown tile" }` if planning fails. Otherwise loops: send keystroke → await frame → check interrupt list → continue or break. On finish, returns standard tool_result with `summary: "autopilot_to(D1,29,7): arrived after 12 steps"` (or `"...stopped after 4 steps. interrupt: monster_visible"`).
+**Handler:** runs A* over the recorded Map (8-connectivity, with diagonal-blocked-through-doorways rule). Returns `{ error: "no path" | "unknown floor" | "unknown tile" }` if planning fails. Otherwise loops: send keystroke → await frame → check interrupt list → continue or break. On finish, returns standard tool_result with `summary: "autopilot_to(D1,29,7): arrived after 12 steps"` or `"...stopped after 4 steps. interrupt: monster_visible"`.
 
-### `autopilot_explore({})`
-Walk an exploration policy until something interesting happens.
+**Trap protection:** never plans a path through a tile classified as `trap_known`; if a previously-clear tile reveals a trap mid-traversal, halts via the `entered_trap_tile` interrupt before stepping in.
 
-**Handler:** picks the next move from a frontier policy (depth-first toward nearest unvisited adjacent tile, with corridor-following bias; specific algorithm in §"Exploration policy"). Loop: send keystroke → await frame → update Map → check interrupt list. On finish, returns standard tool_result with `summary: "autopilot_explore: 23 steps. stopped: monster_visible (k at (8,12))"`.
+**Stairs protection:** treats `<` and `>` as terminal frontier nodes — pathfinding can land on stairs but never *descends* them. Going down requires explicit `move(down)`.
 
-### `journal_read({ section })`
+#### `autopilot_explore({})`
+Walk an exploration policy until an interrupt fires.
+
+**Handler:** picks the next move from a frontier policy (§Exploration policy). Loop: send keystroke → await frame → update Map → check interrupt list. On finish, returns standard tool_result with `summary: "autopilot_explore: 23 steps. stopped: monster_visible (k at (8,12))"`.
+
+### Journal
+
+#### `journal_read({ section })`
 Returns the named section's current content. `section` ∈ `{Character, Inventory, Knowledge, Dungeon, Goals, Hypotheses}`.
 
-**Handler:** reads `.bobbihack/<run-id>/journal/<section>.md` and returns `{ section, content }` (content is the file as a string). Missing file returns `{ section, content: "" }` — never an error. See §Journal for what each section is for.
+**Handler:** reads `.bobbihack/<run-id>/journal/<section>.md` and returns `{ section, content }`. Missing file returns `{ section, content: "" }`. Unknown section name returns `{ error: "unknown section 'X'. Valid: Character, Inventory, ..." }`. See §Journal.
 
-### `journal_write({ section, content })`
+#### `journal_write({ section, content })`
 Replace the named section's content. Same enum.
 
-**Handler:** writes the markdown file atomically (temp + rename), returns `{ ok: true }`. No partial writes. The agent can include arbitrary markdown — bobbihack doesn't validate structure inside a section.
+**Handler:** writes the markdown file atomically (temp + rename). Validates `section` against the enum (rejects unknown names) and content size (rejects content > 64KB; returns `{ error: "section content exceeds 64KB" }`). Returns `{ ok: true }`.
 
-### `query_map({ floor })`
-Returns the recorded **plain ASCII** map of a floor + a feature list.
+### Map query
+
+#### `query_terrain({ floor })`
+Returns the recorded **plain ASCII** terrain map of a floor + a feature list. (Renamed from `query_map` to reinforce that it returns terrain only, not the live view.)
 
 **Handler:** reads from the GameMap. If `floor` is omitted, returns a list of all visited floors with turn ranges. Otherwise returns `{ floor, ascii: "<rendered terrain>", features: [{glyph, x, y, kind}] }`. Returns `{ error: "no map recorded for floor 'D5'" }` for unvisited floors.
 
-**No color in the rendered ASCII.** Per Glyph's research: terrain glyphs are unambiguous on their own (closed/open is in the glyph; locked is invisible until you bump; altar alignment is only known after stepping on it — and it's recorded in `Dungeon.md` anyway). Color matters for **monsters and items on the live screen** (yellow vs red dragon, etc.) — but the live screen is sent unchanged with full color in every tool_result. `query_map` is for terrain recall; the structured info that matters (altar alignment, trap types, fountain state) belongs in the Dungeon journal section, not in the rendered map.
+**No color in the rendered ASCII.** Terrain glyphs are unambiguous on their own (closed/open is in the glyph; locked is invisible until you bump; altar alignment is only known after stepping on it and is recorded in `Dungeon.md`). Color matters for monsters and items on the **live screen** (yellow vs red dragon, etc.) — but the live screen is sent unchanged with full color in every tool_result. `query_terrain` is for terrain recall; the structured info that matters (altar alignment, trap types, fountain state) belongs in the Dungeon journal section.
+
+### Tool count summary
+
+Movement: `move` + `search` + `pickup` (3)
+Item actions: `inventory`, `eat`, `quaff`, `read`, `zap`, `wear`, `puton`, `takeoff`, `remove`, `wield`, `drop`, `throw`, `apply`, `kick`, `pray`, `force_fight`, `extended_command`, `command` (18)
+Modal response: `respond_prompt` (1)
+Autopilot: `autopilot_to`, `autopilot_explore` (2)
+Journal: `journal_read`, `journal_write` (2)
+Map: `query_terrain` (1)
+
+**27 tools total.** That's a lot but each is single-purpose with a tight contract. The model's context will hold the schema once (cached); after that the cost is zero.
 
 ---
 
 ## Tool result format
 
-Every tool result has the same structure (string content, model parses by convention):
+Every game-advancing tool result has the same structure with a stable header so the model can disambiguate live tool_results from compacted stubs and from non-screen tools:
 
 ```
+== bobbihack tool_result v1 ==
 <summary line — what just happened, tool-specific>
 Floor: D2. Visited: D1, D2. Turn: 142.
 HP 14/14   Pw 5/5   AC 7   Hunger: ok   Cond: -
@@ -113,24 +184,49 @@ HP 14/14   Pw 5/5   AC 7   Hunger: ok   Cond: -
 ```
 
 Layered by source:
+- **Header line** — `== bobbihack tool_result v1 ==`. Stable. Lets the model recognize a live tool_result and distinguish it from compacted stubs (which start with `<turn N — ...>`).
 - **Summary line** — bobbihack-constructed, derived from message-line parse + screen diff. One short line. Tool-specific format.
 - **Standing-state line** — current floor + floors visited (from GameMap) + turn count.
 - **Status block** — parsed from the bottom status line: HP, Pw, AC, hunger, conditions. Always exactly one line.
 - **Screen** — the live ANSI rendering. Nethack already handled visibility (rooms, corridors, blindness, dark squares); we don't crop or filter it.
 
-For tools that don't advance game state (`journal_*`, `query_map`), the screen + status + standing-state are still included — they're free to compute (no keystrokes sent), and keep the model's situational awareness fresh.
+**Non-screen tools** return their own shape:
+- `journal_read` → `{ section, content }` (or `{ error }`).
+- `journal_write` → `{ ok: true }` (or `{ error }`).
+- `query_terrain` → `{ floor, ascii, features }` (or `{ error }`).
+- `inventory` → `{ items: [...] }`.
+
+These are JSON objects in the tool_result content; bobbihack's tool runner serializes accordingly. The header line above is *only* on game-advancing tool results that include a screen.
+
+**Game-end tool result** (`#quit` confirmed, character died, ascended): returns
+```
+== bobbihack tool_result v1 ==
+GAME OVER: <reason>. Final turn: <N>. Final HP: <h/m>.
+<final 80×24 screen>
+```
+The conductor's outer loop sees `gameOver: true` flagged in the runtime state and exits cleanly after this tool_result is appended.
 
 ---
 
 ## GameMap data structure
 
 ```ts
-type FloorId = string;  // "D1", "D2", "Mines:1", "Sokoban:1", "Quest:Home", ...
+type FloorId = string;  // "D1", "D2", "Mines:1", "Sokoban:1", "Quest:Home", "Rogue", ...
+
+type TileKind =
+  | "floor" | "corridor" | "wall"
+  | "door_closed" | "door_open" | "door_broken"
+  | "stairs_up" | "stairs_down" | "trapdoor"
+  | "altar" | "fountain" | "sink" | "throne" | "grave" | "tree"
+  | "boulder"               // pushable; transient
+  | "trap_known"            // any trap once revealed
+  | "ice" | "water" | "lava"
+  | "unknown";
 
 interface Tile {
-  glyph: string;           // last-seen glyph at this tile
-  walkable: boolean;       // floor, corridor, open door, stairs
-  kind?: "stairs_up" | "stairs_down" | "altar" | "fountain" | "door" | "wall" | "floor" | "corridor";
+  glyph: string;            // last-seen glyph
+  kind: TileKind;
+  walkable: "yes" | "no" | "by_inference";  // see below
   lastSeenTurn: number;
 }
 
@@ -138,7 +234,9 @@ interface FloorMap {
   id: FloorId;
   firstSeenTurn: number;
   lastSeenTurn: number;
-  tiles: Map<string, Tile>;   // key = "x,y"
+  tiles: Map<string, Tile>; // key = "x,y"
+  isRogueLevel: boolean;    // glyph charset alternates on this level — see Floor identity
+  walkabilitySuspect: boolean;  // set when polymorph or magic-mapping invalidates assumptions
 }
 
 class GameMap {
@@ -146,17 +244,49 @@ class GameMap {
   current: FloorId | null;
   currentPlayerXY: { x: number; y: number } | null;
 
-  updateFromFrame(frame, statusLine): void;
-  pathfind(from, to): Step[] | null;          // A* over walkable graph
+  updateFromFrame(frame, statusLine, messageLine): void;
+  pathfind(from, to): Step[] | null;        // 8-connectivity A* with diagonal-doorway rule
   renderAscii(floorId): string;
   features(floorId): FeatureList;
   visitedFloors(): { floor: FloorId; firstTurn: number; lastTurn: number }[];
 }
 ```
 
-Updated **before** every conductor iteration. Built from each frame's snapshot — every tile painted on the screen is recorded with its glyph + classification. Transient glyphs (monsters, items, the player `@`) are *recognized but not stored as terrain* — we record what was *underneath* them by remembering the prior state of that tile, or marking unknown.
+### Walkability tri-state
 
-Used internally by `autopilot_to` and `autopilot_explore` for pathfinding. Exposed to the model via `query_map`.
+- **`yes`** — we directly observed an empty walkable tile here (`.`, `#`, `<`, `>`, open door, etc.).
+- **`no`** — we observed a wall, closed door, lava, or other obstruction.
+- **`by_inference`** — the player's `@` was on this tile; we have not seen what's *underneath* but we know it's walkable (we were standing there). Distinct from `yes` so we can refine when the player moves off.
+
+Without `by_inference`, autopilot pathfinding incorrectly treats the player's current tile as unknown after a stairs-arrival or magic-mapping case where the floor was never seen empty.
+
+### Transient glyphs
+
+The player (`@`), monsters (letter glyphs), and items (`?`, `!`, `(`, `[`, etc.) are recognized in `updateFromFrame` but **not persisted as `Tile.kind`** — we record what's underneath them. If we have no prior state for a tile and a transient occupies it, the kind stays `unknown` until we see it cleared (with `walkable: by_inference` if the player is the occupant).
+
+### Boulders are special
+
+Boulders (`` ` ``) are *terrain-like* (block movement) but *transient* (move when pushed in Sokoban). Recorded with `kind: "boulder"` and `walkable: "no"`. Updated *every frame* — if a boulder is no longer at its prior location, that tile reverts to whatever was underneath. Sokoban play needs this fidelity.
+
+### Door states
+
+`+` is `door_closed`, `'` is `door_open`, broken doors revert to `floor` or `corridor`. Pathfinding treats closed doors as walkable (the engine auto-opens on bump) but with an additional cost so autopilot prefers known-open paths when available.
+
+### Rogue level
+
+NetHack ~D:14-19 randomly contains **the Rogue level**, which uses a different glyph charset (e.g., `+` is a door, but rooms render with `#` and `:` for floor/door pairs differently). bobbihack detects this by the message `"You enter what seems to be an older, more primitive world."` and tags the FloorMap as `isRogueLevel: true`. The exploration policy and autopilot tools refuse to operate on Rogue-level FloorMaps in v0 (return `{ error: "rogue level — manual play required" }`); a follow-up spec can add Rogue-level glyph tables.
+
+### Magic mapping
+
+`updateFromFrame` records *any* visible tile, not just adjacent ones. A scroll of magic mapping reveals the entire floor at once; those tiles are recorded normally with `walkable` set per the kind.
+
+### Polymorph / passwall
+
+When the agent polymorphs into a wall-passing form (xorn, etc.) or gains levitation, walkability assumptions break. `updateFromFrame` watches for the polymorph message (`"You suddenly turn into a..."`) and sets `walkabilitySuspect: true` on the current FloorMap. Autopilot tools refuse to operate on a suspect floor (`{ error: "walkability suspect — polymorph or similar; clear by re-walking" }`); the flag clears after the agent returns to its original form (detected by the unpolymorph message).
+
+### Use
+
+GameMap is updated **before** every conductor iteration (and inside autopilot tool handlers between keystrokes). Used internally by `autopilot_to` and `autopilot_explore` for pathfinding. Exposed to the model via `query_terrain`.
 
 ---
 
@@ -201,17 +331,33 @@ The fixed list keeps the surface bounded and prevents agent-side sprawl ("Notes2
 ## Floor identity
 
 Two signals, combined:
-1. **`Dlvl:` from the status line** — gives `D1`, `D2`, ... in the main dungeon. Stable per-floor.
-2. **Branch-detection messages** — "You enter the Gnomish Mines.", "You enter Sokoban.", "You arrive in the Town." Bobbihack watches for these on the message line and updates the active branch label.
+1. **`Dlvl:` from the status line** — gives the depth in the main dungeon.
+2. **Branch / sub-level messages** — bobbihack watches the message line for canonical NetHack strings to label the current branch and special level.
 
-Combined floor ID: `<branch>:<dlvl>`. Examples:
-- Main dungeon: `D1`, `D2`, ...
-- Mines: `Mines:2`, `Mines:5`
-- Sokoban: `Sokoban:1`, ..., `Sokoban:4`
-- Quest: `Quest:Home`, `Quest:Lower`
-- Special: `Castle`, `Vlad`, `Plane:Earth`, `Plane:Air`, ...
+Combined floor ID: `<branch>:<sublabel-or-dlvl>`. Examples:
 
-Edge case: stairway transitions are detected by `<` / `>` movement + a Dlvl change in the status line. The Map allocates a new FloorMap when a transition lands on a Dlvl + branch combo not yet seen.
+| ID                  | Source signal |
+|---------------------|---------------|
+| `D1`, `D2`, ...     | Main dungeon, generic Dlvl |
+| `Oracle`            | Main dungeon level containing the Oracle (typically D5–9). Detected by `"You enter the Oracle's lair."` or seeing the Oracle (`@`) on a Dlvl with the Delphi room shape. |
+| `Bigroom`           | Single-room main-dungeon level (typically D:10). Detected by message `"You arrive in a vast, open room."` |
+| `Rogue`             | Detected by `"You enter what seems to be an older, more primitive world."` |
+| `Mines:N`           | After `"You enter the Gnomish Mines."`, label as `Mines:<dlvl>` |
+| `Mines:Town`        | Mines dlvl with Minetown — detected by Town-shape and message |
+| `Mines:End`         | Mines End — detected by entering the bottom of the Mines branch |
+| `Sokoban:1..4`      | After `"Welcome to Sokoban!"`. Sokoban is entered via *upstairs* from D5 or D9 (note: ascending direction, contrary to the usual descend-deeper assumption). |
+| `Quest:Home`        | After `"You feel a strange mental acuity."` (quest-portal use) |
+| `Quest:Filler1..N`  | Intermediate quest levels |
+| `Quest:Goal`        | Final quest level (detected by quest-leader and Q-artifact presence) |
+| `Castle`            | Detected by Castle message and structure |
+| `Vlad`              | Vlad's Tower — `"You sense the presence of evil"` + structure |
+| `Plane:Earth`, `Plane:Air`, `Plane:Fire`, `Plane:Water`, `Plane:Astral` | Endgame planes |
+
+**Stairway transitions** are detected by `<` / `>` movement + a Dlvl change in the status line. The Map allocates a new FloorMap when a transition lands on a Dlvl + branch combo not yet seen.
+
+**Sokoban-up gotcha:** the standard "descend = deeper" intuition fails for Sokoban. The exploration policy should not assume `>` is always the right "going deeper" direction; in Sokoban, `<` leads further into the branch. The branch label (`Sokoban:N`) and the message `"Welcome to Sokoban!"` are the authoritative signal.
+
+**Trapdoors and holes** drop the player to a deeper floor without using stairs. Detected by Dlvl change without a corresponding `move(up)` / `move(down)`. The new FloorMap is allocated normally; the agent's autopilot is interrupted by the `entered_trap_tile` condition (see §Interrupt conditions) before the descent if the trap was known, or by the `level_changed_unexpectedly` interrupt after the fact.
 
 ---
 
@@ -220,17 +366,28 @@ Edge case: stairway transitions are detected by `<` / `>` movement + a Dlvl chan
 Hand-coded, deterministic. Goal: visit unvisited tiles efficiently without LLM reasoning.
 
 ```
-1. From current tile, identify adjacent walkable tiles.
-2. If any adjacent tile is unvisited, step into it (prefer corridors over rooms;
-   prefer continuing in current direction).
-3. Else: BFS from current tile to nearest unvisited known-frontier tile;
-   step toward it.
-4. If no unvisited frontier exists on this floor, step toward the nearest
-   stairs-down (or stairs-up if no down).
-5. If no stairs known, return with `summary: "explored entire known map"`.
+1. From current tile, identify adjacent walkable tiles (8-connectivity), excluding:
+   - tiles classified `trap_known`
+   - boulders (kind: "boulder")
+   - lava / water (without levitation/swimming)
+2. If any adjacent walkable tile is unvisited, step into it. Preferences:
+   - prefer corridors over rooms
+   - prefer continuing in the current direction
+   - never prefer stairs (don't *exit* the floor on autopilot)
+3. Else: BFS from current tile to the nearest unvisited known-frontier tile
+   (a tile adjacent to known walkable that is itself unknown); step toward it
+   along the BFS path.
+4. If no unvisited frontier exists on this floor, return with
+   `summary: "autopilot_explore: <N> steps. stopped: floor_fully_explored"`.
+   Do NOT auto-descend stairs — that's a deliberate decision for the agent.
+5. Refuse to operate on:
+   - Sokoban floors (boulder-pushing puzzles need real reasoning)
+   - The Rogue level (`isRogueLevel: true`)
+   - Floors flagged `walkabilitySuspect`
+   In these cases return `{ error: "<reason>" }` immediately without stepping.
 ```
 
-Each step is checked against the **interrupt list** before continuing.
+Each step is checked against the **interrupt list** before continuing. The step cap (default 50) prevents runaway loops; large floors that need 200+ steps will require multiple `autopilot_explore` calls (the agent sees the interim screen and decides whether to continue).
 
 ---
 
@@ -238,86 +395,180 @@ Each step is checked against the **interrupt list** before continuing.
 
 Both `autopilot_to` and `autopilot_explore` halt and return when any of:
 
-- **Modal prompt detected** — top message line matches `[yn]`, `[a-z]`, `--More--`, or any prompt the existing `detectPrompt` helper recognizes.
-- **Monster visible** — a non-letter glyph at a non-current tile, or a letter glyph not present last frame.
-- **HP drop** — HP decreased between frames (any amount).
-- **Hunger transition** — hunger state change (e.g. `Hungry` → `Weak`).
-- **New item visible** — item glyph (`?`, `!`, `(`, `[`, `=`, `*`, `$`, `%`, `/`, `"`) appears that wasn't on the previous frame.
-- **Bell** — `frameReason === "bell"` (NetHack rang the bell, often signaling an action failure).
-- **Step cap** — configurable maximum (default 50) to avoid runaway loops.
-- **Abort signal** — user pressed `q`; `signal.aborted === true`.
-- **Path exhausted** (`autopilot_to`) — arrived at target.
+### Modal & prompt
+- **`modal_prompt`** — top message line matches `--More--`, `[yn]`, `[a-zA-Z $#?*]`, `In what direction?`, or any prompt the existing `detectPrompt` helper recognizes. The agent's next turn is expected to be `respond_prompt`.
+
+### Combat & danger
+- **`monster_visible`** — a letter glyph appears that wasn't on the previous frame, or a known glyph moved into line-of-sight.
+- **`hp_drop`** — HP decreased between frames (any amount).
+- **`low_hp`** — HP fell below `max(1, hpMax / 3)`. NetHack's conventional panic threshold.
+- **`pet_attacking_you`** — confused/hostile pet attacking; detected by message line.
+- **`engulfed`** — `@` is inside a swallower (purple worm, trapper, etc.). Detected by screen-shape change: most of the visible screen is the engulfer's "interior" walls.
+
+### Status changes (onset)
+- **`paralyzed`** — message `"You can't move yourself!"` or similar.
+- **`stunned`** / **`confused`** / **`hallucinating`** / **`blind`** — message-line patterns and status-line condition flags.
+- **`polymorphed`** — message `"You suddenly turn into..."`. Sets GameMap `walkabilitySuspect`.
+- **`level_changed_unexpectedly`** — Dlvl changed without a corresponding `move(up)`/`move(down)` (trapdoor, hole, level teleport, magic trap).
+- **`xp_levelup`** — message `"Welcome to experience level N."` Useful for the agent to journal abilities gained.
+- **`weapon_cursed_welded`** / **`armor_cursed_stuck`** — `"...welds itself to your hand!"` etc.
+- **`hunger_transition`** — hunger state change (e.g. `Hungry` → `Weak`). Status-line condition delta.
+
+### Game state
+- **`new_item_visible`** — item glyph (`?`, `!`, `(`, `[`, `=`, `*`, `$`, `%`, `/`, `"`) appears that wasn't on the previous frame.
+- **`entered_trap_tile`** — current tile is now classified `trap_known` (revealed mid-step).
+- **`bell`** — `frameReason === "bell"`. Often signals an action failed.
+- **`you_die`** — message `"You die..."` or `"DYWYPI?"` prompt. Game ended.
+- **`you_ascend`** — endgame ascension. Game ended.
+
+### Operational
+- **`step_cap`** — configurable maximum (default 50) to avoid runaway loops.
+- **`abort_signal`** — user pressed `q`; `signal.aborted === true`.
+- **`path_exhausted`** (`autopilot_to` only) — arrived at target.
+- **`policy_terminated`** (`autopilot_explore` only) — frontier exhausted, see §Exploration policy.
+
+### Detection mechanism
+
+Most interrupts are detected by:
+1. **Message-line patterns** — bobbihack maintains a small library of NetHack canonical strings (e.g., `"You die"`, `"You feel"`, `"It's a wall"`, `"Welcome to experience level"`, `"You suddenly turn into"`). Each pattern → an interrupt name.
+2. **Status-line diffs** — HP, hunger, conditions parsed from the bottom row each frame; deltas trigger named interrupts.
+3. **Frame-reason** — `frameReason: "bell"` from the Runner.
+4. **Map state** — `entered_trap_tile`, `level_changed_unexpectedly`.
 
 The `summary` line in the tool_result names the specific interrupt: `"autopilot_explore: 23 steps. stopped: monster_visible (k at (8,12))"`.
+
+The interrupt library lives in `packages/blinkyterm/examples/bobbihack/interrupts.ts` (new file). Each interrupt is a `{ name, detect(prevFrame, curFrame, prevStatus, curStatus): boolean | string }` — `string` return is an extra detail line for the summary.
 
 ---
 
 ## Conductor implementation sketch
 
+The pattern: stream the assistant's full response (including any number of tool_use blocks + interleaved text), drain to `message_stop`, run all tool_use blocks, append the assistant message + a single user message containing all tool_results, then start the next stream. This is the documented Anthropic SDK tool-use loop and the pattern shown in their cookbook.
+
 ```ts
 async function conductor(opts: ConductorOpts): Promise<void> {
-  const { runner, map, journal, ac, ui } = opts;
+  const { client, runner, map, journal, ac, ui, runState } = opts;
   const messages: Message[] = await loadMessagesOrInit(opts.messagesPath);
 
-  while (!ac.signal.aborted && !runner.exited) {
-    const stream = client.messages.stream({
-      model: "claude-haiku-4-5",  // or sonnet — see open questions
-      system: [
-        { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
-      ],
-      tools: TOOLS,
-      messages,
-      max_tokens: 1024,
-    });
+  while (!ac.signal.aborted && !runner.exited && !runState.gameOver) {
+    let stream;
+    try {
+      stream = client.messages.stream(buildStreamArgs(messages));
+      // The SDK exposes `finalMessage()` which awaits message_stop and returns
+      // the fully-assembled assistant response — preferred over manual delta
+      // accumulation. We still subscribe to text deltas for the live UI.
+      stream.on("text", (delta: string) => ui.appendThinking(delta));
+      const finalMsg = await stream.finalMessage();
 
-    let pendingTool: ToolUse | null = null;
-    for await (const event of stream) {
-      if (ac.signal.aborted) break;
+      // Append the assistant response verbatim.
+      messages.push({ role: "assistant", content: finalMsg.content });
 
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        ui.appendThinking(event.delta.text);
-        continue;
+      const toolUses = finalMsg.content.filter((b) => b.type === "tool_use");
+
+      if (toolUses.length === 0) {
+        // Model emitted only text and chose to stop. Treat as graceful end-of-run.
+        runState.gameOver = true;
+        runState.endReason = "model_stopped_without_tool_use";
+        break;
       }
 
-      if (event.type === "content_block_start" && event.content_block.type === "tool_use") {
-        pendingTool = { id: event.content_block.id, name: event.content_block.name, args: "" };
-        continue;
+      // Execute every tool_use in order, accumulate tool_results.
+      const toolResults: ToolResultBlock[] = [];
+      for (const tu of toolUses) {
+        if (ac.signal.aborted) break;
+        const args = tu.input ?? {};  // SDK gives parsed input; no manual JSON.parse
+        const content = await runTool(tu.name, args, { runner, map, journal, ac, runState });
+        toolResults.push({
+          type: "tool_result",
+          tool_use_id: tu.id,
+          content,
+        });
+        ui.commitTurn(tu.name, content);
+        // If a game-ending tool fired, mark and stop running further tools.
+        if (runState.gameOver) break;
       }
 
-      if (event.type === "content_block_delta" && event.delta.type === "input_json_delta") {
-        if (pendingTool) pendingTool.args += event.delta.partial_json;
-        continue;
-      }
+      // Single user message containing all tool_results from this assistant turn.
+      messages.push({ role: "user", content: toolResults });
+      await persistMessages(messages);
 
-      if (event.type === "content_block_stop" && pendingTool) {
-        // Execute the tool, append tool_use + tool_result, restart the stream.
-        const toolResult = await runTool(pendingTool, { runner, map, journal, ac });
-        messages.push(
-          { role: "assistant", content: [{ type: "tool_use", ...pendingTool }] },
-          { role: "user",      content: [{ type: "tool_result", tool_use_id: pendingTool.id, content: toolResult }] },
-        );
-        await persistMessages(messages);
-        ui.commitTurn(toolResult);
-        pendingTool = null;
-        break;  // exit this stream; outer while restarts with new messages
+      // Compaction check happens between iterations (see §Compaction).
+      await maybeCompact(messages, runState);
+    } catch (err) {
+      if (!isRecoverableApiError(err)) throw err;
+      const delaySec = nextBackoffSec(runState);  // 1, 2, 4, 8, 16; cap 5 attempts
+      if (delaySec === null) {
+        ui.error(`anthropic API unavailable after retries; aborting`);
+        throw err;
       }
+      ui.note(`anthropic API error (${err.status ?? err.name}); retry in ${delaySec}s`);
+      await sleep(delaySec * 1000);
+      // Loop continues; messages array is unchanged; next iteration retries.
     }
   }
 }
 
-async function runTool(tool, ctx): Promise<string> {
-  switch (tool.name) {
-    case "move":              return await handleMove(JSON.parse(tool.args), ctx);
-    case "autopilot_to":      return await handleAutopilotTo(JSON.parse(tool.args), ctx);
-    case "autopilot_explore": return await handleAutopilotExplore(JSON.parse(tool.args), ctx);
-    case "journal_read":      return await handleJournalRead(JSON.parse(tool.args), ctx);
-    case "journal_write":     return await handleJournalWrite(JSON.parse(tool.args), ctx);
-    case "query_map":         return await handleQueryMap(JSON.parse(tool.args), ctx);
+function buildStreamArgs(messages: Message[]): StreamArgs {
+  return {
+    model: chosenModel(),
+    max_tokens: 1024,
+    system: [
+      { type: "text", text: SYSTEM_PROMPT, cache_control: { type: "ephemeral", ttl: "1h" } },
+    ],
+    tools: TOOLS,
+    messages,
+  };
+}
+```
+
+Notes on the pattern:
+
+- **`stream.finalMessage()`** awaits `message_stop` and returns the assembled response. Avoids manual JSON-parsing of `input_json_delta` chunks and the bug of breaking on first `content_block_stop` (which would truncate multi-tool turns).
+- **All tool_use blocks in one assistant turn** are executed in order; their tool_results are batched into one user message. This matches the SDK's expected schema and supports the model issuing multiple tool calls per turn (e.g. `journal_read(Goals)` + `query_terrain(D1)` + `move(north)` in one response).
+- **Empty `toolUses`** means the model emitted text only — typically because it thinks the run is over. Treat as graceful termination.
+- **`isRecoverableApiError`** matches HTTP 5xx, HTTP 429, fetch network errors, `ECONNRESET`/`ETIMEDOUT`. 4xx other than 429 fail immediately.
+- **`nextBackoffSec`** returns `1, 2, 4, 8, 16` then `null` (give up) on the 6th call. Resets on a successful stream.
+- **Cancellation:** `ac.signal.aborted` is checked between tool executions and on each backoff sleep; the SDK stream itself is canceled on next stream construction (the in-flight call is abandoned by abandoning the Promise).
+
+### Tool runner
+
+```ts
+async function runTool(name: string, args: any, ctx: ToolCtx): Promise<string | object> {
+  switch (name) {
+    case "move":              return await handleMove(args, ctx);
+    case "search":            return await handleSearch(args, ctx);
+    case "pickup":            return await handlePickup(args, ctx);
+    case "inventory":         return await handleInventory(args, ctx);
+    case "eat":               return await handleEat(args, ctx);
+    case "quaff":             return await handleQuaff(args, ctx);
+    case "read":              return await handleRead(args, ctx);
+    case "zap":               return await handleZap(args, ctx);
+    case "wear":              return await handleWear(args, ctx);
+    case "puton":             return await handlePuton(args, ctx);
+    case "takeoff":           return await handleTakeoff(args, ctx);
+    case "remove":            return await handleRemove(args, ctx);
+    case "wield":             return await handleWield(args, ctx);
+    case "drop":              return await handleDrop(args, ctx);
+    case "throw":             return await handleThrow(args, ctx);
+    case "apply":             return await handleApply(args, ctx);
+    case "kick":              return await handleKick(args, ctx);
+    case "pray":              return await handlePray(args, ctx);
+    case "force_fight":       return await handleForceFight(args, ctx);
+    case "extended_command":  return await handleExtendedCommand(args, ctx);
+    case "command":           return await handleCommand(args, ctx);
+    case "respond_prompt":    return await handleRespondPrompt(args, ctx);
+    case "autopilot_to":      return await handleAutopilotTo(args, ctx);
+    case "autopilot_explore": return await handleAutopilotExplore(args, ctx);
+    case "journal_read":      return await handleJournalRead(args, ctx);
+    case "journal_write":     return await handleJournalWrite(args, ctx);
+    case "query_terrain":     return await handleQueryTerrain(args, ctx);
+    default:
+      return { error: `unknown tool: ${name}` };
   }
 }
 ```
 
-Each `runTool` handler honors `ctx.ac.signal` so a user `q` aborts mid-tool. The handler returns whatever string content goes into `tool_result`; for game-advancing tools, that's the standard `summary + standing + status + screen` payload.
+Each handler honors `ctx.ac.signal` so a user `q` aborts mid-tool. Game-advancing handlers return a string (the formatted screen-bearing tool_result with the `== bobbihack tool_result v1 ==` header); non-screen handlers return a JSON-shaped object. The string vs object distinction is how the SDK encodes the tool_result content; both work.
 
 ---
 
@@ -327,14 +578,19 @@ The journal and the GameMap together carry the durable state of the run, which m
 
 ### Layered defense
 
-1. **Prompt caching** at two breakpoints:
-   - **B1** (always-cached): `system` prompt + initial user message. Stable for the entire run.
-   - **B2** (rolling): the boundary between "compacted history" and "live tail" of `tool_use`/`tool_result` pairs. Re-issued each compaction.
-   Anthropic SDK's `cache_control: { type: "ephemeral" }` markers handle this; cache hits cut input cost ~10× on the cached prefix.
+1. **Prompt caching** at two breakpoints, both with `cache_control: { type: "ephemeral", ttl: "1h" }`:
+   - **B1** (always-cached): `system` prompt only. Stable for the entire run. The 1-hour TTL covers most realistic stalls (long autopilots, brief user pauses) without re-paying cache creation.
+   - **B2** (rolling, post-compaction): placed at the **first message that was *not* rewritten by the most recent compaction**. Cache prefix matching is byte-exact, so any compacted message invalidates the cache from that message forward; B2 sits at the boundary so the live tail is cacheable for the next request.
+
+   Anthropic's prompt-cache mechanism: a `cache_control` marker creates a cache point covering the prefix up to that block. Hits cut input cost on the cached prefix substantially (~10× for cache_read vs base input). The 5-minute default TTL is too short for our cadence; explicit `ttl: "1h"` is required and within Anthropic's supported ttl range.
+
 2. **Live tail of K turns kept verbatim.** The most recent K (default: 20) `tool_use`/`tool_result` pairs are preserved with their full screen ANSI. The model has high-fidelity recent context.
-3. **Compacted history.** Older pairs have their `tool_result.content` replaced with a one-line stub: `"<turn 73 — autopilot_to(D1,29,7) arrived; HP 14→14; see Dungeon.md + query_map(D1)>"`. The `tool_use` stays so the message structure is intact and the model can still see *what it did*; the bulky screen is gone. A single line per old turn keeps the pre-tail prefix small.
-4. **Compaction marker.** When compaction runs, bobbihack injects a synthetic `user` message at the boundary: `"NOTE: turns 1–N have been compacted. Their summaries remain inline. For full state, call journal_read(...) and query_map(...). Recent K turns are intact below."`
-5. **Model-driven recovery.** The system prompt teaches the model to call `journal_read({section: "Goals"})`, `journal_read({section: "Knowledge"})`, and `query_map(currentFloor)` after a compaction marker — so the model recovers its plans, identifications, and terrain memory deliberately rather than guessing.
+
+3. **Compacted history.** Older pairs have their `tool_result.content` replaced with a one-line stub: `"<turn 73 — autopilot_to(D1,29,7) arrived; HP 14→14; see Dungeon.md + query_terrain(D1)>"`. The `tool_use` stays so the message structure is intact and the model can still see *what it did*; the bulky screen is gone. A single line per old turn keeps the pre-tail prefix small.
+
+4. **Compaction marker.** When compaction runs, bobbihack injects a synthetic `user` message at the boundary: `"NOTE: turns 1–N have been compacted. Their summaries remain inline. For full state, call journal_read(...) and query_terrain(...). Recent K turns are intact below."`
+
+5. **Model-driven recovery.** The system prompt teaches the model to call `journal_read({section: "Goals"})`, `journal_read({section: "Knowledge"})`, and `query_terrain({floor: <currentFloor>})` after a compaction marker — so the model recovers its plans, identifications, and terrain memory deliberately rather than guessing.
 
 ### Triggers
 
@@ -384,8 +640,8 @@ If you want serious long-running play across machine restarts, that's a future s
 | `AnthropicAgent.decide()` — fresh per turn      | Conductor — one long call                       |
 | `pickAgent()` returns one of three Agents       | `pickClient()` returns real or mock SDK; conductor is universal |
 | `for await (frame of runner.frames())` in main  | conductor owns frame-awaiting via tool handlers |
-| `streamToAgentEvents` translator                | inline in conductor (cleaner with messages)     |
-| `MOVE_TOOL` only                                | six tools (move + 5 new)                        |
+| `streamToAgentEvents` translator                | replaced by `stream.finalMessage()` + structured tool-use loop |
+| `MOVE_TOOL` only                                | 27 tools (movement + items + autopilot + journal + map + escape hatches) |
 | `Agent.AgentInput` / `AgentEvent`               | conductor reads frames directly; UI events still emitted |
 | `MockAgent` is its own code path                | `MockAgent` becomes a `MockAnthropicClient` — yields scripted SDK events. Same conductor runs in production and tests. |
 
@@ -401,7 +657,68 @@ The agent pane (top 1/3 thinking, bottom 2/3 history) keeps its current shape. T
 
 1. **Currently executing tool** — title-bar suffix during a long handler: `Agent (anthropic claude-haiku-4-5) — running autopilot_explore (step 12)`.
 2. **Tool result summary** — each turn's history line shows the summary line: `"#142 move(east): bumped a door"`.
-3. **Streaming model text** — unchanged from today; appears in the live region as the model thinks between tool calls.
+3. **Streaming model text** — unchanged from today; appears in the live region as the model thinks between tool calls. During long autopilots, the live region shows the autopilot's progress narration (step count, current tile) instead of going dark.
+
+---
+
+## Observability
+
+Every run writes a single append-only log file `.bobbihack/<run-id>/run.jsonl`. One JSON object per line:
+
+```json
+{"event": "run_start", "ts": "2026-04-26T18:00:00Z", "runId": "...", "model": "claude-haiku-4-5", "systemPromptHash": "sha256:abc...", "specVersion": "v3"}
+{"event": "turn", "turn": 142, "ts": "...", "tool": "move", "args": {"direction":"east"}, "summary": "moved to (12,8). bumped a door.", "screenHash": "sha256:...",
+ "usage": {"input_tokens": 1234, "output_tokens": 56, "cache_read_input_tokens": 8000, "cache_creation_input_tokens": 0}}
+{"event": "compaction", "ts": "...", "compactedThroughTurn": 100, "liveTailSize": 20, "messagesBefore": 200, "messagesAfter": 122}
+{"event": "retry", "ts": "...", "attempt": 1, "delaySec": 1, "errorClass": "rate_limit"}
+{"event": "interrupt", "ts": "...", "tool": "autopilot_explore", "kind": "monster_visible", "detail": "k at (8,12)"}
+{"event": "run_end", "ts": "...", "reason": "model_stopped_without_tool_use", "totalTurns": 487}
+```
+
+Required event kinds: `run_start`, `run_end`, `turn`, `retry`, `compaction`, `interrupt`, `error` (unrecoverable). Other kinds may be added.
+
+This makes runs grep-able, replayable as a timeline, and gives Matt a forensic record of what happened. `screenHash` lets you detect that turn-N's screen was identical to turn-M's without storing both.
+
+The system-prompt hash + spec version stamped at `run_start` are the trip-wires for "did this run use the prompt I think it did" — important when iterating prompt content.
+
+---
+
+## Cost monitoring
+
+A long-running stream burning tokens for hours is real money. Three mitigations:
+
+1. **Per-turn usage logged to `run.jsonl`** (input_tokens, output_tokens, cache_read_input_tokens, cache_creation_input_tokens). Easy to sum and graph.
+2. **Per-turn cost line in the agent pane status:** small text `tokens: in 1.2k (cache 8.0k) / out 56 — turn cost ~$0.003`. Updates each turn.
+3. **Hard budget kill switch via env var:** `BOBBIHACK_MAX_USD=2.50` exits cleanly when the running total exceeds the cap. Prevents accidental runaway spending. Default: unset (no limit).
+
+Cost calculation uses Anthropic's posted per-token rates for the chosen model; bobbihack hard-codes the rates table at build time and warns if the model selected isn't in the table.
+
+---
+
+## Concurrency & locking
+
+Two bobbihack processes pointing at the same `.bobbihack/` directory will collide on the journal, message log, and Runner spawn. Single-instance enforcement via flock:
+
+- On startup, bobbihack acquires an exclusive lock on `.bobbihack/run.lock` (`flock(LOCK_EX | LOCK_NB)`).
+- If the lock is held: exit 1 with `"another bobbihack is running (lock held by PID N); refusing to start"`.
+- The lock file contains the PID and run-id of the holder for debugging.
+- The lock is automatically released on process exit (kernel cleanup).
+
+The `<run-id>` in the directory layout is `bbh-YYYYMMDD-HHMMSS-<6-hex-rand>` — wall-clock-prefixed for human grep, randomized for collision-free re-runs in the same second. Generated at startup, never reused.
+
+---
+
+## Security model
+
+The journal stores LLM-written content that bobbihack reads back and feeds to the LLM. Practical implications:
+
+- **Trust scope:** journal contents are trusted only because runs are local + single-user. There is no scenario in v0 where another user's journal feeds into your run.
+- **Prompt injection vector (theoretical):** if a journal file from a previous run is loaded into a fresh run (which we don't do — `<run-id>` is fresh per process), it could carry adversarial instructions. Mitigated by per-run journal directories.
+- **Size caps:** `journal_write` rejects content > 64 KB. `messages.json` snapshots are not bounded by us — Anthropic's context window is the natural cap, and it's also the reason compaction exists.
+- **Section enum validation:** `journal_write({section: "X"})` rejects unknown section names rather than silently writing `X.md`. Prevents the agent inventing `Notes2.md`, etc.
+- **The `command` and `extended_command` escape hatches** can send arbitrary keystrokes to nethack. Nethack itself is the trust boundary — there is no escape from the pty into the host shell. Length-bounded (≤16 chars) as a defense against runaway commands but the security bound is nethack's parser.
+
+If you ever want to share a run's journal between users (debug exchange, reproducing bugs), treat the markdown files as untrusted input and at minimum sanitize them with the same care you'd apply to user-supplied prompt content.
 
 ---
 
@@ -423,19 +740,23 @@ The existing `bobbihack.mock.test.ts` is replaced by tests that drive the conduc
 
 Build in dependency order, with checkpoints:
 
-**Phase 1 — GameMap + tool_result format (no new tools).** Build the Map data structure and the tool_result formatter (summary + standing + status + screen). Wire them into the existing per-turn AnthropicAgent path so the smart agent already gets richer context. No architectural change yet. Watch whether the model's spatial reasoning improves.
+**Phase 1 — GameMap + tool_result format (no new tools).** Build the Map data structure (with all tile kinds, walkability tri-state, boulder/door-state/trap modeling, Rogue-level detection, polymorph awareness), the message-line + status-line parsers, and the tool_result formatter (header + summary + standing + status + screen). Wire them into the **existing per-turn AnthropicAgent path** so the smart agent already gets richer context. No architectural change yet. Watch whether the model's spatial reasoning improves.
 
-**Phase 2 — Conductor refactor.** Move the smart agent to the long-running `messages.stream` pattern with just the existing `move` tool. Persist messages. Add cache_control. Watch token cost. (This is the load-bearing architectural step; everything else builds on it.)
+> **Phase 1 wiring is intentionally throwaway.** Phase 2 deletes the per-turn agent path entirely and rebuilds the SDK adapter. Don't over-invest in the integration layer — the GameMap, parsers, and formatter survive; the wiring doesn't.
 
-**Phase 3 — Journal (`journal_read`, `journal_write`).** Trivial tools, but high value for compaction-resistance. Update system prompt to teach the model when to journal.
+**Phase 2 — Conductor refactor + backoff.** Move the smart agent to the long-running `messages.stream` pattern using `stream.finalMessage()`. Tools: `move` (with all eight directions and count) + `search` + `pickup` (split out from move). Persist messages. Add `cache_control` with 1h TTL on system prompt. **Wrap stream consumption in try/catch with the documented retry/backoff schedule** (1s/2s/4s/8s/16s, max 5 attempts). This is the load-bearing architectural step; everything else builds on it.
 
-**Phase 4 — `query_map`.** Exposes the Map from Phase 1 as a tool.
+**Phase 3 — Item & inventory tools.** All the action verbs (`eat`, `quaff`, `read`, `zap`, `wear`, `puton`, `takeoff`, `remove`, `wield`, `drop`, `throw`, `apply`, `kick`, `pray`, `force_fight`, `extended_command`, `command`) plus `inventory` (read-only) and `respond_prompt` (modal answer). Each is a small handler that sends the right keystrokes and awaits the next frame. The system prompt grows substantially to teach when to use each.
 
-**Phase 5 — `autopilot_to`.** A* + the keystroke loop + interrupt list.
+**Phase 4 — Journal (`journal_read`, `journal_write`).** Trivial tools, but high value for compaction-resistance. Update system prompt to teach the model when to write to which section.
 
-**Phase 6 — `autopilot_explore`.** Frontier policy + interrupts. The hardest one because of policy design.
+**Phase 5 — `query_terrain`.** Exposes the GameMap from Phase 1 as a tool. The renderAscii method already exists from Phase 1; this just wires it as a tool.
 
-**Phase 7 — Compaction + backoff.** Production hardening: the layered compaction strategy (cache breakpoints + live-tail + summarized history + compaction marker) and Anthropic-API retry-with-backoff. The hardest phase because it's the least testable in isolation — it's where everything has to actually work together at long runtimes.
+**Phase 6 — `autopilot_to`.** A* (8-connectivity, diagonal-doorway-aware, trap-avoiding, stairs-non-descending) + the keystroke loop + interrupt list.
+
+**Phase 7 — `autopilot_explore`.** Frontier policy + interrupts. Refusal on Sokoban / Rogue / walkability-suspect floors. The hardest tool because of policy design.
+
+**Phase 8 — Compaction.** The layered compaction strategy (cache breakpoints + live-tail + summarized history + compaction marker). The least testable in isolation — it's where everything has to actually work together at long runtimes.
 
 Each phase is independently demonstrable. Stop at any phase if it's not pulling weight; the architecture is the same shape.
 
@@ -443,17 +764,29 @@ Each phase is independently demonstrable. Stop at any phase if it's not pulling 
 
 ## Open questions
 
-1. **Model choice.** `claude-haiku-4-5` is current default. Sonnet 4.6 will likely be better at long-horizon reasoning + tool orchestration; haiku is cheaper. Should the system prompt + tool design be stable across model swap, or do we tune for a chosen model?
-2. **Live-tail size K.** Default 20 in this spec; could be 10 or 30. Right answer depends on observed behavior — first-pass guess.
-3. **The `move(quit)` action vs game-over.** How does the conductor know to exit cleanly? `runner.exited` is one signal; a model-emitted `move(quit)` is another. Need both paths handled.
+1. **Model choice.** `claude-haiku-4-5` is current default. Sonnet 4.6 will likely be better at long-horizon reasoning + tool orchestration; haiku is cheaper. Recommend running both in parallel for a few sessions before committing.
+2. **Live-tail size K.** Default 20 in this spec; could be 10 or 30. Right answer depends on observed behavior.
+3. **`Inventory.md` update cadence.** Croesus's review flagged that this could become very-write-heavy. Should bobbihack auto-maintain it from `inventory({})` parses, or should the model be explicitly responsible? First pass: model-responsible; revisit if we see thrash.
+4. **Conduct tracking refresh.** No tool currently surfaces `#conduct`. Add as `extended_command({name: "conduct"})` and let the model read it on demand? Probably yes; defer the decision to Phase 3.
+5. **Travel command (`_`) as fast-path.** NetHack's own travel can replace `autopilot_to` in some cases. Worth investigating after Phase 6.
 
-Resolved by Glyph's research and Matt's review of revision 1:
+Resolved by Glyph's research, the rev-1 reviews, and Croesus/Hexley's rev-2 reviews:
 - ~~Journal section list~~ — fixed at six (`Character`, `Inventory`, `Knowledge`, `Dungeon`, `Goals`, `Hypotheses`).
-- ~~Color in `query_map`~~ — plain ASCII; structured info goes in `Dungeon.md`.
+- ~~Color in `query_terrain`~~ — plain ASCII; structured info goes in `Dungeon.md`.
 - ~~MockAgent disposition~~ — refactored to mock SDK, not separate Agent.
 - ~~Cross-process resumption~~ — out of scope.
 - ~~Trim cadence~~ — periodic (50 turns) + token-budget (80%) + hard fail-safe.
-- ~~Cache breakpoint policy~~ — two breakpoints (system+initial / live-tail boundary).
+- ~~Cache breakpoint policy~~ — two breakpoints, both 1h TTL; B2 placed at the post-compaction boundary.
+- ~~Tool surface scope~~ — expanded from 6 to 27 tools; full NetHack action coverage + escape hatches.
+- ~~Modal prompt response~~ — `respond_prompt({keys})` tool.
+- ~~Diagonals~~ — included; eight compass directions for `move`.
+- ~~`move(quit)` vs game-over~~ — `quit` extracted from `move`; the conductor checks `runState.gameOver` after each tool.
+- ~~Conductor stream pattern~~ — uses `stream.finalMessage()` to drain to message_stop; supports parallel tool_use.
+- ~~Run-id derivation~~ — `bbh-YYYYMMDD-HHMMSS-<6-hex>`.
+- ~~Concurrency~~ — flock on `.bobbihack/run.lock`.
+- ~~Cost monitoring~~ — per-turn usage logged; `BOBBIHACK_MAX_USD` kill switch.
+- ~~Trapdoor protection~~ — `trap_known` tile kind + `entered_trap_tile` interrupt; autopilot avoids known traps and never auto-descends stairs.
+- ~~Rogue level / Sokoban / suspect-walkability~~ — autopilots refuse with explicit error.
 
 ---
 
