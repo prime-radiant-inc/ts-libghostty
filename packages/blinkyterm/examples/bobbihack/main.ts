@@ -56,6 +56,7 @@ import {
   JOURNAL_SECTIONS,
 } from "./tools/journal";
 import { handleQueryTerrain } from "./tools/query";
+import { handleAutopilotTo, handleAutopilotExplore } from "./tools/autopilot";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 import {
@@ -382,6 +383,42 @@ const TOOL_SCHEMAS: ToolSchema[] = [
       },
     },
   },
+  {
+    name: "autopilot_to",
+    description:
+      "Walk from your current tile to a known (x, y) on the same floor using A* pathfinding. Sends one keystroke per step and halts on any interrupt (monster_visible, modal_prompt, hp_drop, low_hp, entered_trap_tile, etc.). Returns 'arrived after N steps' on success, or 'stopped after N steps. interrupt: <name>'. Refuses Sokoban / Rogue level / walkability-suspect floors. Cannot cross floors — use move(up)/move(down) on stairs first. Use query_terrain to find target coordinates.",
+    input_schema: {
+      type: "object",
+      properties: {
+        floor: { type: "string", description: "Target floor id (e.g. 'D1', 'Mines:3'). Must be the current floor." },
+        x: { type: "integer", minimum: 0, maximum: 79 },
+        y: { type: "integer", minimum: 0, maximum: 23 },
+        stepCap: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Maximum steps before halting (default 50).",
+        },
+      },
+      required: ["floor", "x", "y"],
+    },
+  },
+  {
+    name: "autopilot_explore",
+    description:
+      "Walk a frontier-policy exploration of the current floor. Prefers adjacent unvisited walkable tiles (corridors > rooms; continues current direction); falls back to BFS toward the nearest known frontier tile. Halts on any interrupt or when the floor is fully explored. Refuses Sokoban / Rogue level / walkability-suspect floors. Does NOT auto-descend stairs — use move(down) explicitly.",
+    input_schema: {
+      type: "object",
+      properties: {
+        stepCap: {
+          type: "integer",
+          minimum: 1,
+          maximum: 200,
+          description: "Maximum steps before halting (default 50).",
+        },
+      },
+    },
+  },
 ];
 
 function loadSystemPrompt(): string {
@@ -617,6 +654,8 @@ async function main(): Promise<void> {
     journal_read: wrap("journal_read", handleJournalRead as ToolHandler),
     journal_write: wrap("journal_write", handleJournalWrite as ToolHandler),
     query_terrain: wrap("query_terrain", handleQueryTerrain as ToolHandler),
+    autopilot_to: wrap("autopilot_to", handleAutopilotTo as ToolHandler),
+    autopilot_explore: wrap("autopilot_explore", handleAutopilotExplore as ToolHandler),
   };
 
   // Conductor → state.ts event translation. The conductor's natural

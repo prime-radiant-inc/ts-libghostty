@@ -1,0 +1,15 @@
+[
+  {
+    "text": "Dismiss intro --More-- prompt to begin the game.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Dismiss any second --More-- in case there's another intro line.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Now in the dungeon. Let autopilot_explore walk the frontier so I can scan multiple tiles in one tool call.",
+    "toolUses": [{ "name": "autopilot_explore", "input": {} }]
+  },
+  { "text": "Smoke complete. Stopping." }
+]
