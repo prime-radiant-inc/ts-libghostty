@@ -55,6 +55,7 @@ import {
   handleJournalWrite,
   JOURNAL_SECTIONS,
 } from "./tools/journal";
+import { handleQueryTerrain } from "./tools/query";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 import {
@@ -370,6 +371,17 @@ const TOOL_SCHEMAS: ToolSchema[] = [
       required: ["section", "content"],
     },
   },
+  {
+    name: "query_terrain",
+    description:
+      "FREE action — recall a previously-explored floor's terrain. With {floor: 'D2'} returns {floor, ascii, features} where ascii is the recorded plain-ASCII map and features is a list of {glyph, x, y, kind} for stairs/altars/fountains/etc. With no args, returns {floors: [{id, firstTurn, lastTurn, tileCount}]} listing every visited floor. Use after a compaction marker to recover terrain memory.",
+    input_schema: {
+      type: "object",
+      properties: {
+        floor: { type: "string" },
+      },
+    },
+  },
 ];
 
 function loadSystemPrompt(): string {
@@ -604,6 +616,7 @@ async function main(): Promise<void> {
     command: wrap("command", handleCommand as ToolHandler),
     journal_read: wrap("journal_read", handleJournalRead as ToolHandler),
     journal_write: wrap("journal_write", handleJournalWrite as ToolHandler),
+    query_terrain: wrap("query_terrain", handleQueryTerrain as ToolHandler),
   };
 
   // Conductor → state.ts event translation. The conductor's natural

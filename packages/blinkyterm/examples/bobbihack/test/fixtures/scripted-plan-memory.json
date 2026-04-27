@@ -1,0 +1,33 @@
+[
+  {
+    "text": "Dismissing intro --More--.",
+    "toolUses": [{ "name": "respond_prompt", "input": { "keys": " " } }]
+  },
+  {
+    "text": "Recording my identity in the Character journal section.",
+    "toolUses": [
+      {
+        "name": "journal_write",
+        "input": {
+          "section": "Character",
+          "content": "I'm a Valkyrie.\nLawful, Tyr."
+        }
+      }
+    ]
+  },
+  {
+    "text": "Reading it back to confirm round-trip.",
+    "toolUses": [
+      { "name": "journal_read", "input": { "section": "Character" } }
+    ]
+  },
+  {
+    "text": "Listing visited floors.",
+    "toolUses": [{ "name": "query_terrain", "input": {} }]
+  },
+  {
+    "text": "Querying the D1 terrain map.",
+    "toolUses": [{ "name": "query_terrain", "input": { "floor": "D1" } }]
+  },
+  { "text": "Smoke complete. Stopping." }
+]
