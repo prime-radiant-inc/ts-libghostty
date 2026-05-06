@@ -14,6 +14,8 @@
 
 **Reference:** spec at `docs/superpowers/specs/2026-05-06-linux-portability-design.md`. Recon evidence at `.tmp/recon-linux/REPORT.md`. Scout's pre-built shim source at `.tmp/recon-linux/shim/ghostty-vt-shim.c` (copy into `native/shim.c` verbatim).
 
+**Workspace-internal consumers:** `packages/blinkyterm` declares `"libghostty-vt": "workspace:*"` so Bun re-links automatically when the version is bumped at Task 2.13 — no blinkyterm package.json edit is required, and no version bump in blinkyterm. Public API is unchanged, so blinkyterm tests should pass as a regression check at the Phase 1 gate (Task 1.8 step 2) and again at Task 2.13.
+
 **Worktree:** Recommended — branch from `main` into `.worktrees/linux-portability` per `superpowers:using-git-worktrees`. Phase 1 can land independently if you'd prefer to ship darwin-shim first as v0.5.2 and Linux as v0.6.0 — that's a sequencing call, not a design change.
 
 **Reporting checkpoints to Matt:** end of Phase 1 (Task 1.8 verifies darwin-arm64 still ships clean with the shim), and end of Phase 2 (Task 2.16, ready to tag v0.6.0).
@@ -135,6 +137,12 @@ Append (after the existing libghostty-vt copy, before the LICENSE_GHOSTTY copy):
 # taking variants so the binding can use a single FFI strategy across
 # platforms. See docs/superpowers/specs/2026-05-06-linux-portability-design.md.
 echo "==> building libghostty-vt-shim for $PLATFORM"
+# Sanity check: shim.c includes ghostty/vt.h etc., which must be present in
+# vendor/ghostty/include after the libghostty-vt build above.
+if [ ! -f vendor/ghostty/include/ghostty/vt.h ]; then
+  echo "ERROR: vendor/ghostty/include/ghostty/vt.h missing; libghostty-vt build did not check out headers" >&2
+  exit 1
+fi
 SHIM_OUT="prebuilds/$PLATFORM/libghostty-vt-shim.$EXT"
 case "$PLATFORM" in
   darwin-*)
@@ -207,15 +215,50 @@ grep -n "ghostty_terminal_new\|ghostty_formatter_terminal_new\|ghostty_terminal_
 
 Expected: entries near lines 27, 145, 200, 269.
 
-- [ ] **Step 2: Remove the four entries from `SYMBOLS` and rewrite the comment headers**
+- [ ] **Step 2: Replace the four entries' signatures with their pointer-passing shapes**
 
-In `packages/libghostty-vt/src/ffi.ts`, **remove**:
-- The `ghostty_terminal_new` entry (lines ~22–30) and its register-split commentary
-- The `ghostty_terminal_grid_ref` entry (lines ~143–148) and its hidden-pointer commentary
-- The `ghostty_terminal_scroll_viewport` entry (lines ~198–203)
-- The `ghostty_formatter_terminal_new` entry (lines ~266–272) and its 56-byte commentary
+The four entries STAY in `SYMBOLS` so the rest of the binding can keep calling `lib.symbols.ghostty_terminal_new(...)` etc. with the new pointer signatures, and so TypeScript's `Symbols` type stays correct. At runtime, dlopen loads them from the main library (which has the by-value originals — bun:ffi creates wrappers using whatever signature we declare, regardless of the C ABI of the underlying function). We then **immediately overwrite** these wrappers with the shim's `_p` variants before any call happens (Step 6 below). The pre-overwrite wrappers are never invoked.
 
-Replace each with a single comment line: `// Moved to SHIM_SYMBOLS — wrapped by ghostty_terminal_new_p in the shim.` (with the appropriate `_p` name).
+In `packages/libghostty-vt/src/ffi.ts`, find and replace the following entries:
+
+`ghostty_terminal_new` (lines ~22–30): replace its block with:
+```ts
+  // Wrapped by the shim — see SHIM_SYMBOLS / getLib() splice. The signature
+  // here is the shim's _p shape (alloc, &out, &options); this entry's
+  // function pointer gets overwritten with shim.ghostty_terminal_new_p
+  // before first call.
+  ghostty_terminal_new: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+```
+
+`ghostty_terminal_grid_ref` (lines ~143–148): replace with:
+```ts
+  // Wrapped by the shim. Signature is the shim's _p shape (term, &point, &out_ref).
+  ghostty_terminal_grid_ref: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+```
+
+`ghostty_terminal_scroll_viewport` (lines ~198–203): replace with:
+```ts
+  // Wrapped by the shim. Signature is the shim's _p shape (term, &behavior).
+  ghostty_terminal_scroll_viewport: {
+    args: [FFIType.ptr, FFIType.ptr],
+    returns: FFIType.void,
+  },
+```
+
+`ghostty_formatter_terminal_new` (lines ~266–272): replace with:
+```ts
+  // Wrapped by the shim. Signature is the shim's _p shape (alloc, &out, term, &options).
+  ghostty_formatter_terminal_new: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],
+    returns: FFIType.i32,
+  },
+```
 
 - [ ] **Step 3: Add `SHIM_SYMBOLS` constant**
 
@@ -288,10 +331,11 @@ After the existing `setLibraryPath()` function (~line 325), add:
  */
 export function setShimLibraryPath(path: string): void {
   if (loadedShim) {
+    const where = loadedShimPath ?? "<unknown>";
     throw new LibraryCompatibilityError(
-      `setShimLibraryPath called after shim already loaded from ${loadedShimPath}`,
+      `setShimLibraryPath called after shim already loaded from ${where}`,
       {
-        details: `already loaded from ${loadedShimPath}`,
+        details: `already loaded from ${where}`,
         expectedCommit: pinnedCommit,
       },
     );
@@ -542,10 +586,10 @@ that lands next."
 - [ ] **Step 1: Find the call site**
 
 ```bash
-grep -n "ghostty_terminal_new\|opts_lo\|opts_hi\|u64s\[" packages/libghostty-vt/src/terminal.ts | head -20
+grep -n -A 25 "ghostty_terminal_new passes GhosttyTerminalOptions BY VALUE" packages/libghostty-vt/src/terminal.ts
 ```
 
-Expected: ~line 219–235 contains the register-split commentary, the `BigUint64Array(optBytes.buffer, ...)` setup, and the four-arg call.
+Expected: ~line 219–235 contains the register-split commentary, the `BigUint64Array(optBytes.buffer, ...)` setup that aliases optBytes as two u64 chunks, and the four-arg `lib.symbols.ghostty_terminal_new(null, ptr(outSlot), u64s[0]!, u64s[1]!)` call. If the comment text is missing — the file may have been refactored — fall back to `grep -n "u64s\[0\]\!" packages/libghostty-vt/src/terminal.ts` and locate manually.
 
 - [ ] **Step 2: Replace the register-split block with a pointer call**
 
@@ -692,14 +736,16 @@ You'll see a small bash script that packs the package, installs into a temp proj
 After the `bun pm pack` line (or equivalent), add:
 
 ```bash
-# Verify the tarball includes both libghostty-vt and the shim.
+# Verify the tarball includes both libghostty-vt and the shim. Anchor
+# the regex to end-of-line so we match the exact filename and don't get
+# confused by .dSYM bundles or other suffixed artifacts.
 echo "==> verifying tarball contents"
 TARBALL=$(ls libghostty-vt-*.tgz | head -1)
-if ! tar -tzf "$TARBALL" | grep -q "prebuilds/darwin-arm64/libghostty-vt.dylib"; then
+if ! tar -tzf "$TARBALL" | grep -qE "prebuilds/darwin-arm64/libghostty-vt\.dylib$"; then
   echo "ERROR: tarball missing libghostty-vt.dylib" >&2
   exit 1
 fi
-if ! tar -tzf "$TARBALL" | grep -q "prebuilds/darwin-arm64/libghostty-vt-shim.dylib"; then
+if ! tar -tzf "$TARBALL" | grep -qE "prebuilds/darwin-arm64/libghostty-vt-shim\.dylib$"; then
   echo "ERROR: tarball missing libghostty-vt-shim.dylib" >&2
   exit 1
 fi
@@ -856,15 +902,37 @@ fi
 
 mkdir -p "prebuilds/$PLATFORM"
 
-# Discover SONAME and construct the symlink chain. Linux uses readelf;
-# darwin uses otool. The SOVERSION may change at any libghostty pin
-# bump, so we never hardcode the .so.<n>.<n>.<n> filename.
+# Discover SONAME and construct the symlink chain. Linux .so files have an
+# embedded SONAME (e.g., "libghostty-vt.so.0"); the shim's NEEDED entry
+# resolves that name. The SOVERSION may change at any libghostty pin bump,
+# so we never hardcode the .so.<n>.<n>.<n> filename.
+#
+# SONAME discovery: tries multiple tools because cross-builds happen on
+# macOS hosts where readelf isn't installed by default. Order: readelf
+# (Linux native and Linux containers), llvm-readelf (Xcode), then objdump
+# -p as a last resort. Bail with an install hint if all three fail.
+read_soname() {
+  local lib="$1"
+  if command -v readelf >/dev/null 2>&1; then
+    readelf -d "$lib" 2>/dev/null | awk '/SONAME/ {gsub(/[\[\]]/, "", $NF); print $NF; exit}'
+  elif command -v llvm-readelf >/dev/null 2>&1; then
+    llvm-readelf -d "$lib" 2>/dev/null | awk '/SONAME/ {gsub(/[\[\]]/, "", $NF); print $NF; exit}'
+  elif command -v objdump >/dev/null 2>&1; then
+    objdump -p "$lib" 2>/dev/null | awk '/SONAME/ {print $2; exit}'
+  else
+    return 1
+  fi
+}
+
 case "$EXT" in
   so)
-    # Read SONAME (e.g. "libghostty-vt.so.0").
-    SONAME=$(readelf -d "$SRC" | awk '/SONAME/ {gsub(/[\[\]]/, "", $5); print $5}')
+    SONAME=$(read_soname "$SRC")
     if [ -z "$SONAME" ]; then
-      echo "could not read SONAME from $SRC" >&2
+      echo "ERROR: could not read SONAME from $SRC" >&2
+      echo "  Install a tool that can read ELF dynamic sections:" >&2
+      echo "    Linux: apt-get install binutils (provides readelf)" >&2
+      echo "    macOS: brew install binutils  (then re-run; binutils' readelf is at /opt/homebrew/opt/binutils/bin/readelf — add to PATH)" >&2
+      echo "           OR: brew install llvm  (provides llvm-readelf)" >&2
       exit 1
     fi
     # The actual file gets the full version name. If $SRC is itself a
@@ -879,13 +947,14 @@ case "$EXT" in
     cp "$SRC" "prebuilds/$PLATFORM/$FULL_NAME"
     (cd "prebuilds/$PLATFORM" && ln -sf "$FULL_NAME" "$SONAME")
     (cd "prebuilds/$PLATFORM" && ln -sf "$SONAME" "libghostty-vt.so")
+    echo "installed prebuilds/$PLATFORM/libghostty-vt.so → $SONAME → $FULL_NAME"
     ;;
   dylib)
     # darwin: no SONAME chain, just copy the .dylib directly.
     cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.dylib"
+    echo "installed prebuilds/$PLATFORM/libghostty-vt.dylib"
     ;;
 esac
-echo "installed prebuilds/$PLATFORM/libghostty-vt.$EXT"
 ```
 
 - [ ] **Step 4: Wire up the Linux shim build**
@@ -904,6 +973,10 @@ Replace the Task 1.2 stub (`echo "(linux shim build deferred to Task 2.1)" >&2`)
       native/shim.c
     ;;
 ```
+
+The header sanity check from Task 1.2 (which looks for `vendor/ghostty/include/ghostty/vt.h`) already protects this path — both darwin and linux shim builds compile from the same include tree.
+
+**Cross-task ordering check:** after this edit the build script's flow is, in order: detect platform → detect TARGET → resolve zig → clone/checkout ghostty → `zig build install` → locate produced library (Step 3) → SONAME-aware copy + symlink chain (Step 3) → header sanity check + shim build (Tasks 1.2 + this step) → LICENSE_GHOSTTY copy. The shim section MUST come AFTER the lib-copy section (it depends on `prebuilds/$PLATFORM/libghostty-vt.<ext>` being present to link against). Confirm by reading the merged script before testing.
 
 - [ ] **Step 5: Test the build script on darwin to confirm no regression**
 
@@ -1389,6 +1462,35 @@ Expected: a list of exactly four entries — `ghostty_terminal_new: GhosttyTermi
 
 If you see fewer than four — the regex is too narrow; widen it. If you see more — review whether the new entries actually take by-value structs (false positive) or whether the shim is genuinely missing wrappers (real bug).
 
+- [ ] **Step 4b: Add a golden-list assertion that runs in `verify:generated`**
+
+So that future pin bumps trip CI loudly if the by-value list changes, append to `gen-bindings.ts` an assertion alongside the emitted list (the assertion lives in the script, not the generated file — the script fails before producing output if the count is wrong):
+
+```ts
+const EXPECTED_BY_VALUE = new Set([
+  "ghostty_terminal_new: GhosttyTerminalOptions",
+  "ghostty_formatter_terminal_new: GhosttyFormatterTerminalOptions",
+  "ghostty_terminal_grid_ref: GhosttyPoint",
+  "ghostty_terminal_scroll_viewport: GhosttyTerminalScrollViewport",
+]);
+const actual = new Set(byValueEntryPoints);
+const added = [...actual].filter(x => !EXPECTED_BY_VALUE.has(x));
+const removed = [...EXPECTED_BY_VALUE].filter(x => !actual.has(x));
+if (added.length > 0 || removed.length > 0) {
+  console.error("By-value entry-point list has changed:");
+  for (const a of added)   console.error(`  + ${a}  (NEEDS A SHIM WRAPPER)`);
+  for (const r of removed) console.error(`  - ${r}  (REMOVE FROM SHIM)`);
+  console.error("");
+  console.error("If this is intentional (Ghostty pin bump):");
+  console.error("  1. Add/remove the corresponding wrappers in native/shim.c");
+  console.error("  2. Update EXPECTED_BY_VALUE in scripts/gen-bindings.ts");
+  console.error("  3. Re-run bun run build:bindings");
+  process.exit(1);
+}
+```
+
+This is the trip-wire. `verify:generated` runs `bun run build:bindings` which now exits non-zero if the list diverges.
+
 - [ ] **Step 5: Run verify:generated**
 
 ```bash
@@ -1557,18 +1659,15 @@ jobs:
 
       - name: Build libghostty + shim (native or all targets)
         working-directory: packages/libghostty-vt
+        shell: bash
         run: |
+          set -e
           if [ "${{ matrix.targets }}" = "native" ]; then
             bun run build:libghostty
           else
-            for t in ${{ matrix.targets }}; do
-              echo "=== building $t ==="
-              # Comma -> space split happens via the for loop's arg expansion
-              # for the single-target case; here we use a bash pattern.
-              :
-            done
             IFS=',' read -ra TGTS <<< "${{ matrix.targets }}"
             for t in "${TGTS[@]}"; do
+              echo "=== building $t ==="
               TARGET="$t" bun run build:libghostty
             done
           fi
@@ -1658,6 +1757,8 @@ Tag-triggered. Downloads all six prebuild artifacts produced by the latest CI ru
 
 - [ ] **Step 1: Create the release workflow**
 
+The `actions/download-artifact` action does not cross workflow runs by default — passing `run-id: ${{ github.run_id }}` on a tag-push trigger gives you the *release* workflow's own run-id (which has no artifacts). The clean way to fetch artifacts produced by a separate CI run on the same commit is `gh run download --commit <sha>` in a script step. That uses `gh`'s API to find the most recent successful CI run for the commit and pulls its artifacts.
+
 `.github/workflows/release.yml`:
 
 ```yaml
@@ -1682,32 +1783,45 @@ jobs:
       - name: bun install
         run: bun install --frozen-lockfile
 
-      # Build the TS dist locally (no native rebuild needed; CI already produced
-      # all prebuilds, which we pull below).
+      # Build the TS dist locally (no native rebuild needed; CI already
+      # produced all prebuilds, which we pull below).
       - name: Build TypeScript
         working-directory: packages/libghostty-vt
         run: bun run build:ts
 
-      # Pull the prebuilds from the CI run on this commit.
-      - name: Download darwin-arm64 prebuild
-        uses: actions/download-artifact@v4
-        with:
-          name: prebuilds-darwin-arm64
-          path: packages/libghostty-vt/prebuilds/
-          run-id: ${{ github.event.workflow_run.id || github.run_id }}
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Download linux-x64 prebuilds
-        uses: actions/download-artifact@v4
-        with:
-          name: prebuilds-linux-x64
-          path: packages/libghostty-vt/prebuilds/
-
-      - name: Download linux-arm64 prebuilds
-        uses: actions/download-artifact@v4
-        with:
-          name: prebuilds-linux-arm64
-          path: packages/libghostty-vt/prebuilds/
+      # Find the CI run for this commit and download its prebuild artifacts.
+      # The tag points at a commit that should already have a green CI run;
+      # we look it up via the gh CLI rather than via download-artifact's
+      # cross-workflow path (which doesn't work on push:tags triggers).
+      - name: Download prebuilds from CI run
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        working-directory: packages/libghostty-vt
+        run: |
+          set -e
+          mkdir -p prebuilds
+          SHA="${{ github.sha }}"
+          echo "Looking for successful CI run on commit $SHA"
+          RUN_ID=$(gh run list \
+            --workflow=ci.yml \
+            --commit="$SHA" \
+            --status=success \
+            --limit=1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "ERROR: No successful CI run found for commit $SHA" >&2
+            echo "Either CI hasn't completed yet, or it failed." >&2
+            exit 1
+          fi
+          echo "Using CI run $RUN_ID"
+          for plat in darwin-arm64 linux-x64 linux-arm64; do
+            gh run download "$RUN_ID" -n "prebuilds-$plat" -D prebuilds/staging-$plat/
+            # The CI artifact contains a prebuilds/ directory at its root;
+            # flatten it into our local prebuilds/.
+            cp -r prebuilds/staging-$plat/* prebuilds/
+            rm -rf prebuilds/staging-$plat
+          done
 
       - name: Verify all six prebuilds present
         working-directory: packages/libghostty-vt
@@ -1732,7 +1846,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 ```
 
-**Note**: this workflow depends on the CI run for the tagged commit having completed first, which is the typical flow when a tag is pushed after a green PR merge. If you tag a commit that hasn't completed CI, the artifact download step fails — which is the desired behavior.
+**Note**: this workflow requires the tagged commit to have a green CI run already. If you tag a commit before CI completes (or before CI passes), the `gh run list` step finds nothing and exits with a clear error. Standard flow: PR merges → CI on main turns green → tag main → release fires. Don't tag on a branch that hasn't been merged.
 
 - [ ] **Step 2: Commit**
 
@@ -1774,7 +1888,7 @@ The whole gotcha can go — register-split was eliminated in favor of the univer
 Replace with:
 
 ```
-5. **All by-value libghostty entry points go through the shim.** `native/shim.c` wraps four entry points (`ghostty_terminal_new`, `ghostty_formatter_terminal_new`, `ghostty_terminal_grid_ref`, `ghostty_terminal_scroll_viewport`) with `_p` pointer-taking variants. The binding dispatches the unsuffixed names through the shim via a splice in `getLib()`. **When bumping `ghostty.commit`, run `bun run verify:generated` — the by-value entry-point scanner catches new sites that would need wrappers.**
+5. **All by-value libghostty entry points go through the shim.** `native/shim.c` wraps four entry points (`ghostty_terminal_new`, `ghostty_formatter_terminal_new`, `ghostty_terminal_grid_ref`, `ghostty_terminal_scroll_viewport`) with `_p` pointer-taking variants. The binding dispatches the unsuffixed names through the shim via a splice in `getLib()`. **`verify:generated` (which runs in CI on every push) trips automatically if a Ghostty pin bump introduces a new by-value site.** When that happens, add the matching `_p` wrapper in `native/shim.c`, the matching dlopen entry in `SHIM_SYMBOLS`, and update `EXPECTED_BY_VALUE` in `scripts/gen-bindings.ts`. Then re-run `bun run build:bindings`.
 ```
 
 - [ ] **Step 3: Add a release-process note for the six-prebuild flow**
@@ -1932,22 +2046,27 @@ git add packages/libghostty-vt/package.json
 git commit -m "chore(release): v0.6.0"
 ```
 
-- [ ] **Step 5: Tag**
+- [ ] **Step 5: Tag — but ONLY after CI on main is green**
+
+The release workflow uses `gh run list --commit=<sha>` to find a green CI run for the tagged commit. If you tag before CI completes (or fails), the release fails clearly. Required sequence:
 
 ```bash
-git tag -a v0.6.0 -m "v0.6.0 - Linux support (six prebuilds, universal shim)"
-```
-
-Don't push the tag yet. Push the branch first; merge to main; then push the tag from main:
-
-```bash
+# Push your branch and open a PR.
 git push -u origin <branch-name>
-# Once merged via PR:
+
+# Wait for CI on the PR to go green (3 matrix jobs).
+# Merge the PR.
+
+# Pull the merged main and verify the merge commit's CI is also green.
 git checkout main && git pull
+gh run list --workflow=ci.yml --commit=$(git rev-parse HEAD) --status=success --limit=1
+
+# Only after the above shows a successful run: tag and push the tag.
+git tag -a v0.6.0 -m "v0.6.0 - Linux support (six prebuilds, universal shim)"
 git push origin v0.6.0
 ```
 
-The release workflow runs on the tag push.
+The release workflow fires on the tag push and pulls artifacts from the green CI run on the merge commit.
 
 ---
 
