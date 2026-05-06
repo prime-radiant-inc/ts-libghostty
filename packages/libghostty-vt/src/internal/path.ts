@@ -91,3 +91,62 @@ export function resolveLibraryPath(opts: ResolveOptions): string {
 
   return bundled;
 }
+
+/**
+ * Resolve the path to libghostty-vt-shim. Mirrors resolveLibraryPath() but
+ * looks for `libghostty-vt-shim.<ext>` in the same prebuilds/ directory.
+ *
+ * The shim's runtime dependency on libghostty-vt is resolved by the OS
+ * loader using the shim's own directory ($ORIGIN on Linux, @loader_path
+ * on darwin), so the shim and the main library MUST live in the same
+ * directory. If a caller uses setShimLibraryPath() to override, they
+ * are responsible for ensuring the matching libghostty-vt is co-located.
+ */
+export function resolveShimLibraryPath(opts: ResolveOptions): string {
+  const exists = opts.fileExists ?? ((p) => existsSync(p));
+  const platform = opts.platform ?? detectPlatform();
+
+  if (opts.override) {
+    if (!exists(opts.override)) {
+      throw new LibraryNotFoundError(
+        `setShimLibraryPath: file not found at ${opts.override}`,
+        { searchedPaths: [opts.override] },
+      );
+    }
+    return opts.override;
+  }
+
+  if (opts.env) {
+    if (!exists(opts.env)) {
+      throw new LibraryNotFoundError(
+        `GHOSTTY_VT_SHIM_LIB: file not found at ${opts.env}`,
+        { searchedPaths: [opts.env] },
+      );
+    }
+    return opts.env;
+  }
+
+  const ext = libExtension(platform);
+  const bundled = join(opts.packageRoot, "prebuilds", platform, `libghostty-vt-shim.${ext}`);
+
+  if (!isKnownPlatform(platform)) {
+    throw new UnsupportedPlatformError(
+      `No bundled libghostty-vt-shim for ${platform}. Supported: ${SUPPORTED_PLATFORMS.join(", ")}.`,
+      {
+        detectedPlatform: platform,
+        supportedPlatforms: [...SUPPORTED_PLATFORMS],
+      },
+    );
+  }
+
+  if (!exists(bundled)) {
+    throw new LibraryNotFoundError(
+      `Bundled libghostty-vt-shim missing at ${bundled}. ` +
+        `This usually means the package tarball is incomplete — reinstall libghostty-vt, ` +
+        `or override via GHOSTTY_VT_SHIM_LIB / setShimLibraryPath().`,
+      { searchedPaths: [bundled] },
+    );
+  }
+
+  return bundled;
+}

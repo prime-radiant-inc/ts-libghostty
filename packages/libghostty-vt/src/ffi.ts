@@ -3,7 +3,7 @@ import { existsSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { LibraryCompatibilityError, LibraryNotFoundError } from "./errors";
-import { resolveLibraryPath } from "./internal/path";
+import { resolveLibraryPath, resolveShimLibraryPath } from "./internal/path";
 import {
   declaredHeaderSymbols,
   EXPECTED_LIBRARY_VERSION,
@@ -20,12 +20,12 @@ import {
 // table, and the probe in Task 4 together — not independently.
 
 const SYMBOLS = {
-  // GhosttyTerminalOptions (16 B) is passed by value. bun:ffi has no struct-
-  // by-value, so on darwin-arm64 we split it into two u64s per AAPCS64 register
-  // rules. Returns GhosttyResult (signed i32). See ABI discovery §4 + §12
-  // Surprise 5.
+  // Wrapped by the shim — see SHIM_SYMBOLS / getLib() splice. The signature
+  // here is the shim's _p shape (alloc, &out, &options); this entry's
+  // function pointer gets overwritten with shim.ghostty_terminal_new_p
+  // before first call.
   ghostty_terminal_new: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.u64, FFIType.u64],  // (alloc, &out, opts_lo, opts_hi)
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],
     returns: FFIType.i32,
   },
   ghostty_terminal_free: {
@@ -140,10 +140,9 @@ const SYMBOLS = {
     returns: FFIType.void,
   },
   // Grid ref accessors (Terminal.cellAt + RenderState decode)
-  // ghostty_terminal_grid_ref: GhosttyPoint (24 B, > 16 B) is passed via
-  // hidden pointer per AAPCS64. We pass ptr to the marshaled point bytes.
+  // Wrapped by the shim. Signature is the shim's _p shape (term, &point, &out_ref).
   ghostty_terminal_grid_ref: {
-    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (terminal, &point, &out_ref)
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (term, &point, &out_ref)
     returns: FFIType.i32,
   },
   ghostty_grid_ref_cell: {
@@ -195,8 +194,7 @@ const SYMBOLS = {
     args: [FFIType.i32, FFIType.ptr, FFIType.u64, FFIType.ptr],  // (event, buf|null, buf_len, &out_written)
     returns: FFIType.i32,
   },
-  // Terminal scroll viewport: GhosttyTerminalScrollViewport (24 B > 16 B) is
-  // passed via hidden pointer per AAPCS64. We pass ptr to the marshaled bytes.
+  // Wrapped by the shim. Signature is the shim's _p shape (term, &behavior).
   ghostty_terminal_scroll_viewport: {
     args: [FFIType.ptr, FFIType.ptr],   // (terminal, &behavior)
     returns: FFIType.void,
@@ -263,9 +261,7 @@ const SYMBOLS = {
   },
   // --- End Pass 4 additions ---------------------------------------------------
 
-  // GhosttyFormatterTerminalOptions (56 B) is passed via hidden pointer on
-  // arm64 AAPCS64 (structs > 16 B are passed indirectly). We declare it as
-  // FFIType.ptr and pass a pointer to the options bytes.
+  // Wrapped by the shim. Signature is the shim's _p shape (alloc, &out, term, &options).
   ghostty_formatter_terminal_new: {
     args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (alloc, &out_fmt, term, &options)
     returns: FFIType.i32,
@@ -312,12 +308,57 @@ type DlopenResult = {
  *  requiredSymbols ⊆ declaredHeaderSymbols without duplicating the list. */
 export const requiredSymbols = Object.keys(SYMBOLS) as readonly (keyof Symbols)[];
 
+/**
+ * Shim symbol table — pointer-taking wrappers for libghostty-vt's four
+ * by-value entry points. Lives in libghostty-vt-shim.{dylib,so}, which is
+ * dlopen'd alongside the main library.
+ *
+ * Why a shim rather than register-split or hidden-pointer tricks: bun:ffi
+ * doesn't support struct-by-value, and the workarounds (AAPCS64 register-
+ * split for 16-byte structs, "pass pointer to bytes" for >16-byte AAPCS64
+ * hidden-reference) don't translate to SystemV x64. The shim makes every
+ * platform's call shape uniform: pass pointer, callee dereferences.
+ *
+ * Signatures are the C signatures with each by-value struct replaced by
+ * `const T *`.
+ */
+const SHIM_SYMBOLS = {
+  ghostty_terminal_new_p: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (alloc, &out, &options)
+    returns: FFIType.i32,
+  },
+  ghostty_formatter_terminal_new_p: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (alloc, &out, term, &options)
+    returns: FFIType.i32,
+  },
+  ghostty_terminal_grid_ref_p: {
+    args: [FFIType.ptr, FFIType.ptr, FFIType.ptr],  // (term, &point, &out_ref)
+    returns: FFIType.i32,
+  },
+  ghostty_terminal_scroll_viewport_p: {
+    args: [FFIType.ptr, FFIType.ptr],   // (term, &behavior)
+    returns: FFIType.void,
+  },
+} as const;
+
+type ShimSymbols = typeof SHIM_SYMBOLS;
+type ShimDlopenResult = {
+  symbols: { [K in keyof ShimSymbols]: (...args: any[]) => any };
+  close: () => void;
+};
+
+export const requiredShimSymbols = Object.keys(SHIM_SYMBOLS) as readonly (keyof ShimSymbols)[];
+
 // ---- State -----------------------------------------------------------------
 
 let overridePath: string | undefined;
 let loaded: DlopenResult | null = null;
 let loadedPath: string | null = null;
 let loadedIdentity: string | null = null;   // actual build identity if exposed by C
+
+let shimOverridePath: string | undefined;
+let loadedShim: ShimDlopenResult | null = null;
+let loadedShimPath: string | null = null;
 
 // ---- Public API ------------------------------------------------------------
 
@@ -335,6 +376,27 @@ export function setLibraryPath(path: string): void {
   overridePath = path;
 }
 
+/**
+ * Override the shim library path. Must be called before first native use.
+ * The shim's runtime dependency on libghostty-vt is resolved via the
+ * loader's rpath pointing at the shim's own directory ($ORIGIN on Linux,
+ * @loader_path on darwin) — meaning: a custom shim must be co-located
+ * with a matching libghostty-vt(.so chain | .dylib) in the same directory.
+ */
+export function setShimLibraryPath(path: string): void {
+  if (loadedShim) {
+    const where = loadedShimPath ?? "<unknown>";
+    throw new LibraryCompatibilityError(
+      `setShimLibraryPath called after shim already loaded from ${where}`,
+      {
+        details: `already loaded from ${where}`,
+        expectedCommit: pinnedCommit,
+      },
+    );
+  }
+  shimOverridePath = path;
+}
+
 /** Whether the library has been opened. Does not trigger load. */
 export function isLoaded(): boolean {
   return loaded !== null;
@@ -343,6 +405,7 @@ export function isLoaded(): boolean {
 export interface LibraryInfo {
   loaded: boolean;
   path: string | null;
+  shimPath: string | null;
   pinnedCommit: string;
   /**
    * The loaded library's own build identity (commit/version) if upstream
@@ -358,6 +421,7 @@ export function libraryInfo(): LibraryInfo {
   return {
     loaded: loaded !== null,
     path: loadedPath,
+    shimPath: loadedShimPath,
     pinnedCommit,
     actualIdentity: loadedIdentity,
   };
@@ -413,6 +477,55 @@ export function getLib(): DlopenResult {
       },
     );
   }
+
+  // Load the portability shim. Wraps four by-value entry points; symbol
+  // names match the original C names with a `_p` suffix. We merge the
+  // shim's symbols onto the main library's symbol object so the rest of
+  // the binding can call them through `lib.symbols` uniformly under the
+  // un-suffixed names.
+  const shimPath = resolveShimLibraryPath({
+    override: shimOverridePath,
+    env: process.env["GHOSTTY_VT_SHIM_LIB"],
+    packageRoot,
+  });
+  let openedShim: ShimDlopenResult;
+  try {
+    openedShim = dlopen(shimPath, SHIM_SYMBOLS) as ShimDlopenResult;
+  } catch (e) {
+    opened.close();
+    const msg = (e as Error).message ?? String(e);
+    throw new LibraryCompatibilityError(
+      `Failed to open shim ${shimPath}: ${msg}`,
+      { details: msg, expectedCommit: pinnedCommit, cause: e },
+    );
+  }
+  // Verify the four shim symbols are present.
+  const shimMissing: string[] = [];
+  for (const name of requiredShimSymbols) {
+    if (typeof (openedShim.symbols as any)[name] !== "function") shimMissing.push(name as string);
+  }
+  if (shimMissing.length > 0) {
+    opened.close();
+    openedShim.close();
+    throw new LibraryCompatibilityError(
+      `Shim at ${shimPath} is missing ${shimMissing.length} required _p symbols`,
+      {
+        details: `missing: ${shimMissing.join(", ")}`,
+        expectedCommit: pinnedCommit,
+      },
+    );
+  }
+  // Splice shim symbols into the main symbols object under their un-
+  // suffixed C names. The rest of the binding (terminal.ts, formatter.ts,
+  // render-state.ts) calls these as if they were normal libghostty-vt
+  // entry points.
+  (opened.symbols as any).ghostty_terminal_new = openedShim.symbols.ghostty_terminal_new_p;
+  (opened.symbols as any).ghostty_formatter_terminal_new = openedShim.symbols.ghostty_formatter_terminal_new_p;
+  (opened.symbols as any).ghostty_terminal_grid_ref = openedShim.symbols.ghostty_terminal_grid_ref_p;
+  (opened.symbols as any).ghostty_terminal_scroll_viewport = openedShim.symbols.ghostty_terminal_scroll_viewport_p;
+
+  loadedShim = openedShim;
+  loadedShimPath = shimPath;
 
   // Build-identity check. ABI discovery §2 confirms `ghostty_build_info(data,
   // out)` is available at this pin and returns a semver string (e.g.
@@ -474,10 +587,14 @@ export function getLib(): DlopenResult {
  */
 export function _resetForTest(): void {
   if (loaded) loaded.close();
+  if (loadedShim) loadedShim.close();
   loaded = null;
   loadedPath = null;
   loadedIdentity = null;
+  loadedShim = null;
+  loadedShimPath = null;
   overridePath = undefined;
+  shimOverridePath = undefined;
 }
 
 // ---- Helpers ---------------------------------------------------------------
