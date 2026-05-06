@@ -58,7 +58,7 @@ function readElfInterpreter(): string | null {
       const buf = Buffer.alloc(32 * 1024);
       const bytesRead = fs.readSync(fd, buf, 0, buf.length, 0);
       if (bytesRead < 64) return null;
-      // ELF64 header layout: e_phoff @16 (8B), e_phentsize @54 (2B),
+      // ELF64 header layout: e_phoff @32 (8B), e_phentsize @54 (2B),
       // e_phnum @56 (2B). Iterate program headers; PT_INTERP type = 3.
       // Each Phdr: p_type @0 (4B), p_offset @8 (8B), p_filesz @32 (8B).
       const e_ident_class = buf.readUInt8(4);
