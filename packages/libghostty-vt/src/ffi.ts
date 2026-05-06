@@ -547,6 +547,7 @@ export function getLib(): DlopenResult {
     ptr(new Uint8Array(stringOut)),
   );
   if (infoResult !== 0) {
+    openedShim.close();
     opened.close();
     throw new LibraryCompatibilityError(
       `ghostty_build_info(VERSION_STRING) failed with code ${infoResult}`,
@@ -564,6 +565,7 @@ export function getLib(): DlopenResult {
   }
 
   if (loadedIdentity !== EXPECTED_LIBRARY_VERSION) {
+    openedShim.close();
     opened.close();
     throw new LibraryCompatibilityError(
       `libghostty-vt version "${loadedIdentity}" does not match expected "${EXPECTED_LIBRARY_VERSION}"`,
