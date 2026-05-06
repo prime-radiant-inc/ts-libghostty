@@ -4,7 +4,11 @@ vendor/
 .worktrees/
 **/prebuilds/*/libghostty-vt.dylib
 **/prebuilds/*/libghostty-vt.so
+**/prebuilds/*/libghostty-vt.so.*
 **/prebuilds/*/libghostty-vt.dll
+**/prebuilds/*/libghostty-vt-shim.dylib
+**/prebuilds/*/libghostty-vt-shim.so
+**/prebuilds/*/libghostty-vt-shim.dll
 *.log
 .DS_Store
 /tmp/
