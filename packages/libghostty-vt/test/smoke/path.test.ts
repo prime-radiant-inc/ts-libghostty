@@ -6,7 +6,8 @@ describe("platform detection", () => {
   it("detects current platform as a known string", () => {
     const p = detectPlatform();
     expect(typeof p).toBe("string");
-    expect(p).toMatch(/^(darwin|linux|win32)-(arm64|x64)$/);
+    // darwin: "darwin-arm64"; linux: "linux-{x64,arm64}-{glibc,musl}"; win32: "win32-{arch}"
+    expect(p).toMatch(/^(darwin|linux|win32)-(arm64|x64)(-\w+)?$/);
   });
 
   it("SUPPORTED_PLATFORMS includes at least darwin-arm64", () => {
