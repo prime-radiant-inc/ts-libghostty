@@ -84,6 +84,34 @@ fi
 cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.$EXT"
 echo "installed prebuilds/$PLATFORM/libghostty-vt.$EXT"
 
+# Build the portability shim. Wraps four by-value entry points with pointer-
+# taking variants so the binding can use a single FFI strategy across
+# platforms. See docs/superpowers/specs/2026-05-06-linux-portability-design.md.
+echo "==> building libghostty-vt-shim for $PLATFORM"
+# Sanity check: shim.c includes ghostty/vt.h etc., which must be present in
+# vendor/ghostty/include after the libghostty-vt build above.
+if [ ! -f vendor/ghostty/include/ghostty/vt.h ]; then
+  echo "ERROR: vendor/ghostty/include/ghostty/vt.h missing; libghostty-vt build did not check out headers" >&2
+  exit 1
+fi
+SHIM_OUT="prebuilds/$PLATFORM/libghostty-vt-shim.$EXT"
+case "$PLATFORM" in
+  darwin-*)
+    "$ZIG" cc -O2 -fPIC -shared \
+      -I vendor/ghostty/include \
+      -Wl,-install_name,@rpath/libghostty-vt-shim.$EXT \
+      -Wl,-rpath,@loader_path \
+      -L "prebuilds/$PLATFORM" -lghostty-vt \
+      -o "$SHIM_OUT" \
+      native/shim.c
+    ;;
+  linux-*)
+    # Linux shim build is parameterized by target triple; handled in Task 2.1.
+    echo "(linux shim build deferred to Task 2.1)" >&2
+    ;;
+esac
+echo "installed $SHIM_OUT"
+
 # Copy upstream LICENSE into LICENSE_GHOSTTY.
 cp vendor/ghostty/LICENSE LICENSE_GHOSTTY
 echo "updated LICENSE_GHOSTTY from upstream"
