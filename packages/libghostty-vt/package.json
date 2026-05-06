@@ -16,6 +16,7 @@
     "src/",
     "dist/",
     "prebuilds/",
+    "native/",
     "LICENSE",
     "LICENSE_GHOSTTY",
     "README.md",
