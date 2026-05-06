@@ -12,19 +12,28 @@ if [ -z "$COMMIT" ] || [ "$COMMIT" = "REPLACE_WITH_PINNED_COMMIT_IN_TASK_2" ]; t
   exit 1
 fi
 
-# Resolve platform.
-UNAME_S=$(uname -s)
-UNAME_M=$(uname -m)
-case "$UNAME_S-$UNAME_M" in
-  Darwin-arm64) PLATFORM="darwin-arm64"; EXT="dylib" ;;
-  Darwin-x86_64) PLATFORM="darwin-x64"; EXT="dylib" ;;
-  Linux-x86_64) PLATFORM="linux-x64"; EXT="so" ;;
-  Linux-aarch64) PLATFORM="linux-arm64"; EXT="so" ;;
-  *)
-    echo "Unsupported build platform: $UNAME_S-$UNAME_M" >&2
-    exit 1
-    ;;
-esac
+# Resolve build target. Native builds infer from uname; cross-compile
+# accepts a TARGET env var (used by Linux CI to build both glibc + musl
+# variants from a single runner).
+if [ -n "${TARGET:-}" ]; then
+  case "$TARGET" in
+    x86_64-linux-gnu) PLATFORM="linux-x64-glibc"; EXT="so"; ZIG_TARGET="$TARGET" ;;
+    x86_64-linux-musl) PLATFORM="linux-x64-musl"; EXT="so"; ZIG_TARGET="$TARGET" ;;
+    aarch64-linux-gnu) PLATFORM="linux-arm64-glibc"; EXT="so"; ZIG_TARGET="$TARGET" ;;
+    aarch64-linux-musl) PLATFORM="linux-arm64-musl"; EXT="so"; ZIG_TARGET="$TARGET" ;;
+    *) echo "Unsupported TARGET: $TARGET" >&2; exit 1 ;;
+  esac
+else
+  UNAME_S=$(uname -s)
+  UNAME_M=$(uname -m)
+  case "$UNAME_S-$UNAME_M" in
+    Darwin-arm64) PLATFORM="darwin-arm64"; EXT="dylib"; ZIG_TARGET="" ;;
+    *)
+      echo "Unsupported native platform: $UNAME_S-$UNAME_M. Cross-compile via TARGET env." >&2
+      exit 1
+      ;;
+  esac
+fi
 
 # Clone or update vendor/ghostty at the pinned commit.
 mkdir -p vendor
@@ -66,23 +75,80 @@ echo "using zig $ZIG_VSN at $ZIG"
 # the `lib-vt` step with `-Demit-lib-vt=true` option on the default `install`
 # step. Check `zig build --help | grep lib-vt` if this stops working.
 cd vendor/ghostty
-"$ZIG" build install -Demit-lib-vt=true -Doptimize=ReleaseFast
+ZIG_BUILD_ARGS=(install "-Demit-lib-vt=true" "-Doptimize=ReleaseFast")
+if [ -n "$ZIG_TARGET" ]; then
+  ZIG_BUILD_ARGS+=("-Dtarget=$ZIG_TARGET")
+fi
+"$ZIG" build "${ZIG_BUILD_ARGS[@]}"
 cd "$ROOT"
 
-# Locate the output and copy to prebuilds/.
-mkdir -p "prebuilds/$PLATFORM"
-# The path below matches recent Ghostty. If the build output moves, update here.
-SRC="vendor/ghostty/zig-out/lib/libghostty-vt.$EXT"
-if [ ! -f "$SRC" ]; then
-  # Fallback: find any libghostty-vt.<ext> in zig-out.
-  SRC=$(find vendor/ghostty/zig-out -name "libghostty-vt.$EXT" | head -n 1)
-fi
-if [ ! -f "$SRC" ]; then
+# Discover the produced library. Cross-compile may put it under a
+# triple-named subdir; native build puts it directly under zig-out/lib.
+SRC=""
+for cand in \
+  "vendor/ghostty/zig-out/lib/libghostty-vt.$EXT" \
+  "vendor/ghostty/zig-out/lib/libghostty-vt.$EXT".* \
+  vendor/ghostty/zig-out/lib/*/libghostty-vt.$EXT \
+  ; do
+  if [ -f "$cand" ]; then SRC="$cand"; break; fi
+done
+if [ -z "$SRC" ]; then
   echo "build succeeded but libghostty-vt.$EXT not found" >&2
+  find vendor/ghostty/zig-out -maxdepth 4 -type f >&2
   exit 1
 fi
-cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.$EXT"
-echo "installed prebuilds/$PLATFORM/libghostty-vt.$EXT"
+
+mkdir -p "prebuilds/$PLATFORM"
+
+# Discover SONAME and construct the symlink chain. Linux .so files have an
+# embedded SONAME (e.g., "libghostty-vt.so.0"); the shim's NEEDED entry
+# resolves that name. The SOVERSION may change at any libghostty pin bump,
+# so we never hardcode the .so.<n>.<n>.<n> filename.
+#
+# SONAME discovery: tries multiple tools because cross-builds happen on
+# macOS hosts where readelf isn't installed by default. Order: readelf
+# (Linux native and Linux containers), llvm-readelf (Xcode), then objdump
+# -p as a last resort. Bail with an install hint if all three fail.
+read_soname() {
+  local lib="$1"
+  if command -v readelf >/dev/null 2>&1; then
+    readelf -d "$lib" 2>/dev/null | awk '/SONAME/ {gsub(/[\[\]]/, "", $NF); print $NF; exit}'
+  elif command -v llvm-readelf >/dev/null 2>&1; then
+    llvm-readelf -d "$lib" 2>/dev/null | awk '/SONAME/ {gsub(/[\[\]]/, "", $NF); print $NF; exit}'
+  elif command -v objdump >/dev/null 2>&1; then
+    objdump -p "$lib" 2>/dev/null | awk '/SONAME/ {print $2; exit}'
+  else
+    return 1
+  fi
+}
+
+case "$EXT" in
+  so)
+    SONAME=$(read_soname "$SRC")
+    if [ -z "$SONAME" ]; then
+      echo "ERROR: could not read SONAME from $SRC" >&2
+      echo "  Install a tool that can read ELF dynamic sections:" >&2
+      echo "    Linux: apt-get install binutils (provides readelf)" >&2
+      echo "    macOS: brew install binutils  (then re-run; binutils' readelf is at /opt/homebrew/opt/binutils/bin/readelf — add to PATH)" >&2
+      echo "           OR: brew install llvm  (provides llvm-readelf)" >&2
+      exit 1
+    fi
+    SRC_BASENAME=$(basename "$SRC")
+    if [[ "$SRC_BASENAME" =~ ^libghostty-vt\.so\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+      FULL_NAME="$SRC_BASENAME"
+    else
+      FULL_NAME="$SONAME.0"  # synthetic; only matters for the symlink target
+    fi
+    cp "$SRC" "prebuilds/$PLATFORM/$FULL_NAME"
+    (cd "prebuilds/$PLATFORM" && ln -sf "$FULL_NAME" "$SONAME")
+    (cd "prebuilds/$PLATFORM" && ln -sf "$SONAME" "libghostty-vt.so")
+    echo "installed prebuilds/$PLATFORM/libghostty-vt.so → $SONAME → $FULL_NAME"
+    ;;
+  dylib)
+    cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.dylib"
+    echo "installed prebuilds/$PLATFORM/libghostty-vt.dylib"
+    ;;
+esac
 
 # Build the portability shim. Wraps four by-value entry points with pointer-
 # taking variants so the binding can use a single FFI strategy across
@@ -106,8 +172,14 @@ case "$PLATFORM" in
       native/shim.c
     ;;
   linux-*)
-    # Linux shim build is parameterized by target triple; handled in Task 2.1.
-    echo "(linux shim build deferred to Task 2.1)" >&2
+    "$ZIG" cc -O2 -fPIC -shared \
+      -target "$ZIG_TARGET" \
+      -I vendor/ghostty/include \
+      -Wl,-soname,libghostty-vt-shim.so \
+      -Wl,-rpath,'$ORIGIN' \
+      -L "prebuilds/$PLATFORM" -lghostty-vt \
+      -o "$SHIM_OUT" \
+      native/shim.c
     ;;
 esac
 echo "installed $SHIM_OUT"
