@@ -32,6 +32,8 @@ describe("GhosttyError hierarchy", () => {
   });
 
   it("UnsupportedPlatformError carries detected and supported lists", () => {
+    // "darwin-arm64" here is controlled test input, not a runtime assertion —
+    // we're verifying the error class stores whatever supportedPlatforms is passed in.
     const e = new UnsupportedPlatformError("not supported", {
       detectedPlatform: "linux-x64",
       supportedPlatforms: ["darwin-arm64"],
