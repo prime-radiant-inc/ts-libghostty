@@ -54,3 +54,22 @@ BLINKYTERM_LLM_COMMAND='ruby -e "STDIN.read; puts %[north south east west search
 
 The command receives the ANSI screen on stdin and must print one move
 on stdout. stderr is forwarded unchanged so errors are visible.
+
+## bobbihack
+
+Full-screen TUI that watches an LLM agent play NetHack — NetHack runs
+in an embedded 80×25 pane, with the agent's reasoning streaming live
+in a second pane. Ships a built-in `MockAgent` (no API key) and an
+`AnthropicAgent` (Messages API + tool use).
+
+```bash
+# Mock agent — no API key:
+BOBBIHACK_AGENT=mock bun examples/bobbihack/main.ts
+
+# Anthropic — auto-selected when ANTHROPIC_API_KEY is set:
+ANTHROPIC_API_KEY=sk-ant-... bun examples/bobbihack/main.ts
+```
+
+Or via the script: `bun run bobbihack`. See
+[`bobbihack/README.md`](./bobbihack/README.md) for layout, controls,
+and agent details.

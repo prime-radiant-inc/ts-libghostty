@@ -32,7 +32,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- **Linux support** for x64 and arm64, on both glibc and musl distros. The npm tarball now ships six prebuilds (`darwin-arm64`, `linux-x64-{glibc,musl}`, `linux-arm64-{glibc,musl}`).
+- **Linux support** for x64 and arm64, on both glibc and musl distros. The npm tarball now ships five prebuilds (`darwin-arm64`, `linux-x64-{glibc,musl}`, `linux-arm64-{glibc,musl}`).
 - `setShimLibraryPath()` and `GHOSTTY_VT_SHIM_LIB` for overriding the location of the portability shim binary.
 - `libraryInfo().shimPath` exposes the loaded shim's path.
 - New native/shim.c source ships in the tarball alongside prebuilds.

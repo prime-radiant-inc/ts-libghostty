@@ -19,13 +19,11 @@ bun add libghostty-vt
 - Linux x64 (glibc and musl)
 - Linux arm64 (glibc and musl)
 
-All six prebuilds ship in the npm tarball. The library auto-detects glibc vs musl on Linux at runtime.
+All five prebuilds ship in the npm tarball. The library auto-detects glibc vs musl on Linux at runtime.
 
 **Override the bundled binary** by setting `GHOSTTY_VT_LIB` (the main library) and/or `GHOSTTY_VT_SHIM_LIB` (the portability shim) before importing. The two libraries must be co-located in the same directory if either is overridden — the shim's runtime dependency on `libghostty-vt` is resolved relative to the shim's own directory.
 
 Windows is not supported.
-
-**APC tuning (Pass 1):** this release does not expose `apc_max_bytes` / `apc_max_bytes_kitty` tuning. The terminal uses upstream libghostty-vt defaults. Pass 2+ will add post-construction setters — `Terminal.setApcMaxBytes(n)` and `Terminal.setApcMaxBytesKitty(n)` — wrapping `ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, ...)` if user demand surfaces.
 
 ## Minimal example
 
@@ -41,7 +39,7 @@ console.log(fmt.formatString(term));
 
 ## Effect callbacks
 
-Pass 2 adds three synchronous effect callbacks as `Terminal` constructor options. They are invoked inside `vtWrite()` when libghostty processes the corresponding VT sequence.
+Three synchronous effect callbacks are exposed as `Terminal` constructor options. They are invoked inside `vtWrite()` when libghostty processes the corresponding VT sequence.
 
 ```typescript
 import { Terminal } from "libghostty-vt";
@@ -68,21 +66,23 @@ using term = new Terminal({
 
 The other five effect-shaped callbacks exposed by the C API (`ENQUIRY`, `XTVERSION`, `SIZE`, `COLOR_SCHEME`, `DEVICE_ATTRIBUTES`) are query-response shapes that return data into libghostty's allocator — deferred until the allocator-callback pattern is established.
 
-## API surface (Pass 1 + 2 + 3)
+## API surface
 
-- `Terminal` — construction, `vtWrite`, `resize`, `reset`, `snapshot`, `mode`/`setMode`, lifecycle (`close`, `using`), effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`), **`scrollViewport`, `colors`/`setColors`, `cellAt`**, **APC bounds (`apcMaxBytes`, `apcMaxBytesKitty`)**.
-- **`RenderState`** — `update(term)` snapshot then iterate rows/cells. Dual iterator shape:
+- `Terminal` — construction, `vtWrite`, `resize`, `reset`, `snapshot`, `mode`/`setMode`, lifecycle (`close`, `using`), effect callbacks (`onWritePty`, `onBell`, `onTitleChanged`), `scrollViewport`, `colors`/`setColors`, `cellAt`, APC bounds (`apcMaxBytes`, `apcMaxBytesKitty`), `renderToAnsiRect`.
+- `RenderState` — `update(term)` snapshot then iterate rows/cells. Dual iterator shape:
   - Ergonomic: `rows()`, `row.cells()`, `forEachDirtyRow(cb)` allocate fresh objects per iteration, snapshot lifetime valid until next `update()`.
   - Hot path: `forEachCell(row, cb)` / `forEachDirtyCell(cb)` reuse a single mutable `RenderCell` across the walk — the callback **must not retain the reference**. Mutate your own buffer if you need to retain cell data past the callback.
   - `dirty()` / `markClean()` — dirty tracking (both libghostty-native and JS-cached). `markClean()` performs a native clear (one call) then mirrors to JS; multiple consumers can each call it on independent cadences.
   - `colors()` — view of libghostty's current render-state colors.
   - `cursor()` — viewport cursor position (`x`, `y`, `visible`, `wideTail`), distinct from `Terminal.snapshot().cursor` (which tracks the live cursor regardless of viewport scroll).
-- **`encodeFocus("in" | "out")`** — standalone function, returns fresh `Uint8Array`.
+  - `toAnsiRect(dest, opts)` / `cursorInRect(dest)` / `size()` — composition surface for painting the cell grid into a destination rectangle on a host terminal.
+- `KeyEncoder` + `KeyEvent` — keystroke encoding (Kitty keyboard protocol, application/normal cursor-key modes). Bound or standalone. See *Keyboard input encoding* below.
+- `encodeFocus("in" | "out")` — standalone function, returns fresh `Uint8Array`.
 - `Formatter` — `plain`/`vt`/`html` dumps of a Terminal's current screen.
-- `GhosttyError` + subclasses (`LibraryNotFoundError`, `UnsupportedPlatformError`, `LibraryCompatibilityError`, `UseAfterCloseError`).
-- `setLibraryPath` / `isLoaded` / `libraryInfo` for diagnostics and out-of-tree library paths.
+- `GhosttyError` + subclasses: `LibraryNotFoundError`, `UnsupportedPlatformError`, `LibraryCompatibilityError`, `UseAfterCloseError`, `RectSizeMismatch`, `EncodeError`.
+- `setLibraryPath` / `setShimLibraryPath` / `isLoaded` / `libraryInfo` for diagnostics and out-of-tree library paths. `libraryInfo()` reports both `path` (main) and `shimPath`.
 
-`KeyEncoder` + `KeyEvent` (keystroke encoding, Kitty keyboard protocol, application/normal modes) ships in Pass 4. Remaining roadmap items (mouse encoder, paste helpers, Kitty graphics, query-response callbacks) are tranched post-v0.
+Remaining roadmap items (mouse encoder, paste helpers, Kitty graphics, query-response callbacks) are tranched post-v0.
 
 ### `cellAt` coord-space cost
 
@@ -111,10 +111,9 @@ OSC 10/11/12 color overrides set by the running program **are preserved across `
 
 ## Keyboard input encoding
 
-Pass 4 adds `KeyEncoder` for converting structured `KeyEvent` objects
-into VT byte sequences. Encoder output is mode-aware — it respects
-DECCKM cursor-key mode, Kitty keyboard protocol flags, and other
-state.
+`KeyEncoder` converts structured `KeyEvent` objects into VT byte
+sequences. Encoder output is mode-aware — it respects DECCKM
+cursor-key mode, Kitty keyboard protocol flags, and other state.
 
 ````typescript
 import { Terminal, KeyEncoder } from "libghostty-vt";
@@ -184,7 +183,7 @@ import { setLibraryPath } from "libghostty-vt";
 setLibraryPath("/path/to/libghostty-vt.dylib");
 ```
 
-**The loaded library's ABI must be compatible with the pinned Ghostty commit.** Pass 1 verifies compatibility through three channels: (1) every required FFI symbol must resolve at load time or `LibraryCompatibilityError` is thrown; (2) the checked-in struct layouts (`src/internal/generated.ts`) must match the probe output for the pinned headers, and the ABI smoke test additionally cross-checks them against `ghostty_type_json()` at runtime; (3) `ghostty_build_info(GHOSTTY_BUILD_INFO_VERSION_STRING)` must return the expected semver string (e.g. `0.1.0-dev`) — mismatch raises `LibraryCompatibilityError`. Note that `ghostty_build_info` returns **semver, not a git commit SHA** at this pin; we cannot cryptographically verify the dylib was built from our pinned commit via the C API alone. If upstream later exposes a commit SHA via `ghostty_build_info` or similar, this guarantee narrows accordingly. Until then, override libraries are best-effort — a library built from a compatible commit that happens to resolve all required symbols and match the expected semver can still disagree on enum values or callback shapes, with undefined runtime behavior.
+**The loaded library's ABI must be compatible with the pinned Ghostty commit.** The binding verifies compatibility through three channels: (1) every required FFI symbol must resolve at load time or `LibraryCompatibilityError` is thrown; (2) the checked-in struct layouts (`src/internal/generated.ts`) must match the probe output for the pinned headers, and the ABI smoke test additionally cross-checks them against `ghostty_type_json()` at runtime; (3) `ghostty_build_info(GHOSTTY_BUILD_INFO_VERSION_STRING)` must return the expected semver string (e.g. `0.1.0-dev`) — mismatch raises `LibraryCompatibilityError`. Note that `ghostty_build_info` returns **semver, not a git commit SHA** at this pin; we cannot cryptographically verify the dylib was built from our pinned commit via the C API alone. If upstream later exposes a commit SHA via `ghostty_build_info` or similar, this guarantee narrows accordingly. Until then, override libraries are best-effort — a library built from a compatible commit that happens to resolve all required symbols and match the expected semver can still disagree on enum values or callback shapes, with undefined runtime behavior.
 
 ## About
 

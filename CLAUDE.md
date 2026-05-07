@@ -13,7 +13,7 @@ full v0 surface.
 
 ## Load-bearing gotchas
 
-1. **Supported platforms: darwin-arm64, linux-{x64,arm64} × {glibc,musl}.** Six prebuilds total. Windows is out of scope; the build script and path resolver both reject it explicitly. See `docs/superpowers/specs/2026-05-06-linux-portability-design.md`.
+1. **Supported platforms: darwin-arm64, linux-{x64,arm64} × {glibc,musl}.** Five prebuilds total. Windows is out of scope; the build script and path resolver both reject it explicitly. See `docs/superpowers/specs/2026-05-06-linux-portability-design.md`.
 
 2. **Ghostty pin is deliberate and tip-of-main** (see `package.json` → `ghostty.commit`). Don't bump unprompted. `bun run verify:generated` is the trip-wire: rebuilds the probe, regenerates bindings, fails on diff.
 
@@ -78,9 +78,9 @@ Order of operations on a version bump:
 
 The workflow refuses to publish if the tag doesn't match `package.json` → `version`, so a wrong-tag push fails fast rather than producing a mis-tagged release.
 
-## Six-prebuild release flow
+## Five-prebuild release flow
 
-Tag push triggers `.github/workflows/release.yml`, which downloads all six prebuild artifacts from the CI run on the tagged commit, verifies they're present, runs the tarball smoke test, and publishes to npm via OIDC trusted publishing. The release job never builds native code itself — it consumes exactly what CI tested. The `npm-publish` GitHub Environment gates the publish step behind a required reviewer; trusted publisher config under `primeradianthq` on npmjs.com binds this workflow + environment to the package.
+Tag push triggers `.github/workflows/release.yml`, which downloads all five prebuild artifacts from the CI run on the tagged commit, verifies they're present, runs the tarball smoke test, and publishes to npm via OIDC trusted publishing. The release job never builds native code itself — it consumes exactly what CI tested. The `npm-publish` GitHub Environment gates the publish step behind a required reviewer; trusted publisher config under `primeradianthq` on npmjs.com binds this workflow + environment to the package.
 
 Local `bun pack` for inspection still works on darwin, but only includes the local platform's prebuild. To produce the full multi-platform tarball locally, you'd need to download the CI artifacts manually (see release.yml for the recipe).
 

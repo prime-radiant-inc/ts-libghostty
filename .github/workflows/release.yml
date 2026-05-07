@@ -1,7 +1,7 @@
 name: Release
 
 # Tag-driven release. Pushing an annotated tag matching `v*` runs this
-# workflow, which downloads the six prebuilds from the matching CI run and
+# workflow, which downloads the five prebuilds from the matching CI run and
 # publishes `libghostty-vt` to npm via OIDC trusted publishing — no
 # long-lived `NPM_TOKEN` exists or is needed.
 #
@@ -92,7 +92,7 @@ jobs:
             rm -rf prebuilds/staging-$plat
           done
 
-      - name: Verify all six prebuilds present
+      - name: Verify all five prebuilds present
         working-directory: packages/libghostty-vt
         run: |
           set -e
@@ -102,7 +102,7 @@ jobs:
             test -f "prebuilds/$plat/libghostty-vt.$ext" || { echo "missing $plat lib"; exit 1; }
             test -f "prebuilds/$plat/libghostty-vt-shim.$ext" || { echo "missing $plat shim"; exit 1; }
           done
-          echo "all six prebuilds present"
+          echo "all five prebuilds present"
 
       - name: Tarball smoke
         working-directory: packages/libghostty-vt

@@ -5,7 +5,10 @@ Agent-facing TUI runner built on `Bun.Terminal` and `libghostty-vt`.
 output through Ghostty's VT engine, and yields stable frames you can
 `for await`. Send helpers cover text, keys, and raw bytes.
 
-darwin-arm64 only (transitively, via `libghostty-vt`).
+`libghostty-vt` ships prebuilds for darwin-arm64 and Linux x64/arm64
+(glibc and musl). CI smoke-tests blinkyterm only on darwin-arm64;
+the TS code is not platform-locked, but Linux usage is unverified —
+file an issue if it bites.
 
 ## Install
 
@@ -101,3 +104,24 @@ await Runner.spawn(argv, {
 into a single frame after the writes settle; `maxIntervalMs`
 guarantees forward progress on a continuously busy pty;
 `yieldOn` adds VT effects as additional emit triggers.
+
+## Advanced: live Terminal and RenderState access
+
+The `Runner` exposes `runner.terminal` and `runner.renderState` for
+consumers that need direct access to the underlying `libghostty-vt`
+objects — for example, to call `runner.renderState.toAnsiRect(dest)`
+when compositing the child's screen into a host TUI. The cached
+`renderState` follows the upstream-canonical "one `RenderState` per
+`Terminal`, used forever" pattern; multi-consumer rules from
+`libghostty-vt` apply.
+
+`runner.sendKeyEvent(event)` is the lower-level send for a fully
+populated `KeyEvent` (e.g., when you have your own keymap and don't
+want blinkyterm's US-layout helper).
+
+## Examples
+
+End-to-end NetHack demos under `examples/` (not in CI). See
+[`examples/README.md`](./examples/README.md) for details, including
+[`examples/bobbihack/`](./examples/bobbihack/) — a full-screen TUI
+that watches an LLM agent play NetHack in an embedded pane.
