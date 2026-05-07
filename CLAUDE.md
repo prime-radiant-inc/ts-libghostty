@@ -13,7 +13,7 @@ full v0 surface.
 
 ## Load-bearing gotchas
 
-1. **darwin-arm64 only.** Don't add Linux/Windows/x64 code paths. FFI relies on AAPCS64 register-split for struct-by-value; cross-platform is a future-pass decision.
+1. **Supported platforms: darwin-arm64, linux-{x64,arm64} × {glibc,musl}.** Six prebuilds total. Windows is out of scope; the build script and path resolver both reject it explicitly. See `docs/superpowers/specs/2026-05-06-linux-portability-design.md`.
 
 2. **Ghostty pin is deliberate and tip-of-main** (see `package.json` → `ghostty.commit`). Don't bump unprompted. `bun run verify:generated` is the trip-wire: rebuilds the probe, regenerates bindings, fails on diff.
 
@@ -21,7 +21,7 @@ full v0 surface.
 
 4. **Toolchain: mise for bun, brew for zig.** `mise install` picks up `bun = 1.3.13`. Zig must come from brew's `zig@0.15` bottle on macOS Tahoe — ziglang.org's zig 0.15.2 hits a libSystem ABI break. This is the documented exception to the "prefer mise" rule.
 
-5. **Register-split is AAPCS64-specific.** 16-byte structs → two u64 args; 56-byte structs → hidden pointer. If you're touching `src/ffi.ts` or adding a new struct-taking FFI call, read `docs/abi/2026-04-22-abi-discovery.md` §12 before improvising.
+5. **All by-value libghostty entry points go through the shim.** `native/shim.c` wraps four entry points (`ghostty_terminal_new`, `ghostty_formatter_terminal_new`, `ghostty_terminal_grid_ref`, `ghostty_terminal_scroll_viewport`) with `_p` pointer-taking variants. The binding dispatches the unsuffixed names through the shim via a splice in `getLib()`. **`verify:generated` (which runs in CI on every push) trips automatically if a Ghostty pin bump introduces a new by-value site.** When that happens, add the matching `_p` wrapper in `native/shim.c`, the matching dlopen entry in `SHIM_SYMBOLS`, and update `EXPECTED_BY_VALUE` in `scripts/gen-bindings.ts`. Then re-run `bun run build:bindings`.
 
 6. **Plain formatter trims.** Empty terminal → `""`, not a rectangle of spaces. Tests assume this.
 
@@ -73,6 +73,12 @@ Order of operations on a version bump:
 2. Bump `package.json` → `version`.
 3. Commit both together with a `docs(changelog): vX.Y.Z` or `chore(release): vX.Y.Z` prefix.
 4. `git tag -a vX.Y.Z` at that commit.
+
+## Six-prebuild release flow
+
+Tag push triggers `.github/workflows/release.yml`, which downloads all six prebuild artifacts from the CI run on the tagged commit, verifies they're present, runs the tarball smoke test, and publishes to npm. The release job never builds native code itself — it consumes exactly what CI tested.
+
+Local `bun pack` for inspection still works on darwin, but only includes the local platform's prebuild. To produce the full multi-platform tarball locally, you'd need to download the CI artifacts manually (see release.yml for the recipe).
 
 ## Dispatching review subagents
 

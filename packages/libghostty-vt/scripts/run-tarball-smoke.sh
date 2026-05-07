@@ -30,6 +30,20 @@ fi
 TGZ=$(cd "$(dirname "$REL")" && pwd)/$(basename "$REL")
 echo "packed: $TGZ"
 
+# Verify the tarball includes both libghostty-vt and the shim. Anchor
+# the regex to end-of-line so we match the exact filename and don't get
+# confused by .dSYM bundles or other suffixed artifacts.
+echo "==> verifying tarball contents"
+if ! tar -tzf "$TGZ" | grep -qE "prebuilds/darwin-arm64/libghostty-vt\.dylib$"; then
+  echo "ERROR: tarball missing libghostty-vt.dylib" >&2
+  exit 1
+fi
+if ! tar -tzf "$TGZ" | grep -qE "prebuilds/darwin-arm64/libghostty-vt-shim\.dylib$"; then
+  echo "ERROR: tarball missing libghostty-vt-shim.dylib" >&2
+  exit 1
+fi
+echo "tarball contents OK"
+
 # Install into a temp project outside the repo.
 TMP=$(mktemp -d)
 trap "rm -rf $TMP" EXIT

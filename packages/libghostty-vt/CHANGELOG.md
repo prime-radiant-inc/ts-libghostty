@@ -4,6 +4,24 @@ All notable changes to `ts-libghostty-vt` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-05-06
+
+### Added
+
+- **Linux support** for x64 and arm64, on both glibc and musl distros. The npm tarball now ships six prebuilds (`darwin-arm64`, `linux-x64-{glibc,musl}`, `linux-arm64-{glibc,musl}`).
+- `setShimLibraryPath()` and `GHOSTTY_VT_SHIM_LIB` for overriding the location of the portability shim binary.
+- `libraryInfo().shimPath` exposes the loaded shim's path.
+- New native/shim.c source ships in the tarball alongside prebuilds.
+
+### Changed
+
+- The binding now does two `dlopen` calls (main library + portability shim). Four by-value entry points (`ghostty_terminal_new`, `ghostty_formatter_terminal_new`, `ghostty_terminal_grid_ref`, `ghostty_terminal_scroll_viewport`) are dispatched through the shim's `_p` variants. This replaces the previous darwin-arm64-specific AAPCS64 register-split + hidden-pointer tricks with a universal pointer-passing strategy.
+- Build script now supports cross-compilation via the `TARGET` env var (Linux triples).
+
+### Removed
+
+- Darwin-arm64-specific FFI register-splitting code paths in `src/ffi.ts` and the matching call site in `src/terminal.ts` are gone. A custom build of `libghostty-vt` on darwin-arm64 with the previous binding will not load against v0.6.0 — install the matching shim alongside.
+
 ## [0.5.1] — 2026-04-25
 
 ### Changed

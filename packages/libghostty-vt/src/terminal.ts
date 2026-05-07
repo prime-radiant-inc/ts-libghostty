@@ -216,19 +216,17 @@ export class Terminal {
 
     const optBytes = writeStruct(layout, fields);
 
-    // ghostty_terminal_new passes GhosttyTerminalOptions BY VALUE. bun:ffi has
-    // no struct-by-value, so on darwin-arm64 (AAPCS64) we split the 16-byte
-    // options struct into two u64 register-sized args. The output handle is
-    // written back through the 2nd arg (pointer-to-pointer). Return value is
-    // GhosttyResult (signed i32). See ABI discovery §4 + §12 Surprise 5.
-    const u64s = new BigUint64Array(optBytes.buffer, optBytes.byteOffset, 2);
+    // Options passed via pointer; ffi.ts dispatches this through
+    // ghostty_terminal_new_p in the shim, which dereferences and performs
+    // the by-value call internally. This is portable across calling
+    // conventions (AAPCS64 register-split vs SystemV-amd64 register pair
+    // vs SystemV-arm64 register-split). See spec §"The shim".
     const outSlot = new BigUint64Array(1);
 
     const result = lib.symbols.ghostty_terminal_new(
       null,
       ptr(outSlot),
-      u64s[0]!,
-      u64s[1]!,
+      ptr(optBytes),
     );
     checkResult(result, "ghostty_terminal_new");
 

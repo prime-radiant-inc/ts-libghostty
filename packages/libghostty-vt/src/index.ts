@@ -12,6 +12,7 @@ export {
 export type { GhosttyErrorCode } from "./errors";
 export {
   setLibraryPath,
+  setShimLibraryPath,
   isLoaded,
   libraryInfo,
 } from "./ffi";
