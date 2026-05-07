@@ -68,13 +68,16 @@ jobs:
           mkdir -p prebuilds
           SHA="${{ github.sha }}"
           echo "Looking for successful CI run on commit $SHA"
+          # `--status` matches gh's `status` field (queued|in_progress|completed),
+          # not `conclusion`. Filter on conclusion via jq so we get a real
+          # green run, not just any completed run.
           RUN_ID=$(gh run list \
             --workflow=ci.yml \
             --commit="$SHA" \
-            --status=success \
-            --limit=1 \
-            --json databaseId \
-            --jq '.[0].databaseId')
+            --status=completed \
+            --limit=10 \
+            --json databaseId,conclusion \
+            --jq 'map(select(.conclusion == "success")) | .[0].databaseId')
           if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
             echo "ERROR: No successful CI run found for commit $SHA" >&2
             echo "Either CI hasn't completed yet, or it failed." >&2
