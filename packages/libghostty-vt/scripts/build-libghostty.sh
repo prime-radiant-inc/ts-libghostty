@@ -122,6 +122,19 @@ read_soname() {
   fi
 }
 
+# Strip debug info from a .so file. Cuts ~5 MB per file on Linux.
+# Uses zig objcopy --strip-debug (cross-platform from any host).
+# Falls back to a no-op with a warning if zig objcopy isn't available
+# in the local zig install — dev-host builds may not strip, but CI
+# Linux runners will.
+strip_so() {
+  local f="$1"
+  if "$ZIG" objcopy --strip-debug "$f" 2>/dev/null; then
+    return 0
+  fi
+  echo "WARN: could not strip $f; ${PLATFORM} prebuild may include debug info" >&2
+}
+
 case "$EXT" in
   so)
     SONAME=$(read_soname "$SRC")
@@ -147,6 +160,12 @@ case "$EXT" in
     # real on consumer disk. Tarball gzip dedupes the bytes anyway.
     cp "$SRC" "prebuilds/$PLATFORM/$SONAME"
     cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.so"
+    # Strip debug info; --strip-debug keeps symbols and dynamic info needed
+    # at runtime. Saves ~5 MB per file × 3 copies × 4 Linux variants = ~60 MB
+    # across the tarball.
+    strip_so "prebuilds/$PLATFORM/$FULL_NAME"
+    strip_so "prebuilds/$PLATFORM/$SONAME"
+    strip_so "prebuilds/$PLATFORM/libghostty-vt.so"
     echo "installed prebuilds/$PLATFORM/libghostty-vt.so (+ $SONAME + $FULL_NAME)"
     ;;
   dylib)
@@ -185,6 +204,7 @@ case "$PLATFORM" in
       -L "prebuilds/$PLATFORM" -lghostty-vt \
       -o "$SHIM_OUT" \
       native/shim.c
+    strip_so "$SHIM_OUT"
     ;;
 esac
 echo "installed $SHIM_OUT"
