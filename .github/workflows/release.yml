@@ -108,24 +108,19 @@ jobs:
         working-directory: packages/libghostty-vt
         run: bash scripts/run-tarball-smoke.sh
 
-      - uses: actions/setup-node@v4
-        with:
-          # Node 22's bundled npm (>= 11.5.1) supports OIDC trusted publishing.
-          node-version: 22
-          registry-url: 'https://registry.npmjs.org'
-
-      - name: Upgrade npm to a version that supports trusted publishing
-        # Node 22 ships with npm 10.9.x; trusted publishing needs >= 11.5.1.
-        # Install latest npm globally and verify the version meets the floor.
-        run: |
-          npm install -g npm@latest
-          npm --version
-          node -e "const v = require('child_process').execSync('npm --version').toString().trim(); const [maj, min, pat] = v.split('.').map(Number); if (maj < 11 || (maj === 11 && min < 5) || (maj === 11 && min === 5 && pat < 1)) { console.error('npm', v, '< 11.5.1, no trusted publishing'); process.exit(1); }"
-
       - name: Publish to npm via OIDC
         working-directory: packages/libghostty-vt
-        # No NODE_AUTH_TOKEN: trusted publishing exchanges the GitHub OIDC
-        # token (minted because of `permissions.id-token: write`) for a
-        # short-lived npm token automatically. `--provenance` records a
-        # SLSA attestation linking this build to the workflow run.
-        run: npm publish --provenance --access public
+        # Use `bun publish` rather than `npm publish` because:
+        # 1. Bun is already installed; npm CLI on the macos-14 runner
+        #    ships with Node 22's bundled npm 10.9.x, which predates
+        #    trusted publishing (added in npm 11.5.1). Upgrading npm
+        #    in-place via `npm install -g npm@latest` hits a known
+        #    self-update bootstrap bug.
+        # 2. Bun supports OIDC trusted publishing natively. With
+        #    `permissions.id-token: write` set, bun detects the GitHub
+        #    Actions OIDC env vars and exchanges them for a short-lived
+        #    npm token — no NODE_AUTH_TOKEN needed.
+        # 3. Bun also resolves `workspace:*` deps at publish time, which
+        #    matters for any future package in this monorepo that
+        #    depends on libghostty-vt via the workspace protocol.
+        run: bun publish --access public
