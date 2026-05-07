@@ -1,5 +1,14 @@
 name: Release
 
+# Tag-driven release. Pushing an annotated tag matching `v*` runs this
+# workflow, which downloads the six prebuilds from the matching CI run and
+# publishes `libghostty-vt` to npm via OIDC trusted publishing — no
+# long-lived `NPM_TOKEN` exists or is needed.
+#
+# The `npm-publish` GitHub Environment gates the publish step behind a
+# required reviewer. Trusted publisher must be configured on npmjs.com
+# under primeradianthq for this to work; see CLAUDE.md.
+
 on:
   push:
     tags:
@@ -8,8 +17,29 @@ on:
 jobs:
   publish:
     runs-on: macos-14
+    environment: npm-publish
+
+    permissions:
+      # OIDC token minting for npm trusted publishing.
+      id-token: write
+      # `gh run list` / `gh run download` need read access to the repo.
+      contents: read
+      actions: read
+
     steps:
       - uses: actions/checkout@v4
+
+      - name: Verify tag matches package.json version
+        working-directory: packages/libghostty-vt
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          echo "tag:     v$TAG_VERSION"
+          echo "package: $PKG_VERSION"
+          if [ "$PKG_VERSION" != "$TAG_VERSION" ]; then
+            echo "::error::Tag v$TAG_VERSION does not match package.json version $PKG_VERSION"
+            exit 1
+          fi
 
       - name: Install Bun
         uses: oven-sh/setup-bun@v2
@@ -77,11 +107,19 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # Node 22's bundled npm (>= 11.5.1) supports OIDC trusted publishing.
+          node-version: 22
           registry-url: 'https://registry.npmjs.org'
 
-      - name: Publish to npm
+      - name: Verify npm version supports trusted publishing
+        run: |
+          npm --version
+          node -e "const v = require('child_process').execSync('npm --version').toString().trim(); const [maj, min, pat] = v.split('.').map(Number); if (maj < 11 || (maj === 11 && min < 5) || (maj === 11 && min === 5 && pat < 1)) { console.error('npm', v, '< 11.5.1, no trusted publishing'); process.exit(1); }"
+
+      - name: Publish to npm via OIDC
         working-directory: packages/libghostty-vt
-        run: npm publish --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        # No NODE_AUTH_TOKEN: trusted publishing exchanges the GitHub OIDC
+        # token (minted because of `permissions.id-token: write`) for a
+        # short-lived npm token automatically. `--provenance` records a
+        # SLSA attestation linking this build to the workflow run.
+        run: npm publish --provenance --access public

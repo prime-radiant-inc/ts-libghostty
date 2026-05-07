@@ -73,10 +73,14 @@ Order of operations on a version bump:
 2. Bump `package.json` → `version`.
 3. Commit both together with a `docs(changelog): vX.Y.Z` or `chore(release): vX.Y.Z` prefix.
 4. `git tag -a vX.Y.Z` at that commit.
+5. `git push origin main vX.Y.Z` — the tag push triggers `.github/workflows/release.yml`.
+6. Approve the run in GitHub → Actions (the `npm-publish` environment requires a reviewer). The workflow then publishes via OIDC trusted publishing — no NPM_TOKEN exists in the repo or org. The publish includes a SLSA provenance attestation.
+
+The workflow refuses to publish if the tag doesn't match `package.json` → `version`, so a wrong-tag push fails fast rather than producing a mis-tagged release.
 
 ## Six-prebuild release flow
 
-Tag push triggers `.github/workflows/release.yml`, which downloads all six prebuild artifacts from the CI run on the tagged commit, verifies they're present, runs the tarball smoke test, and publishes to npm. The release job never builds native code itself — it consumes exactly what CI tested.
+Tag push triggers `.github/workflows/release.yml`, which downloads all six prebuild artifacts from the CI run on the tagged commit, verifies they're present, runs the tarball smoke test, and publishes to npm via OIDC trusted publishing. The release job never builds native code itself — it consumes exactly what CI tested. The `npm-publish` GitHub Environment gates the publish step behind a required reviewer; trusted publisher config under `primeradianthq` on npmjs.com binds this workflow + environment to the package.
 
 Local `bun pack` for inspection still works on darwin, but only includes the local platform's prebuild. To produce the full multi-platform tarball locally, you'd need to download the CI artifacts manually (see release.yml for the recipe).
 
