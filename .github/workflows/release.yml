@@ -75,6 +75,11 @@ jobs:
         working-directory: packages/libghostty-vt
         run: bash scripts/run-tarball-smoke.sh
 
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+
       - name: Publish to npm
         working-directory: packages/libghostty-vt
         run: npm publish --access public
