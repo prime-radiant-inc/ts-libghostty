@@ -13,7 +13,17 @@
 bun add libghostty-vt
 ```
 
-**Platforms (Pass 1):** `darwin-arm64` only. The current FFI layer relies on AAPCS64 register-split rules for passing Ghostty's by-value struct arguments without a C shim. Other platforms (Linux x64, darwin-x64, Windows) are on the roadmap — adding them will likely require a small C shim to bridge the struct-by-value boundary. See the design spec in the [source repository](https://github.com/prime-radiant-inc/ts-libghostty) under `docs/superpowers/specs/`.
+## Supported platforms
+
+- macOS arm64 (Apple Silicon)
+- Linux x64 (glibc and musl)
+- Linux arm64 (glibc and musl)
+
+All six prebuilds ship in the npm tarball. The library auto-detects glibc vs musl on Linux at runtime.
+
+**Override the bundled binary** by setting `GHOSTTY_VT_LIB` (the main library) and/or `GHOSTTY_VT_SHIM_LIB` (the portability shim) before importing. The two libraries must be co-located in the same directory if either is overridden — the shim's runtime dependency on `libghostty-vt` is resolved relative to the shim's own directory.
+
+Windows is not supported.
 
 **APC tuning (Pass 1):** this release does not expose `apc_max_bytes` / `apc_max_bytes_kitty` tuning. The terminal uses upstream libghostty-vt defaults. Pass 2+ will add post-construction setters — `Terminal.setApcMaxBytes(n)` and `Terminal.setApcMaxBytesKitty(n)` — wrapping `ghostty_terminal_set(term, GHOSTTY_TERMINAL_OPT_APC_MAX_BYTES, ...)` if user demand surfaces.
 
