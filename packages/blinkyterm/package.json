@@ -1,6 +1,6 @@
 {
   "name": "blinkyterm",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Agent-facing TUI runner built on Bun.Terminal and libghostty-vt.",
   "license": "Apache-2.0",
   "repository": {

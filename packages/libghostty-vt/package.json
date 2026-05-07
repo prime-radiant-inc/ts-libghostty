@@ -1,6 +1,6 @@
 {
   "name": "libghostty-vt",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "TypeScript binding over libghostty-vt. Unofficial community binding.",
   "license": "Apache-2.0",
   "repository": {

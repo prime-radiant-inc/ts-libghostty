@@ -149,9 +149,30 @@ jobs:
           fi
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
           echo "Packed: $TARBALL"
-          # Sanity-check: the tarball should NOT contain "workspace:*".
-          # If it does, something went wrong with bun's resolution.
-          tar -xzf "$TARBALL" -O package/package.json | grep -q '"workspace:' && {
+
+      - name: Verify packed blinkyterm deps match workspace versions
+        # bun pm pack reads workspace dep versions from bun.lock, NOT from
+        # the workspace's current package.json. If bun.lock is stale (e.g.
+        # last regenerated when libghostty-vt was at an older version),
+        # the packed tarball will declare the OLD version as the dep,
+        # even though the current source has been bumped. This guard
+        # catches that — better to fail the release than publish a
+        # tarball that pins consumers to a wrong libghostty-vt version.
+        # If this trips: locally `rm bun.lock && bun install`, commit
+        # the refreshed lockfile, bump versions, re-tag.
+        run: |
+          set -e
+          EXPECTED=$(node -p "require('./packages/libghostty-vt/package.json').version")
+          ACTUAL=$(tar -xzf "${{ steps.pack-blinkyterm.outputs.tarball }}" -O package/package.json | node -e "const p = require('fs').readFileSync(0, 'utf8'); console.log(JSON.parse(p).dependencies['libghostty-vt'])")
+          # Strip any range prefix (^, ~, =) for comparison.
+          ACTUAL_BARE="${ACTUAL#[\^~=]}"
+          if [ "$ACTUAL_BARE" != "$EXPECTED" ]; then
+            echo "::error::Packed blinkyterm declares libghostty-vt=$ACTUAL but workspace is at $EXPECTED. bun.lock is likely stale; rm bun.lock && bun install, commit, re-tag."
+            exit 1
+          fi
+          echo "Packed dep libghostty-vt=$ACTUAL matches workspace version $EXPECTED"
+          # Also assert the tarball doesn't still contain "workspace:" anywhere.
+          tar -xzf "${{ steps.pack-blinkyterm.outputs.tarball }}" -O package/package.json | grep -q '"workspace:' && {
             echo "::error::tarball still contains workspace: protocol; bun pm pack did not resolve it"
             exit 1
           } || true

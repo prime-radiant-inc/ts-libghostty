@@ -3,6 +3,18 @@
 All notable changes to `blinkyterm` will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.2] - 2026-05-07
+
+### Fixed
+
+- Tarball declared `"libghostty-vt": "0.4.0"` as the resolved
+  `workspace:*` dep — `bun pm pack` reads the workspace version
+  from `bun.lock`, which was stale (last regenerated when
+  `libghostty-vt` was at `0.4.0`). Lockfile is now refreshed and
+  the release workflow has a guard that fails the publish if the
+  packed dep doesn't match the current workspace version. Use
+  `0.1.2` instead of the broken `0.1.1`.
+
 ## [0.1.1] - 2026-05-07
 
 ### Changed

@@ -11,7 +11,7 @@
     },
     "packages/blinkyterm": {
       "name": "blinkyterm",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "dependencies": {
         "libghostty-vt": "workspace:*",
       },
@@ -25,7 +25,7 @@
     },
     "packages/libghostty-vt": {
       "name": "libghostty-vt",
-      "version": "0.4.0",
+      "version": "0.6.1",
       "devDependencies": {
         "@types/bun": "latest",
         "typescript": "^5.4.0",
