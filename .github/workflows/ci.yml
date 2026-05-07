@@ -105,4 +105,4 @@ jobs:
         with:
           name: prebuilds-${{ matrix.platform }}
           path: packages/libghostty-vt/prebuilds/
-          retention-days: 7
+          retention-days: 90
