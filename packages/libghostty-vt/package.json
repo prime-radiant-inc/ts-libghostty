@@ -3,6 +3,15 @@
   "version": "0.6.0",
   "description": "TypeScript binding over libghostty-vt. Unofficial community binding.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prime-radiant-inc/ts-libghostty.git",
+    "directory": "packages/libghostty-vt"
+  },
+  "homepage": "https://github.com/prime-radiant-inc/ts-libghostty/tree/main/packages/libghostty-vt",
+  "bugs": {
+    "url": "https://github.com/prime-radiant-inc/ts-libghostty/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
