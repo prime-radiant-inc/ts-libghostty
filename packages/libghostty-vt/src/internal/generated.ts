@@ -1124,3 +1124,14 @@ export const formatterFormatByName: Record<"plain" | "vt" | "html", number | nul
   "html":  2,
 };
 
+
+/** By-value entry points detected in libghostty-vt headers.
+ * Each must have a corresponding _p wrapper in native/shim.c.
+ * If this list grows on a pin bump, add the new wrapper before merging.
+ * Auto-generated; do not hand-edit. */
+export const byValueEntryPoints = [
+  "ghostty_formatter_terminal_new: GhosttyFormatterTerminalOptions",
+  "ghostty_terminal_grid_ref: GhosttyPoint",
+  "ghostty_terminal_new: GhosttyTerminalOptions",
+  "ghostty_terminal_scroll_viewport: GhosttyTerminalScrollViewport",
+] as const;

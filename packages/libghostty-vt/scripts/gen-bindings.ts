@@ -123,6 +123,101 @@ function parseDeclaredSymbols(src: string): string[] {
   return [...out].sort();
 }
 
+// --- By-value entry-point scanner ------------------------------------------
+
+/**
+ * Scan headers for function declarations with non-pointer struct args.
+ * Returns a list of "<func-name>: <struct-type>" pairs. Used to generate
+ * a static check in generated.ts so verify:generated trips on any new
+ * by-value entry point that would need a shim wrapper.
+ *
+ * Heuristic regex; false positives are reviewed during pin-bump diff,
+ * false negatives (silent miss) are the failure mode we're avoiding.
+ */
+function scanByValueEntryPoints(headerSrcConcat: string): string[] {
+  const findings: string[] = [];
+  const fnRegex = /(?:GhosttyResult|void|bool|size_t|uint\d+_t|int\d+_t)\s+(ghostty_[a-z_]+)\s*\(([^)]*)\)/g;
+  const OPAQUE_OR_INTEGER_TYPEDEFS = new Set([
+    // Pointer typedefs — passing "by value" passes a pointer in the C ABI.
+    "GhosttyTerminal",
+    "GhosttyFormatter",
+    "GhosttyRenderState",
+    "GhosttyRenderStateRowCells",
+    "GhosttyRenderStateRowIterator",
+    "GhosttyKeyEncoder",
+    "GhosttyKeyEvent",
+    "GhosttyKittyGraphics",
+    "GhosttyKittyGraphicsImage",          // const struct*
+    "GhosttyKittyGraphicsPlacementIterator",
+    "GhosttySgrParser",
+    "GhosttyOscParser",
+    "GhosttyOscCommand",
+    "GhosttyMouseEvent",
+    "GhosttyMouseEncoder",
+    // Integer typedefs (enum or typedef uint/int — always register-pass).
+    "GhosttyCell",
+    "GhosttyRow",
+    "GhosttyResult",
+    "GhosttyMode",
+    "GhosttyKittyKeyFlags",
+    "GhosttyMods",                        // typedef uint16_t
+    "GhosttyBuildInfo",                   // typedef enum
+    "GhosttySysOption",                   // typedef enum
+    "GhosttySysLogLevel",                 // typedef enum
+    "GhosttyFocusEvent",                  // typedef enum
+    "GhosttyCellData",                    // typedef enum
+    "GhosttyModeReportState",             // typedef enum
+    "GhosttyKeyAction",                   // typedef enum
+    "GhosttyKey",                         // typedef enum
+    "GhosttyKeyEncoderOption",            // typedef enum
+    "GhosttyKittyGraphicsData",           // typedef enum
+    "GhosttyKittyGraphicsImageData",      // typedef enum
+    "GhosttyKittyGraphicsPlacementData",  // typedef enum
+    "GhosttyKittyGraphicsPlacementIteratorOption", // typedef enum
+    "GhosttyMouseAction",                 // typedef enum
+    "GhosttyMouseButton",                 // typedef enum
+    "GhosttyMouseEncoderOption",          // typedef enum
+    "GhosttyOscCommandData",              // typedef enum
+    "GhosttyPointTag",                    // typedef enum
+    "GhosttyRenderStateData",             // typedef enum
+    "GhosttyRenderStateOption",           // typedef enum
+    "GhosttyRenderStateRowData",          // typedef enum
+    "GhosttyRenderStateRowOption",        // typedef enum
+    "GhosttyRenderStateRowCellsData",     // typedef enum
+    "GhosttyRowData",                     // typedef enum
+    "GhosttySizeReportStyle",             // typedef enum
+    "GhosttyTerminalData",                // typedef enum
+    "GhosttyTerminalOption",              // typedef enum
+    // Small structs that fit in registers on both AAPCS64 and SysV-amd64
+    // (≤ 16 bytes, no hidden-pointer passing needed on either ABI).
+    "GhosttyColorRgb",                    // 3 bytes — always register-pass
+    "GhosttyMousePosition",               // 8 bytes — 2 floats, register-pass
+    "GhosttySizeReportSize",              // 12 bytes — 4 integer fields, ≤ 16 B
+    // 32-byte struct (2 ptr + 2 size_t). Would need a shim if added to ffi.ts,
+    // but ghostty_sgr_unknown_full/partial are not currently exposed via FFI.
+    // Remove from this list (and add a shim wrapper) before using these functions.
+    "GhosttySgrUnknown",
+  ]);
+  let m: RegExpExecArray | null;
+  while ((m = fnRegex.exec(headerSrcConcat)) !== null) {
+    const fnName = m[1]!;
+    const argList = m[2]!;
+    for (const rawArg of argList.split(",")) {
+      const arg = rawArg.trim();
+      // Skip pointer args.
+      if (arg.includes("*")) continue;
+      // Match `<optional-const> Ghostty<Name> <argname>` exactly — a single
+      // type word followed by an identifier, no `*`.
+      const byValRe = /^(const\s+)?(Ghostty[A-Z][A-Za-z]+)\s+\w+$/;
+      const mm = byValRe.exec(arg);
+      if (mm && !OPAQUE_OR_INTEGER_TYPEDEFS.has(mm[2]!)) {
+        findings.push(`${fnName}: ${mm[2]}`);
+      }
+    }
+  }
+  return findings;
+}
+
 // --- Mode-define parser ----------------------------------------------------
 // Modes are NOT an enum at this pin. They are 41 `#define GHOSTTY_MODE_<NAME>
 // (ghostty_mode_new(<value>, <ansi>))` macros declared in vt/modes.h. The
@@ -301,9 +396,47 @@ async function main() {
   out.push("};");
   out.push("");
 
+  // Scan headers for by-value entry points that need shim wrappers.
+  const byValueEntryPoints = scanByValueEntryPoints(src);
+  byValueEntryPoints.sort();
+
+  // Trip-wire: fail if the set of by-value entry points changes from what shim.c covers.
+  // If this fires on a pin bump, add/remove shim wrappers in native/shim.c first, then
+  // update EXPECTED_BY_VALUE below and re-run bun run build:bindings.
+  const EXPECTED_BY_VALUE = new Set([
+    "ghostty_terminal_new: GhosttyTerminalOptions",
+    "ghostty_formatter_terminal_new: GhosttyFormatterTerminalOptions",
+    "ghostty_terminal_grid_ref: GhosttyPoint",
+    "ghostty_terminal_scroll_viewport: GhosttyTerminalScrollViewport",
+  ]);
+  const actual = new Set(byValueEntryPoints);
+  const added = [...actual].filter(x => !EXPECTED_BY_VALUE.has(x));
+  const removed = [...EXPECTED_BY_VALUE].filter(x => !actual.has(x));
+  if (added.length > 0 || removed.length > 0) {
+    console.error("By-value entry-point list has changed:");
+    for (const a of added)   console.error(`  + ${a}  (NEEDS A SHIM WRAPPER)`);
+    for (const r of removed) console.error(`  - ${r}  (REMOVE FROM SHIM)`);
+    console.error("");
+    console.error("If this is intentional (Ghostty pin bump):");
+    console.error("  1. Add/remove the corresponding wrappers in native/shim.c");
+    console.error("  2. Update EXPECTED_BY_VALUE in scripts/gen-bindings.ts");
+    console.error("  3. Re-run bun run build:bindings");
+    process.exit(1);
+  }
+
+  out.push(`\n/** By-value entry points detected in libghostty-vt headers.`);
+  out.push(` * Each must have a corresponding _p wrapper in native/shim.c.`);
+  out.push(` * If this list grows on a pin bump, add the new wrapper before merging.`);
+  out.push(` * Auto-generated; do not hand-edit. */`);
+  out.push(`export const byValueEntryPoints = [`);
+  for (const ep of byValueEntryPoints) {
+    out.push(`  ${JSON.stringify(ep)},`);
+  }
+  out.push(`] as const;`);
+
   await writeFile(OUT_PATH, out.join("\n") + "\n", "utf8");
   console.log(
-    `wrote ${OUT_PATH}: ${declaredSymbols.length} declared symbols, ${enums.size} enums, ${probe.structs.length} structs, ${modeInfo.length} modes`,
+    `wrote ${OUT_PATH}: ${declaredSymbols.length} declared symbols, ${enums.size} enums, ${probe.structs.length} structs, ${modeInfo.length} modes, ${byValueEntryPoints.length} by-value entry points`,
   );
 }
 
