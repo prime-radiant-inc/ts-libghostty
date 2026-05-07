@@ -123,13 +123,20 @@ read_soname() {
 }
 
 # Strip debug info from a .so file. Cuts ~5 MB per file on Linux.
-# Uses zig objcopy --strip-debug (cross-platform from any host).
-# Falls back to a no-op with a warning if zig objcopy isn't available
-# in the local zig install — dev-host builds may not strip, but CI
-# Linux runners will.
+# Tries multiple tools because hosts vary: zig objcopy syntax differs
+# across zig versions; native strip exists on Linux runners and macOS
+# (Apple's strip handles ELF too via LLVM); llvm-strip is portable but
+# brew-only on darwin. Falls through to a WARN if all three fail —
+# correctness is unaffected, just tarball size.
 strip_so() {
   local f="$1"
   if "$ZIG" objcopy --strip-debug "$f" 2>/dev/null; then
+    return 0
+  fi
+  if command -v llvm-strip >/dev/null 2>&1 && llvm-strip --strip-debug "$f" 2>/dev/null; then
+    return 0
+  fi
+  if command -v strip >/dev/null 2>&1 && strip --strip-debug "$f" 2>/dev/null; then
     return 0
   fi
   echo "WARN: could not strip $f; ${PLATFORM} prebuild may include debug info" >&2
