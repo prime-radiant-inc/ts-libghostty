@@ -140,9 +140,14 @@ case "$EXT" in
       FULL_NAME="$SONAME.0"  # synthetic; only matters for the symlink target
     fi
     cp "$SRC" "prebuilds/$PLATFORM/$FULL_NAME"
-    (cd "prebuilds/$PLATFORM" && ln -sf "$FULL_NAME" "$SONAME")
-    (cd "prebuilds/$PLATFORM" && ln -sf "$SONAME" "libghostty-vt.so")
-    echo "installed prebuilds/$PLATFORM/libghostty-vt.so → $SONAME → $FULL_NAME"
+    # Use real copies, not symlinks — bun pm pack and npm pack drop symlinks,
+    # so the tarball would only contain the .so.<FULL> file. The shim's
+    # NEEDED entry resolves "libghostty-vt.so.<MAJOR>" via $ORIGIN, and the
+    # path resolver looks for "libghostty-vt.so" — both files must be
+    # real on consumer disk. Tarball gzip dedupes the bytes anyway.
+    cp "$SRC" "prebuilds/$PLATFORM/$SONAME"
+    cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.so"
+    echo "installed prebuilds/$PLATFORM/libghostty-vt.so (+ $SONAME + $FULL_NAME)"
     ;;
   dylib)
     cp "$SRC" "prebuilds/$PLATFORM/libghostty-vt.dylib"
