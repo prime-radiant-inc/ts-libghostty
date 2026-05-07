@@ -110,17 +110,15 @@ jobs:
 
       - name: Publish to npm via OIDC
         working-directory: packages/libghostty-vt
-        # Use `bun publish` rather than `npm publish` because:
-        # 1. Bun is already installed; npm CLI on the macos-14 runner
-        #    ships with Node 22's bundled npm 10.9.x, which predates
-        #    trusted publishing (added in npm 11.5.1). Upgrading npm
-        #    in-place via `npm install -g npm@latest` hits a known
-        #    self-update bootstrap bug.
-        # 2. Bun supports OIDC trusted publishing natively. With
-        #    `permissions.id-token: write` set, bun detects the GitHub
-        #    Actions OIDC env vars and exchanges them for a short-lived
-        #    npm token — no NODE_AUTH_TOKEN needed.
-        # 3. Bun also resolves `workspace:*` deps at publish time, which
-        #    matters for any future package in this monorepo that
-        #    depends on libghostty-vt via the workspace protocol.
-        run: bun publish --access public
+        # Use `npx -y npm@latest` rather than the macos-14 runner's
+        # pre-installed npm 10.9.x: trusted publishing requires npm
+        # >= 11.5.1. Bun (1.3.13) doesn't auto-detect the GitHub
+        # Actions OIDC env vars at publish time; npm 11+ does.
+        # `npm install -g npm@latest` hits a known self-update bug
+        # mid-upgrade ("Cannot find module 'promise-retry'"), so npx
+        # is the reliable path.
+        #
+        # No NODE_AUTH_TOKEN needed: with `permissions.id-token: write`,
+        # npm exchanges the GitHub OIDC token for a short-lived npm
+        # token automatically. `--provenance` records a SLSA attestation.
+        run: npx -y npm@latest publish --provenance --access public
