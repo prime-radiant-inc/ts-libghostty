@@ -136,12 +136,38 @@ jobs:
         working-directory: packages/blinkyterm
         run: bun run build
 
-      - name: Pack blinkyterm (resolves workspace:* deps)
+      - name: Pack blinkyterm (rewrite workspace:* to real version)
         working-directory: packages/blinkyterm
         id: pack-blinkyterm
+        # bun pm pack reads workspace dep versions from bun.lock, which is
+        # sticky (workspace versions don't update on `bun install`; only on
+        # `rm bun.lock && bun install`). Don't trust it. Instead, rewrite
+        # blinkyterm's package.json to replace `workspace:*` with the
+        # actual libghostty-vt version BEFORE packing, then restore the
+        # source file (so the working tree stays clean and the next push
+        # doesn't accidentally commit the rewritten file).
         run: |
+          set -e
+          LIBVT_VERSION=$(node -p "require('../libghostty-vt/package.json').version")
+          echo "Resolving workspace:* → libghostty-vt@^$LIBVT_VERSION"
+
+          cp package.json package.json.bak
+          trap 'mv package.json.bak package.json 2>/dev/null || true' EXIT
+
+          node -e '
+            const fs = require("fs");
+            const p = JSON.parse(fs.readFileSync("package.json", "utf8"));
+            if (!p.dependencies || p.dependencies["libghostty-vt"] !== "workspace:*") {
+              console.error("expected workspace:* on libghostty-vt; found:", p.dependencies && p.dependencies["libghostty-vt"]);
+              process.exit(1);
+            }
+            p.dependencies["libghostty-vt"] = "^" + process.argv[1];
+            fs.writeFileSync("package.json", JSON.stringify(p, null, 2) + "\n");
+          ' "$LIBVT_VERSION"
+
           mkdir -p .tmp
           bun pm pack --destination .tmp
+
           TARBALL=$(ls -1t .tmp/*.tgz | head -n 1)
           if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
             echo "::error::bun pm pack did not produce a tarball"
@@ -150,32 +176,22 @@ jobs:
           echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
           echo "Packed: $TARBALL"
 
-      - name: Verify packed blinkyterm deps match workspace versions
-        # bun pm pack reads workspace dep versions from bun.lock, NOT from
-        # the workspace's current package.json. If bun.lock is stale (e.g.
-        # last regenerated when libghostty-vt was at an older version),
-        # the packed tarball will declare the OLD version as the dep,
-        # even though the current source has been bumped. This guard
-        # catches that — better to fail the release than publish a
-        # tarball that pins consumers to a wrong libghostty-vt version.
-        # If this trips: locally `rm bun.lock && bun install`, commit
-        # the refreshed lockfile, bump versions, re-tag.
+      - name: Verify packed blinkyterm tarball
+        working-directory: packages/blinkyterm
         run: |
           set -e
-          EXPECTED=$(node -p "require('./packages/libghostty-vt/package.json').version")
-          ACTUAL=$(tar -xzf "${{ steps.pack-blinkyterm.outputs.tarball }}" -O package/package.json | node -e "const p = require('fs').readFileSync(0, 'utf8'); console.log(JSON.parse(p).dependencies['libghostty-vt'])")
-          # Strip any range prefix (^, ~, =) for comparison.
-          ACTUAL_BARE="${ACTUAL#[\^~=]}"
-          if [ "$ACTUAL_BARE" != "$EXPECTED" ]; then
-            echo "::error::Packed blinkyterm declares libghostty-vt=$ACTUAL but workspace is at $EXPECTED. bun.lock is likely stale; rm bun.lock && bun install, commit, re-tag."
+          EXPECTED=$(node -p "require('../libghostty-vt/package.json').version")
+          PACKED=$(tar -xzf "${{ steps.pack-blinkyterm.outputs.tarball }}" -O package/package.json | node -e "console.log(JSON.parse(require('fs').readFileSync(0, 'utf8')).dependencies['libghostty-vt'])")
+          PACKED_BARE="${PACKED#[\^~=]}"
+          if [ "$PACKED_BARE" != "$EXPECTED" ]; then
+            echo "::error::Packed blinkyterm declares libghostty-vt=$PACKED but workspace is at $EXPECTED"
             exit 1
           fi
-          echo "Packed dep libghostty-vt=$ACTUAL matches workspace version $EXPECTED"
-          # Also assert the tarball doesn't still contain "workspace:" anywhere.
-          tar -xzf "${{ steps.pack-blinkyterm.outputs.tarball }}" -O package/package.json | grep -q '"workspace:' && {
-            echo "::error::tarball still contains workspace: protocol; bun pm pack did not resolve it"
+          if tar -xzf "${{ steps.pack-blinkyterm.outputs.tarball }}" -O package/package.json | grep -q '"workspace:'; then
+            echo "::error::tarball still contains workspace: protocol"
             exit 1
-          } || true
+          fi
+          echo "OK: packed libghostty-vt=$PACKED matches workspace $EXPECTED"
 
       - name: Publish blinkyterm via OIDC
         working-directory: packages/blinkyterm
