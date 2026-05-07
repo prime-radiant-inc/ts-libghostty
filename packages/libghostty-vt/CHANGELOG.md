@@ -4,6 +4,14 @@ All notable changes to `ts-libghostty-vt` will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.1] - 2026-05-07
+
+### Changed
+
+- Re-publish to align with the addition of `blinkyterm` to the
+  release pipeline. No library code changes; `0.6.1` is functionally
+  identical to `0.6.0`.
+
 ## [0.6.0] - 2026-05-06
 
 ### Added

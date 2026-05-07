@@ -108,7 +108,7 @@ jobs:
         working-directory: packages/libghostty-vt
         run: bash scripts/run-tarball-smoke.sh
 
-      - name: Publish to npm via OIDC
+      - name: Publish libghostty-vt via OIDC
         working-directory: packages/libghostty-vt
         # Use `npx -y npm@latest` rather than the macos-14 runner's
         # pre-installed npm 10.9.x: trusted publishing requires npm
@@ -122,3 +122,40 @@ jobs:
         # npm exchanges the GitHub OIDC token for a short-lived npm
         # token automatically. `--provenance` records a SLSA attestation.
         run: npx -y npm@latest publish --provenance --access public
+
+      # ---------- blinkyterm ----------
+      # blinkyterm depends on libghostty-vt via `workspace:*`. `npm publish`
+      # would publish a tarball with that literal specifier, which is
+      # uninstallable. So we pre-pack with `bun pm pack` (which resolves
+      # workspace:* to the locally-linked version), then `npm publish` the
+      # resulting tarball with OIDC + provenance. Order matters: this runs
+      # AFTER libghostty-vt is published so the resolved version exists on
+      # the registry by the time consumers install blinkyterm.
+
+      - name: Build blinkyterm TypeScript
+        working-directory: packages/blinkyterm
+        run: bun run build
+
+      - name: Pack blinkyterm (resolves workspace:* deps)
+        working-directory: packages/blinkyterm
+        id: pack-blinkyterm
+        run: |
+          mkdir -p .tmp
+          bun pm pack --destination .tmp
+          TARBALL=$(ls -1t .tmp/*.tgz | head -n 1)
+          if [ -z "$TARBALL" ] || [ ! -f "$TARBALL" ]; then
+            echo "::error::bun pm pack did not produce a tarball"
+            exit 1
+          fi
+          echo "tarball=$TARBALL" >> "$GITHUB_OUTPUT"
+          echo "Packed: $TARBALL"
+          # Sanity-check: the tarball should NOT contain "workspace:*".
+          # If it does, something went wrong with bun's resolution.
+          tar -xzf "$TARBALL" -O package/package.json | grep -q '"workspace:' && {
+            echo "::error::tarball still contains workspace: protocol; bun pm pack did not resolve it"
+            exit 1
+          } || true
+
+      - name: Publish blinkyterm via OIDC
+        working-directory: packages/blinkyterm
+        run: npx -y npm@latest publish --provenance --access public "${{ steps.pack-blinkyterm.outputs.tarball }}"

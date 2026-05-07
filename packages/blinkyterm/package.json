@@ -1,8 +1,17 @@
 {
   "name": "blinkyterm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent-facing TUI runner built on Bun.Terminal and libghostty-vt.",
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/prime-radiant-inc/ts-libghostty.git",
+    "directory": "packages/blinkyterm"
+  },
+  "homepage": "https://github.com/prime-radiant-inc/ts-libghostty/tree/main/packages/blinkyterm",
+  "bugs": {
+    "url": "https://github.com/prime-radiant-inc/ts-libghostty/issues"
+  },
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

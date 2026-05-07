@@ -3,6 +3,20 @@
 All notable changes to `blinkyterm` will be documented here. Format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.1.1] - 2026-05-07
+
+### Changed
+
+- Now published in lockstep with `libghostty-vt` from the same git
+  tag. Tarball is produced via `bun pm pack` so the `workspace:*`
+  dep on `libghostty-vt` is resolved to a real version. Published
+  via npm trusted publishing (OIDC); no NPM_TOKEN involved.
+
+### Added
+
+- `repository`, `homepage`, and `bugs` fields in `package.json` —
+  required by npm's sigstore provenance validation.
+
 ## [0.1.0] - 2026-04-25
 
 ### Added
