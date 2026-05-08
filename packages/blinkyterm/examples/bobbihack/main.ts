@@ -66,6 +66,7 @@ import {
   onChildExited,
   onChildFrame,
   onConductorStatus,
+  onCostLine,
   onResize,
   onTurnEnd,
   onTurnStart,
@@ -766,12 +767,11 @@ async function main(): Promise<void> {
       }
     },
     onCostUpdate: (line, _cost) => {
-      // Reflect cost line in the agent-pane title via the agentLabel
-      // field. State.ts treats agentLabel as opaque; render.ts shows
-      // it inside the box title. Updating it per-turn keeps the cost
-      // visible without adding a new UI primitive.
-      const baseLabel = label;
-      state = { ...state, agentLabel: `${baseLabel} | ${line}` };
+      // Cost goes to its own state field; the renderer shows it as a
+      // dim footer in the agent pane. Keeps `agentLabel` (and the agent
+      // box title) just the model name so the title's status indicator
+      // stays readable.
+      state = onCostLine(state, line);
       requestPaint();
     },
   };

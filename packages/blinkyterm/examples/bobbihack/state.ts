@@ -64,7 +64,8 @@ export interface ViewState {
   readonly toolHistory: readonly ToolRecord[];   // oldest-first; newest-at-end
   readonly chatHistory: readonly ChatRecord[];   // oldest-first; newest-at-end
   readonly historyCapacity: number;
-  readonly agentLabel: string;
+  readonly agentLabel: string;                   // model id only
+  readonly costLine: string;                     // most recent cost summary; "" before first turn
   readonly conductorStatus: ConductorStatus;
   readonly errorBanner: string | null;
 }
@@ -93,9 +94,14 @@ export function initialState(args: InitArgs): ViewState {
     chatHistory: [],
     historyCapacity: args.historyCapacity ?? DEFAULT_HISTORY_CAPACITY,
     agentLabel: args.agentLabel,
+    costLine: "",
     conductorStatus: { kind: "idle", since: now, detail: "" },
     errorBanner: null,
   };
+}
+
+export function onCostLine(state: ViewState, line: string): ViewState {
+  return { ...state, costLine: line };
 }
 
 export function onChildFrame(state: ViewState, frame: Frame): ViewState {
@@ -176,8 +182,17 @@ export function onTurnEnd(state: ViewState): ViewState {
     ...state,
     toolHistory: nextToolHistory,
     chatHistory: nextChatHistory,
-    // Keep `currentTurn` populated so the live area continues to show
-    // the just-completed turn until the next onTurnStart replaces it.
+    // Clear currentTurn. The old code kept it sticky for the side/stacked
+    // live-thinking pre-area, but that area no longer exists in any
+    // layout. Holding it sticky causes a real bug: text deltas from the
+    // NEXT assistant message arrive before that turn's onToolStart fires
+    // (which is what calls onTurnStart and creates a fresh currentTurn).
+    // If currentTurn is non-null, those deltas land on the COMPLETED
+    // turn's streamingText (already flushed to chatHistory), not on the
+    // pendingThinking buffer that onToolStart would later flush. Result:
+    // every turn after the first ended up with empty streamingText and
+    // no chat-history entry.
+    currentTurn: null,
   };
 }
 

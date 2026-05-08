@@ -52,7 +52,7 @@ test("onAgentEvent thinking is ignored when no current turn", () => {
   expect(s1).toBe(s0);
 });
 
-test("onTurnEnd appends to toolHistory and chatHistory; currentTurn stays sticky", () => {
+test("onTurnEnd appends to histories and clears currentTurn", () => {
   let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
   s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
   s = onAgentEvent(s, { kind: "thinking", delta: "going east " });
@@ -60,10 +60,10 @@ test("onTurnEnd appends to toolHistory and chatHistory; currentTurn stays sticky
   s = onAgentEvent(s, { kind: "action", move: "east" });
   s = onTurnEnd(s);
 
-  // currentTurn stays so the live area keeps showing the just-completed turn
-  // until the next onTurnStart replaces it.
-  expect(s.currentTurn).not.toBeNull();
-  expect(s.currentTurn?.committed).toBe("east");
+  // currentTurn must clear so the next assistant message's text deltas
+  // get buffered (not appended to the just-completed turn). See the
+  // comment in state.ts onTurnEnd for the bug history.
+  expect(s.currentTurn).toBeNull();
 
   expect(s.toolHistory.length).toBe(1);
   expect(s.toolHistory[0]).toMatchObject({

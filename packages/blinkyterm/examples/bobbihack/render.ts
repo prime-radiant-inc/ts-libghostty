@@ -59,13 +59,13 @@ export function render(
   parts.push(RESET);
 
   if (state.layout.kind === "tri") {
-    drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent, latestTool(state));
+    drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
     drawToolsPane(parts, state.layout.tools, state.toolHistory);
     drawChatPane(parts, state.layout.chat, state, now);
   } else {
     // side / stacked: NetHack + a single combined agent pane that
     // shows chat (with tool decisions inlined when no chat text exists).
-    drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent, latestTool(state));
+    drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
     drawAgentPane(parts, state.layout.thinking, state, now);
   }
 
@@ -176,14 +176,12 @@ function drawNethackPane(
   box: Box,
   pid: number,
   nethackContent: string,
-  lastTool: ToolRecord | undefined,
 ): void {
-  // Surface the most recent committed action in the title so movement
-  // is visible at a glance even when @ bounces inside a small room.
-  const recent = lastTool !== undefined
-    ? ` — turn ${lastTool.number} → ${lastTool.decision}`
-    : "";
-  drawBox(parts, box, ` NetHack — pid=${pid}${recent} `, NETHACK_BORDER);
+  // Title shows just pid. The "most recent tool" decoration that used
+  // to live here duplicated info already on display in the tool-history
+  // pane, so it's gone — the title is now stable across turns and the
+  // user knows it identifies the NetHack pane and nothing else.
+  drawBox(parts, box, ` NetHack — pid=${pid} `, NETHACK_BORDER);
 
   const innerRows = box.rows - 2;
   for (let i = 0; i < innerRows; i++) {
@@ -273,6 +271,11 @@ function drawChatLikeBox(
   const innerRows = box.rows - 2;
   if (innerRows <= 0) return;
 
+  // Reserve the last inner row for the cost footer when there's anything
+  // to show. costLine is empty before the first turn ends.
+  const hasCostFooter = state.costLine.length > 0 && innerRows >= 2;
+  const chatRows = hasCostFooter ? innerRows - 1 : innerRows;
+
   // Build all wrapped lines (oldest → newest). Each chat record begins
   // with "#N " on its first wrapped line, then continuation lines indent.
   const indent = "  ";
@@ -295,11 +298,10 @@ function drawChatLikeBox(
     allLines.pop();
   }
 
-  // Take the last innerRows lines so newest stays at the bottom.
-  const startIdx = Math.max(0, allLines.length - innerRows);
+  // Take the last chatRows lines so newest stays at the bottom.
+  const startIdx = Math.max(0, allLines.length - chatRows);
   const visible = allLines.slice(startIdx);
-  // Top-fill blanks if we have fewer lines than rows.
-  const blankRows = innerRows - visible.length;
+  const blankRows = chatRows - visible.length;
 
   for (let i = 0; i < blankRows; i++) {
     parts.push(goto(box.row + 1 + i, box.col + 1));
@@ -310,6 +312,15 @@ function drawChatLikeBox(
     parts.push(goto(box.row + 1 + blankRows + i, box.col + 1));
     parts.push(line);
     if (line.length < innerCols) parts.push(" ".repeat(innerCols - line.length));
+  }
+
+  if (hasCostFooter) {
+    const footerRow = box.row + 1 + chatRows;
+    parts.push(goto(footerRow, box.col + 1));
+    const trimmed =
+      state.costLine.length > innerCols ? state.costLine.slice(0, innerCols) : state.costLine;
+    parts.push(`${ESC}90m${trimmed}${RESET}`);
+    if (trimmed.length < innerCols) parts.push(" ".repeat(innerCols - trimmed.length));
   }
 }
 
@@ -327,10 +338,6 @@ function formatToolLine(rec: ToolRecord, innerCols: number): string {
   const summary = rec.summary ? `  "${rec.summary}"` : "";
   const full = head + summary;
   return full.length > innerCols ? full.slice(0, innerCols) : full;
-}
-
-function latestTool(state: ViewState): ToolRecord | undefined {
-  return state.toolHistory[state.toolHistory.length - 1];
 }
 
 interface RenderedStatus {
