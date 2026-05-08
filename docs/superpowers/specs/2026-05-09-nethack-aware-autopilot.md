@@ -623,6 +623,14 @@ Matt's decisions (2026-05-09) are inline below; the rest stand.
    The bobbihack design doc (2026-05-07) says it's a rejected
    option. If a future NetHack version reintroduces it, the
    peaceful classifier becomes trivial. (v3 follow-up.)
+5b. **Explore beyond fogged map sections.** *Decision: defer
+   to v3.* v2's `isFrontier` already targets walkable tiles
+   adjacent to `unknown` — i.e. the leading edge of fog. v3
+   could go further: actively re-visit areas not seen recently
+   (NetHack's vision is small and parts of explored rooms drop
+   out of memory after time / level changes), or prefer
+   frontiers that would reveal the largest unknown swath. v2
+   keeps "nearest frontier first" since it's simple and works.
 6. **Does the engine emit a distinguishable signal when an
    item pile is mixed (some safe, some cursed)?** The pickup
    prompt is the same shape; the AP can't tell from prompt
