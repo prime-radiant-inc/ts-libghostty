@@ -62,11 +62,13 @@ export function render(
     drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
     drawToolsPane(parts, state.layout.tools, state.toolHistory);
     drawChatPane(parts, state.layout.chat, state, now);
+    drawStatusBar(parts, state.layout.statusBar, state);
   } else {
     // side / stacked: NetHack + a single combined agent pane that
     // shows chat (with tool decisions inlined when no chat text exists).
     drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
     drawAgentPane(parts, state.layout.thinking, state, now);
+    drawStatusBar(parts, state.layout.statusBar, state);
   }
 
   parts.push(HIDE_CURSOR);
@@ -271,10 +273,9 @@ function drawChatLikeBox(
   const innerRows = box.rows - 2;
   if (innerRows <= 0) return;
 
-  // Reserve the last inner row for the cost footer when there's anything
-  // to show. costLine is empty before the first turn ends.
-  const hasCostFooter = state.costLine.length > 0 && innerRows >= 2;
-  const chatRows = hasCostFooter ? innerRows - 1 : innerRows;
+  // The cost line moved to the global bottom status bar; the chat pane
+  // gets all of its inner rows back.
+  const chatRows = innerRows;
 
   // Build all wrapped lines (oldest → newest). Each chat record begins
   // with "#N " on its first wrapped line, then continuation lines indent.
@@ -313,15 +314,26 @@ function drawChatLikeBox(
     parts.push(line);
     if (line.length < innerCols) parts.push(" ".repeat(innerCols - line.length));
   }
+}
 
-  if (hasCostFooter) {
-    const footerRow = box.row + 1 + chatRows;
-    parts.push(goto(footerRow, box.col + 1));
-    const trimmed =
-      state.costLine.length > innerCols ? state.costLine.slice(0, innerCols) : state.costLine;
-    parts.push(`${ESC}90m${trimmed}${RESET}`);
-    if (trimmed.length < innerCols) parts.push(" ".repeat(innerCols - trimmed.length));
-  }
+/**
+ * Full-width status bar at the bottom row of the host. Cost summary is
+ * right-justified; the left side is reserved for future info (run id,
+ * prompt variant, etc.) and currently empty.
+ */
+function drawStatusBar(parts: string[], box: Box, state: ViewState): void {
+  parts.push(goto(box.row, box.col));
+  const cols = box.cols;
+  const left = "";
+  const right = state.costLine;
+  const fittedRight = right.length > cols ? right.slice(right.length - cols) : right;
+  const padding = Math.max(0, cols - left.length - fittedRight.length);
+  // Dim style for the whole bar so it visually recedes vs. pane borders.
+  parts.push(`${ESC}90m`);
+  parts.push(left);
+  parts.push(" ".repeat(padding));
+  parts.push(fittedRight);
+  parts.push(RESET);
 }
 
 function drawErrorBanner(parts: string[], box: Box, banner: string): void {
