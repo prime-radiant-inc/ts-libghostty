@@ -60,6 +60,7 @@ import { handleAutopilotTo, handleAutopilotExplore } from "./tools/autopilot";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
 import { buildGlyphClass } from "./glyph-class";
+import { buildClassifiedGrid } from "./cell-classifier";
 import {
   initialState,
   onAgentEvent,
@@ -659,7 +660,11 @@ async function main(): Promise<void> {
       // post-frame player position from `map` (just updated above) so the
       // player's own `@` doesn't get classified.
       const glyphClass = buildGlyphClass(frame.snapshot, rows, map.currentPlayerXY);
-      return { rows, glyphClass, status, message, frameReason: frame.reason, screenAnsi };
+      // v2 classified grid: full (terrain, foreground) tuple per cell.
+      // Carried alongside glyphClass during the v1→v2 migration; the
+      // autopilot pathfinder consumes it for danger-aware costs.
+      const classified = buildClassifiedGrid(frame.snapshot, rows, map.currentPlayerXY);
+      return { rows, glyphClass, classified, status, message, frameReason: frame.reason, screenAnsi };
     },
     logAutopilotStep: (ev) => {
       runLog.append({ event: "autopilot_step", ...ev });

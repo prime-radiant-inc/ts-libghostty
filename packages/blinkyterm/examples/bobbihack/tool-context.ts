@@ -5,6 +5,7 @@
 import type { GameMap } from "./game-map";
 import type { StatusLine } from "./parsers";
 import type { GlyphClass } from "./glyph-class";
+import type { ClassifiedCell } from "./cell-classifier";
 
 export interface RunState {
   gameOver: boolean;
@@ -19,6 +20,14 @@ export interface FrameAwaitResult {
   // the autopilot interrupt detector to ignore pet movement. See
   // ./glyph-class.ts for the classifier.
   glyphClass: ReadonlyArray<ReadonlyArray<GlyphClass | undefined>>;
+  // v2 classified grid: `(terrain, foreground)` tuple per cell. Optional
+  // during the v1→v2 migration so existing tests and mock contexts that
+  // omit it continue to work; consumers (pathfind, autopilot
+  // predict-and-avoid) treat absence as "no v2 signal — fall back to v1
+  // behavior". See ./cell-classifier.ts for the classifier and the spec
+  // at docs/superpowers/specs/2026-05-09-nethack-aware-autopilot.md
+  // §"Layer 1".
+  classified?: ReadonlyArray<ReadonlyArray<ClassifiedCell>>;
   status: StatusLine;
   message: string;
   frameReason: string;
