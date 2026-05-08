@@ -590,31 +590,76 @@ When entering a new floor or starting a new AP call.
 
 ## Open questions (Guidebook silent or unclear)
 
-These need Matt's input or a follow-up source-reading session:
+Matt's decisions (2026-05-09) are inline below; the rest stand.
 
-1. **Color → species mapping for monster classes.** The
-   Guidebook doesn't give the table, and `monst.c` is not
-   ergonomic to read. Options: fetch the wiki monster
-   pages on-demand, hand-curate a small table for the most
-   important species (the danger-class flag list above is a
-   v0 of this), or treat color as opaque except for the pet/
-   peaceful disambiguation.
-2. **Is `hilite_peaceful` ever supported in NetHack 5.0.0?**
+1. **Color → species mapping for monster classes.** *Decision:
+   skip in v2; defer to v3.* The classifier still extracts and
+   carries `color` per cell, but the danger-grading and
+   pet/peaceful logic in v2 keys off the glyph letter and the
+   `inverse` attribute alone. v3 picks up color→species when
+   we know what we want from it (most likely after live-run
+   traces show a class of misclassification that color would
+   resolve).
+2. **`paranoid_confirmation` parsing from `.nethackrc`.**
+   *Decision: hardcode NetHack 5.0 defaults.* bobbihack invokes
+   NetHack via `nethack-setup.ts`, which sets `NETHACKOPTIONS`
+   directly — there is no user-supplied `.nethackrc` to
+   consult. The hardcoded modal patterns assume the defaults
+   bobbihack ships.
+3. **Castle floor refusal vs. attempted navigation.**
+   *Decision: deferred — Matt unsure, bobbihack runs are not
+   reaching Castle in practice.* Plan Task 3.4 ships the
+   refusal as the conservative move; flip to attempt when a
+   real run reaches Castle and the drawbridge mechanic becomes
+   load-bearing.
+4. **Peaceful classification (shopkeeper / priest / Oracle by
+   color).** *Decision: defer to v3.* v2 lumps peacefuls with
+   hostiles for the `monster_visible` halt — strictly safer
+   than the current "treat all non-pet letters as hostile" but
+   not better. v3 adds peaceful disambiguation when (a) live
+   traces show repeated halts in shops/temples and (b) the
+   color→species mapping from open question #1 is in.
+5. **Is `hilite_peaceful` ever supported in NetHack 5.0.0?**
    The bobbihack design doc (2026-05-07) says it's a rejected
    option. If a future NetHack version reintroduces it, the
-   peaceful classifier becomes trivial.
-3. **Does the engine emit a distinguishable signal when an
+   peaceful classifier becomes trivial. (v3 follow-up.)
+6. **Does the engine emit a distinguishable signal when an
    item pile is mixed (some safe, some cursed)?** The pickup
    prompt is the same shape; the AP can't tell from prompt
-   alone whether to skip.
-4. **`paranoid_confirmation:trap` with the `Confirm` modifier
+   alone whether to skip. (v3 follow-up.)
+7. **`paranoid_confirmation:trap` with the `Confirm` modifier
    requires `yes`/`no` — does this affect the regex pattern?**
    v2 should add the full-word case to be safe.
-5. **The `:` (lizard) and `;` (sea monster) classes — these
+8. **The `:` (lizard) and `;` (sea monster) classes — these
    are class letters but not in `[a-zA-Z]`.** The classifier
    needs to handle them, but the existing
    `monster_visible`-style detector restricts to letters. v2
    should extend the regex.
+
+## How v3 acquires its knowledge
+
+v2 ships and runs. The places where the AP gets surprised
+(modals not in `MODAL_PATTERNS`, monsters that should detour
+that don't, terrain we misread) are recorded in `run.jsonl`
+via the `autopilot_step` event (commit `8c534ba`). Those
+traces are the curriculum for v3:
+
+- Per-step trace shows exactly which keystroke surprised the
+  AP and what the engine said. Example: the 148-step locked-
+  door loop was diagnosable from logs in 30 seconds.
+- When a class of surprise repeats, it becomes a new zettel +
+  belief in the slip-box and a delta on this spec.
+- For NetHack ground-truth that the Guidebook punted on
+  (monster speed, hostility, color), the source tree
+  (`include/monst.c`, `include/permonst.h`) is more
+  authoritative than the wiki and is locally fetchable.
+- Targeted wiki pages (one specific question, one page) are
+  the third-line source — sparingly, since the agent currently
+  hits 403 on the wiki.
+
+The principle: v2 is a hypothesis. Live runs falsify it.
+Don't read more Guidebook in a vacuum; let the traces tell us
+what to study next.
 
 ## Test plan
 

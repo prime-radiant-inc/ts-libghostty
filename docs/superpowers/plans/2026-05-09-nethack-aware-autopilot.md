@@ -371,9 +371,11 @@ and update `tool-context.ts` for the m-prefix path.
 - Modified: `packages/blinkyterm/examples/bobbihack/tools/autopilot.ts`
 
 - [ ] **Step 1: Update `floorRefusalReason`** to include
-  Quest (`floor.id.includes("Quest")`) and optionally Castle
-  (`floor.id === "Castle"`). Decision: include both per
-  spec rubric 6.
+  Quest (`floor.id.includes("Quest")`) and Castle
+  (`floor.id === "Castle"`). Both refused for v2 per spec
+  rubric 6 (conservative — bobbihack runs are not reaching
+  Castle in practice; flip when one does and the drawbridge
+  mechanic becomes load-bearing).
 
 ### Task 3.5: Sendkeys path for m-prefix
 
@@ -460,20 +462,29 @@ The fixture harness's `parseFixture` already parses
 
 ## Out of scope for v2 (future work)
 
-These are mentioned in the spec's "Open questions" and are not
-in this plan's tasks:
+Per Matt's 2026-05-09 decisions on the spec's open questions:
 
-- Color-to-species mapping for monster classes (would let the
-  AP know "red dragon" vs "green dragon" specifically).
-- Peaceful classification beyond "color-tagged shopkeeper /
-  priest / Oracle". Generic peacefuls remain conservative-
-  refused.
-- Searching for secret doors / corridors (AP does not search;
-  v2 still treats dead-ends as truly dead).
-- `paranoid_confirmation` parsing from `.nethackrc`. v2 uses
-  hardcoded NetHack 5.0 defaults.
-- Sokoban solving, Quest navigation, Castle drawbridge —
+- **Color → species mapping** (open question #1, deferred to
+  v3). Classifier still extracts and carries `color`; danger
+  grading and pet/peaceful logic key off glyph letter +
+  `inverse` only.
+- **Peaceful classification** (color-tagged shopkeeper /
+  priest / Oracle) — deferred to v3. v2 lumps peacefuls with
+  hostiles for the `monster_visible` halt (strictly safer than
+  current behavior; not better).
+- **`paranoid_confirmation` parsing from `.nethackrc`** — out
+  of scope. bobbihack invokes NetHack via `nethack-setup.ts`
+  with `NETHACKOPTIONS` set directly; there is no user
+  `.nethackrc` to consult. Modal patterns hardcoded against
+  NetHack 5.0 defaults.
+- **Searching for secret doors / corridors** — AP does not
+  search; v2 still treats dead-ends as truly dead.
+- **Sokoban solving, Quest navigation, Castle drawbridge** —
   refused at floor level per rubric 6.
+
+The principle for v3 acquisition: live-run `autopilot_step`
+traces (commit `8c534ba`) tell us which class of surprise is
+worth studying next. Don't read more Guidebook in a vacuum.
 
 ---
 
