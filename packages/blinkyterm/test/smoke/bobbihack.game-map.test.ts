@@ -39,6 +39,8 @@ describe("GameMap construction", () => {
     expect(m.current).toBeNull();
     expect(m.currentPlayerXY).toBeNull();
     expect(m.visitedFloors()).toEqual([]);
+    // v2: classified-grid cache starts empty.
+    expect(m.latestClassified).toBeNull();
   });
 
   test("query methods return well-formed empty results before any frame", () => {

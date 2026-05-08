@@ -662,8 +662,11 @@ async function main(): Promise<void> {
       const glyphClass = buildGlyphClass(frame.snapshot, rows, map.currentPlayerXY);
       // v2 classified grid: full (terrain, foreground) tuple per cell.
       // Carried alongside glyphClass during the v1→v2 migration; the
-      // autopilot pathfinder consumes it for danger-aware costs.
+      // autopilot pathfinder consumes it for danger-aware costs. Cache
+      // it on the map so consumers that read off the GameMap directly
+      // pick it up without needing the FrameAwaitResult.
       const classified = buildClassifiedGrid(frame.snapshot, rows, map.currentPlayerXY);
+      map.latestClassified = classified;
       return { rows, glyphClass, classified, status, message, frameReason: frame.reason, screenAnsi };
     },
     logAutopilotStep: (ev) => {

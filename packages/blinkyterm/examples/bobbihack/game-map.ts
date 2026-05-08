@@ -87,6 +87,20 @@ export class GameMap {
   current: FloorId | null = null;
   currentPlayerXY: { x: number; y: number } | null = null;
   lastUnexpectedLevelChange: UnexpectedLevelChange | null = null;
+  // v2 (Phase 2): the most recent per-frame classified grid, set by
+  // `updateFromFrame` when the caller provides one. Per-frame: the
+  // foreground layer (monsters, items) is transient and resets every
+  // frame; only the persistent terrain layer in `floor.tiles`
+  // survives across frames. Consumers (autopilot pathfind, in
+  // Phase 3) pull this off the map and pass it to `pathfind` for
+  // danger-aware costing. The transient-glyphs-don't-erase-terrain
+  // invariant (zettel:
+  // `transient-glyphs-do-not-erase-recorded-terrain`) is preserved:
+  // `updateFromFrame`'s tile-recording logic still ignores monster /
+  // item glyphs when classifying terrain; the classified grid is a
+  // *parallel* read of the same frame, not a substitute for the
+  // floor.tiles state.
+  latestClassified: ReadonlyArray<ReadonlyArray<ClassifiedCell>> | null = null;
 
   // Branch state — tracked across frames; messages override.
   #activeBranch: string | null = null;
