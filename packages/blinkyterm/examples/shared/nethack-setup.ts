@@ -88,6 +88,13 @@ export function nethackEnv(): Record<string, string> {
   return {
     NETHACKOPTIONS:
       "name:agent,role:valkyrie,race:human,gender:female,align:lawful," +
-      "hilite_pet,!tutorial",
+      // `time` shows the in-game turn counter (`T:N`) in the status
+      // line. NetHack 5.0.0 defaults it off; without it
+      // `parseStatusLine` can't find `T:N` and the bobbihack
+      // tool_result header always says "Turn: 0", which agents waste
+      // turns trying to debug (run bbh-20260508-205038-9e2e2a
+      // msg[284]: "the turn count is STILL 0! Is the game somehow
+      // paused?").
+      "hilite_pet,!tutorial,time",
   };
 }

@@ -31,6 +31,28 @@ The 80×24 terminal shows three regions:
    /In/Wi/Ch), AC (lower is better), HP (current/max), Pw (power),
    level, XP, T (turn count), hunger and conditions.
 
+# Coordinates
+
+All tools that take or return tile positions use **(x, y), 0-indexed**:
+- `x` is the column from the left (0 to 79)
+- `y` is the row from the top (0 to 23)
+- **Row 0 is the message line.** The walkable map starts around y=1
+  and ends around y=20-21; rows below are status.
+
+Concrete: `query_terrain` returning `{kind: "stairs_up", x: 14, y: 17}`
+means column 14, row 17 — exactly the `<` you see in that position
+in the rendered screen. Pass these same numbers to `autopilot_to({floor,
+x: 14, y: 17})` — no conversion needed.
+
+If you see a VT100 cursor sequence like `\x1b[12;66H` in the raw ANSI
+output, that's **1-indexed (row, col)** — its (x, y) equivalent is
+(65, 11). Don't navigate from cursor sequences; use feature
+coordinates from `query_terrain` instead.
+
+Don't try to re-derive coordinate systems from the screen — the
+(x, y) you read from `query_terrain` is the (x, y) you pass to
+navigation tools. They match exactly.
+
 # Map glyphs
 
 - `@` — your character
