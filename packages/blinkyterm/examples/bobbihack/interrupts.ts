@@ -46,6 +46,17 @@ const MODAL_PATTERNS = [
   /Pick (up|an? item)/i,
 ];
 
+// On the standard NetHack 80x24 layout: row 0 is the message line, the
+// last two rows are the status lines. Map cells live on rows 1 ..
+// rows.length-3 inclusive. Detectors that scan for monster/item glyphs
+// MUST restrict to map rows or they'll false-fire on every game message
+// — e.g. "You see..." starts row 0 with `Y`, which the pre-restriction
+// detector flagged as `monster_visible (Y at (0,0))` and aborted
+// autopilot loops mid-walk.
+function isMapRow(y: number, totalRows: number): boolean {
+  return y >= 1 && y <= totalRows - 3;
+}
+
 // Attribute-aware monster detector. Pets (rendered with `inverse: true` in
 // NetHack 5.0.0 with `hilite_pet` set) are classified as `pet` upstream
 // and skipped here so autopilot doesn't abort on every pet step. Every
@@ -64,6 +75,7 @@ function detectHostileAppeared(
   if (prev === undefined) return false;
   const curClassGrid = cur.glyphClass ?? [];
   for (let y = 0; y < cur.rows.length; y++) {
+    if (!isMapRow(y, cur.rows.length)) continue;
     const curRow = cur.rows[y]!;
     const prevRow = prev.rows[y] ?? "";
     const curClassRow = curClassGrid[y] ?? [];
@@ -92,6 +104,7 @@ function detectNewItem(
   if (prevRows === undefined) return false;
   const itemRe = /^[?!()=*$%/"\[\]]$/;
   for (let y = 0; y < curRows.length; y++) {
+    if (!isMapRow(y, curRows.length)) continue;
     const cur = curRows[y]!;
     const prev = prevRows[y] ?? "";
     for (let x = 0; x < cur.length; x++) {

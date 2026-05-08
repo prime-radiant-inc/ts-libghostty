@@ -288,6 +288,75 @@ describe("monster_visible", () => {
     // detail names the kobold, not the pet.
     expect(typeof result === "string" ? result : "").toContain("k at (10,6)");
   });
+
+  test("does NOT fire on letter changes in row 0 (message line)", () => {
+    // Pre-fix bug: a game message starting with an uppercase letter (e.g.
+    // "You see..." / "The kobold dies." / "Yipping noises...") would land
+    // a `Y`/`T`/etc. at position (0, 0), which the detector flagged as
+    // `monster_visible (Y at (0,0))` and aborted the autopilot. Map cells
+    // are rows 1 .. rows.length-3 only.
+    const prevRows = Array.from({ length: 24 }, () => " ".repeat(80));
+    prevRows[0] = "It was a quiet turn.".padEnd(80, " ");
+    const curRows = [...prevRows];
+    curRows[0] = "You see here a kobold corpse.".padEnd(80, " ");
+    const result = detect(
+      ctx({
+        prev: { rows: prevRows, status: status(), message: prevRows[0]!.trim() },
+        cur: { ...ctx().cur, rows: curRows, message: curRows[0]!.trim() },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+
+  test("does NOT fire on letter changes in the bottom status rows", () => {
+    // Status line letters (e.g. attribute changes "St:18 -> St:19", or
+    // condition flags appearing) are not monsters.
+    const prevRows = Array.from({ length: 24 }, () => " ".repeat(80));
+    prevRows[22] = "Agent the Stripling  St:18".padEnd(80, " ");
+    prevRows[23] = "Dlvl:1  HP:14(14)".padEnd(80, " ");
+    const curRows = [...prevRows];
+    curRows[22] = "Agent the Stripling  St:19".padEnd(80, " "); // St letter changed
+    const result = detect(
+      ctx({
+        prev: { rows: prevRows, status: status(), message: "" },
+        cur: { ...ctx().cur, rows: curRows },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+});
+
+describe("new_item_visible (row restriction)", () => {
+  const detect = INTERRUPTS.find((i) => i.name === "new_item_visible")!.detect;
+
+  test("does NOT fire on item-glyph characters in row 0 (message text)", () => {
+    // Messages routinely contain item characters: "(", ")", "?", "!" etc.
+    // — they're punctuation in prose, not items on the map.
+    const prevRows = Array.from({ length: 24 }, () => " ".repeat(80));
+    prevRows[0] = "It was a quiet turn.".padEnd(80, " ");
+    const curRows = [...prevRows];
+    curRows[0] = "Welcome (again)?".padEnd(80, " ");
+    const result = detect(
+      ctx({
+        prev: { rows: prevRows, status: status(), message: prevRows[0]!.trim() },
+        cur: { ...ctx().cur, rows: curRows, message: curRows[0]!.trim() },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+
+  test("DOES fire on a real new item in a map row", () => {
+    const prevRows = Array.from({ length: 24 }, () => " ".repeat(80));
+    const curRows = [...prevRows];
+    curRows[6] = "       (".padEnd(80, " "); // weapon at (7, 6)
+    const result = detect(
+      ctx({
+        prev: { rows: prevRows, status: status(), message: "" },
+        cur: { ...ctx().cur, rows: curRows },
+      }),
+    );
+    expect(result).toBeTruthy();
+  });
 });
 
 describe("entered_trap_tile and level_changed_unexpectedly", () => {
