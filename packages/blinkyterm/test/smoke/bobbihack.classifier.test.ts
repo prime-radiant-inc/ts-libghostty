@@ -6,9 +6,27 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  colorFromStyle,
   LETTER_TO_CLASS,
+  type ClassifiedCell,
   type MonsterClass,
 } from "../../examples/bobbihack/cell-classifier";
+import type { CellStyle } from "libghostty-vt";
+
+function defaultStyle(overrides: Partial<CellStyle> = {}): CellStyle {
+  return {
+    bold: false,
+    faint: false,
+    italic: false,
+    underline: "none",
+    overline: false,
+    strikethrough: false,
+    blink: false,
+    inverse: false,
+    invisible: false,
+    ...overrides,
+  };
+}
 
 describe("LETTER_TO_CLASS", () => {
   test("contains 58 entries (26 lowercase + 25 uppercase skip I + 7 specials)", () => {
@@ -67,5 +85,38 @@ describe("LETTER_TO_CLASS", () => {
 
   test("does NOT include 'I' (unseen-monster is its own foreground kind)", () => {
     expect(LETTER_TO_CLASS.I).toBeUndefined();
+  });
+});
+
+describe("colorFromStyle", () => {
+  test("returns -1 for undefined style", () => {
+    expect(colorFromStyle(undefined)).toBe(-1);
+  });
+
+  test("returns -1 for default style with no fg", () => {
+    expect(colorFromStyle(defaultStyle())).toBe(-1);
+  });
+
+  test("returns palette index for fg in 0..15", () => {
+    for (let i = 0; i <= 15; i++) {
+      expect(colorFromStyle(defaultStyle({ fg: { palette: i } }))).toBe(i);
+    }
+  });
+
+  test("returns -1 for palette index outside 0..15", () => {
+    expect(colorFromStyle(defaultStyle({ fg: { palette: 16 } }))).toBe(-1);
+    expect(colorFromStyle(defaultStyle({ fg: { palette: 255 } }))).toBe(-1);
+  });
+
+  test("returns -1 for RGB triplet", () => {
+    expect(colorFromStyle(defaultStyle({ fg: [255, 0, 0] }))).toBe(-1);
+  });
+});
+
+describe("ClassifiedCell type shape", () => {
+  test("an empty cell can be constructed", () => {
+    const cell: ClassifiedCell = { terrain: null, foreground: null };
+    expect(cell.terrain).toBeNull();
+    expect(cell.foreground).toBeNull();
   });
 });

@@ -14,6 +14,9 @@
 // (a placeholder for a creature we cannot classify) are categorically
 // different.
 
+import type { CellStyle } from "libghostty-vt";
+import type { TileKind } from "./parsers";
+
 // 58 monster classes. Mirrors MONSYM minus INVISIBLE — see header comment.
 // `ghost` corresponds to the ` ` (space) char, which we do not treat as a
 // classifiable cell (most blank cells are unknown terrain). The class name
@@ -147,3 +150,50 @@ export const LETTER_TO_CLASS: Readonly<Record<string, MonsterClass>> = {
   "~": "worm-tail",
   "]": "mimic-def",
 };
+
+// Foreground describes any transient overlaying the terrain.
+export type Foreground =
+  | { kind: "player" }
+  | {
+      kind: "monster";
+      letter: string;
+      class: MonsterClass;
+      color: number;
+      pet: boolean;
+      bold: boolean;
+    }
+  | { kind: "item"; letter: string; color: number }
+  | { kind: "unseen-monster" }
+  | { kind: "warning"; tier: 1 | 2 | 3 | 4 | 5 };
+
+// Per-cell classification tuple. `terrain` is the persistent layer (floor,
+// wall, door, …); `foreground` is the per-frame transient layer
+// (monster, item, marker). Both can be null: an empty/unclassified cell
+// outside the map has `terrain: null, foreground: null`.
+export interface ClassifiedCell {
+  terrain: TileKind | null;
+  foreground: Foreground | null;
+}
+
+// SGR foreground color → CLR_* (0..15) per NetHack 5.0/include/color.h.
+//
+// libghostty-vt's `CellStyle.fg` is either an `RGB` triplet
+// (`readonly [r, g, b]`) or a `PaletteIndex` (`{ palette: number }`).
+// NetHack's terminal renderer uses the basic 16-color palette (0..15).
+// Indices 0..7 are the standard colors, 8..15 the bright variants. We
+// pass-through if the palette index is in range; otherwise we return -1
+// to indicate "unknown / not in the basic palette". RGB inputs likewise
+// return -1 because we don't reverse-map RGB to palette here.
+export function colorFromStyle(style: CellStyle | undefined): number {
+  if (style === undefined) return -1;
+  const fg = style.fg;
+  if (fg === undefined) return -1;
+  // PaletteIndex is `{ palette: number }`. RGB is `readonly [r, g, b]`.
+  if (Array.isArray(fg)) return -1;
+  if (typeof fg === "object" && "palette" in fg) {
+    const idx = fg.palette;
+    if (typeof idx === "number" && idx >= 0 && idx <= 15) return idx;
+    return -1;
+  }
+  return -1;
+}
