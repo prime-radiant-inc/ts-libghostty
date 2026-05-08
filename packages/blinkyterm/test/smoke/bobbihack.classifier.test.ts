@@ -16,6 +16,7 @@ import {
 import {
   DANGER_CLASS_FLAGS,
   DANGER_CLASS_LETTERS,
+  dangerWeight,
 } from "../../examples/bobbihack/danger-classes";
 import type { CellInfo, CellStyle } from "libghostty-vt";
 import type { FrameSnapshot } from "../../src/types";
@@ -440,6 +441,110 @@ describe("DANGER_CLASS_LETTERS", () => {
       if (klass !== undefined) {
         expect(DANGER_CLASS_FLAGS.has(klass)).toBe(true);
       }
+    }
+  });
+});
+
+describe("dangerWeight", () => {
+  test("returns 1.0 for null/undefined cells (defensive)", () => {
+    expect(dangerWeight(null)).toBe(1.0);
+    expect(dangerWeight(undefined)).toBe(1.0);
+  });
+
+  test("returns 1.0 for empty terrain (no foreground)", () => {
+    const cell: ClassifiedCell = { terrain: "floor", foreground: null };
+    expect(dangerWeight(cell)).toBe(1.0);
+  });
+
+  test("returns 1.0 for player and item foregrounds", () => {
+    expect(
+      dangerWeight({ terrain: "floor", foreground: { kind: "player" } }),
+    ).toBe(1.0);
+    expect(
+      dangerWeight({
+        terrain: "floor",
+        foreground: { kind: "item", letter: "?", color: 7 },
+      }),
+    ).toBe(1.0);
+  });
+
+  test("pets are 1.0× (free to displace)", () => {
+    const cell: ClassifiedCell = {
+      terrain: "floor",
+      foreground: {
+        kind: "monster",
+        letter: "d",
+        class: "dog",
+        color: 7,
+        pet: true,
+        bold: false,
+      },
+    };
+    expect(dangerWeight(cell)).toBe(1.0);
+  });
+
+  test("generic hostile is 5×", () => {
+    const cell: ClassifiedCell = {
+      terrain: "floor",
+      foreground: {
+        kind: "monster",
+        letter: "o",
+        class: "orc",
+        color: 7,
+        pet: false,
+        bold: false,
+      },
+    };
+    expect(dangerWeight(cell)).toBe(5.0);
+  });
+
+  test("danger-class hostile is 20×", () => {
+    for (const klass of ["dragon", "lich", "vampire", "wraith", "demon"] as const) {
+      const cell: ClassifiedCell = {
+        terrain: "floor",
+        foreground: {
+          kind: "monster",
+          letter: "X",
+          class: klass,
+          color: 7,
+          pet: false,
+          bold: false,
+        },
+      };
+      expect(dangerWeight(cell)).toBe(20.0);
+    }
+  });
+
+  test("danger-class but pet is still 1.0× (a tame dragon costs nothing to step past)", () => {
+    const cell: ClassifiedCell = {
+      terrain: "floor",
+      foreground: {
+        kind: "monster",
+        letter: "D",
+        class: "dragon",
+        color: 7,
+        pet: true,
+        bold: false,
+      },
+    };
+    expect(dangerWeight(cell)).toBe(1.0);
+  });
+
+  test("unseen-monster is 10×", () => {
+    const cell: ClassifiedCell = {
+      terrain: "floor",
+      foreground: { kind: "unseen-monster" },
+    };
+    expect(dangerWeight(cell)).toBe(10.0);
+  });
+
+  test("warning tiers scale linearly: tier × 4", () => {
+    for (const tier of [1, 2, 3, 4, 5] as const) {
+      const cell: ClassifiedCell = {
+        terrain: "floor",
+        foreground: { kind: "warning", tier },
+      };
+      expect(dangerWeight(cell)).toBe(tier * 4);
     }
   });
 });
