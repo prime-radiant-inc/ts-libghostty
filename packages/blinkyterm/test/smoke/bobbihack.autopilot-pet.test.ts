@@ -18,7 +18,7 @@
 
 import { describe, expect, test } from "bun:test";
 import { Runner, type Frame } from "../../src/index";
-import { hasNethack, nethackEnv } from "../../examples/shared/nethack-setup";
+import { hasNethack, nethackEnv, cleanupNetHackLocks } from "../../examples/shared/nethack-setup";
 import { GameMap } from "../../examples/bobbihack/game-map";
 import { parseStatusLine, parseMessageLine } from "../../examples/bobbihack/parsers";
 import { buildGlyphClass } from "../../examples/bobbihack/glyph-class";
@@ -43,6 +43,11 @@ describe("bobbihack autopilot end-to-end", () => {
     "handleAutopilotExplore runs past pet without aborting",
     async () => {
       const t0 = performance.now();
+      // SIGTERM cleanup at end of previous runs leaves lock files behind;
+      // ~18 of them and NetHack rejects new games. Clear them up front so
+      // the test is reliable regardless of how the previous run ended.
+      const cleared = cleanupNetHackLocks();
+      trace(`cleared ${cleared} stale NetHack lock(s)`);
       trace("spawn nethack");
       const runner = await Runner.spawn(["nethack"], {
         cols: 80,
