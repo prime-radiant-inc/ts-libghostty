@@ -13,6 +13,10 @@ import {
   type ClassifiedCell,
   type MonsterClass,
 } from "../../examples/bobbihack/cell-classifier";
+import {
+  DANGER_CLASS_FLAGS,
+  DANGER_CLASS_LETTERS,
+} from "../../examples/bobbihack/danger-classes";
 import type { CellInfo, CellStyle } from "libghostty-vt";
 import type { FrameSnapshot } from "../../src/types";
 
@@ -406,6 +410,36 @@ describe("buildClassifiedGrid", () => {
     expect(fg?.kind).toBe("warning");
     if (fg?.kind === "warning") {
       expect(fg.tier).toBe(4);
+    }
+  });
+});
+
+describe("DANGER_CLASS_FLAGS", () => {
+  test("contains the v0 set: dragon, lich, vampire, wraith, demon", () => {
+    expect(DANGER_CLASS_FLAGS.size).toBe(5);
+    expect(DANGER_CLASS_FLAGS.has("dragon")).toBe(true);
+    expect(DANGER_CLASS_FLAGS.has("lich")).toBe(true);
+    expect(DANGER_CLASS_FLAGS.has("vampire")).toBe(true);
+    expect(DANGER_CLASS_FLAGS.has("wraith")).toBe(true);
+    expect(DANGER_CLASS_FLAGS.has("demon")).toBe(true);
+  });
+
+  test("does NOT include classes that are merely hostile (orc, kobold)", () => {
+    expect(DANGER_CLASS_FLAGS.has("orc")).toBe(false);
+    expect(DANGER_CLASS_FLAGS.has("kobold")).toBe(false);
+    expect(DANGER_CLASS_FLAGS.has("dog")).toBe(false);
+  });
+});
+
+describe("DANGER_CLASS_LETTERS", () => {
+  test("matches the DANGER_CLASS_FLAGS one-to-one", () => {
+    expect(DANGER_CLASS_LETTERS.size).toBe(DANGER_CLASS_FLAGS.size);
+    for (const letter of DANGER_CLASS_LETTERS) {
+      const klass = LETTER_TO_CLASS[letter];
+      expect(klass).toBeDefined();
+      if (klass !== undefined) {
+        expect(DANGER_CLASS_FLAGS.has(klass)).toBe(true);
+      }
     }
   });
 });
