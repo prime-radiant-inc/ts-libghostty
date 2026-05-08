@@ -697,6 +697,50 @@ describe("autopilot_explore navigation", () => {
     expect(r.steps).toBeLessThan(20);
   });
 
+  test("REGRESSION: BFS does not loop through a locked door to a far frontier", async () => {
+    // Production run bbh-20260508-203614: player at (66,17), locked
+    // door directly north at (66,16). Beyond the door, the map
+    // continues into unexplored territory (frontier tiles). BFS
+    // routed through the door 148+ times, returning first-step=k
+    // each iteration. Engine refused every single one.
+    //
+    // Fixture: a sealed room whose only opening is a locked door.
+    // Past the door is a short corridor that opens onto unknown
+    // (the unrendered cells past col 10 → "unknown" terrain → a
+    // genuine frontier the BFS will WANT to reach). Without the
+    // blocked-tiles-in-BFS fix, the autopilot routes through the
+    // door every iteration and burns the whole stepCap.
+    const fx = parseFixture({
+      map: `
+------
+|....|
+|....|
+|....+....
+|....|
+|@...|
+------`,
+      lockedDoors: [[5, 3]],
+    });
+    const r = await runAutopilotExplore(fx, { stepCap: 200 });
+    // Critical: must NOT spend the whole stepCap. With the fix,
+    // explore visits the room interior, bumps the door once, marks
+    // it blocked, and exits because no frontier remains reachable.
+    expect(r.steps).toBeLessThan(40);
+    expect(r.toolResult.toLowerCase()).toContain("door is locked");
+    // BFS must not repeat the same key more than a handful of times.
+    // Production bug was 148 consecutive 'k'.
+    let longestRun = 0;
+    let curRun = 0;
+    let prevKey = "";
+    for (const ev of r.stepEvents) {
+      if (ev.key === prevKey) curRun += 1;
+      else curRun = 1;
+      if (curRun > longestRun) longestRun = curRun;
+      prevKey = ev.key;
+    }
+    expect(longestRun).toBeLessThan(10);
+  });
+
   test("REGRESSION: sealed room with locked door — does NOT spin", async () => {
     // The "autopilot_explore wall-bumping" bug from 2026-05-08.
     // Player sealed in; only "exit" is a locked door, which engine

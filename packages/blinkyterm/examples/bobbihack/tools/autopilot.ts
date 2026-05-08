@@ -485,11 +485,23 @@ function isFrontier(floor: FloorMap, x: number, y: number): boolean {
 
 // BFS from (sx, sy) to the nearest frontier tile. Returns the (dx, dy)
 // of the first step or null if no frontier is reachable.
+//
+// `blocked` is the set of "x,y" tile keys the engine has refused at
+// runtime this autopilot call (locked doors, peaceful blockers,
+// terrain we misclassified). BFS must NOT expand through them — and
+// MUST also reject them as frontier targets — otherwise it routes
+// through the same blocked tile every iteration, returning the same
+// first-step over and over. Production run bbh-20260508-203614 hit
+// this on a locked door at (66,16): 148+ consecutive `k` keystrokes
+// returning "This door is locked." because BFS kept finding a
+// frontier beyond the door and the locked-door tile in the
+// expansion path was never excluded.
 function bfsToFrontier(
   floor: FloorMap,
   sx: number,
   sy: number,
   visited: Set<string>,
+  blocked: Set<string>,
 ): readonly [number, number] | null {
   // BFS through walkable tiles. Expand 8-connectivity.
   type Node = { x: number; y: number; firstStep: readonly [number, number] | null };
@@ -501,20 +513,24 @@ function bfsToFrontier(
   while (queue.length > 0) {
     const node = queue.shift()!;
     // Treat the start tile as not a stop condition (we want to make
-    // progress). Otherwise, if this tile is a frontier and is unvisited
-    // (not yet stepped on), we have our target.
+    // progress). Otherwise, if this tile is a frontier and is
+    // unvisited and not engine-blocked, we have our target.
     const isStart = node.x === sx && node.y === sy;
-    if (!isStart && isFrontier(floor, node.x, node.y) && !visited.has(`${node.x},${node.y}`)) {
+    if (
+      !isStart &&
+      isFrontier(floor, node.x, node.y) &&
+      !visited.has(`${node.x},${node.y}`) &&
+      !blocked.has(`${node.x},${node.y}`)
+    ) {
       return node.firstStep;
     }
-    // Also accept any unvisited walkable tile adjacent to an unknown. The
-    // condition above already covers that.
 
     for (const [dx, dy] of DIAG_DIRS) {
       const nx = node.x + dx;
       const ny = node.y + dy;
       const key = `${nx},${ny}`;
       if (seen.has(key)) continue;
+      if (blocked.has(key)) continue;
       const t = floor.tiles.get(key);
       if (t === undefined) continue;
       if (!isPlayerWalkable(t)) continue;
@@ -600,6 +616,13 @@ export async function handleAutopilotExplore(
   // Track tiles visited *during this autopilot call* (not across game).
   const visited = new Set<string>();
   visited.add(`${map.currentPlayerXY.x},${map.currentPlayerXY.y}`);
+  // Tiles where the engine refused movement this run (locked doors,
+  // peaceful blockers, misclassified terrain). Distinct from
+  // `visited`: BFS-to-frontier MUST NOT expand through these, or it
+  // returns a same-direction first-step every iteration and burns
+  // the entire stepCap. See bfsToFrontier comment for the
+  // production trace that motivated this.
+  const blockedTiles = new Set<string>();
 
   let prevFrame: InterruptFrame | undefined;
   let lastResult: FrameAwaitResult | null = null;
@@ -634,7 +657,7 @@ export async function handleAutopilotExplore(
 
     // Step 2 (BFS to nearest frontier) when no adjacent unvisited.
     if (stepDir === null) {
-      stepDir = bfsToFrontier(floor, cur.x, cur.y, visited);
+      stepDir = bfsToFrontier(floor, cur.x, cur.y, visited, blockedTiles);
       decision = "bfs";
     }
 
@@ -703,15 +726,21 @@ export async function handleAutopilotExplore(
     // If the keystroke produced no movement, the engine refused the
     // step (locked door, boulder, terrain we misclassified as walkable,
     // diagonal blocked by walls, etc.). Mark the intended target tile
-    // as visited so pickAdjacentUnvisited won't pick it again next
-    // iteration — otherwise we'd burn the entire stepCap re-trying the
-    // same wall and the player never moves. Capture NetHack's message
-    // so the user sees WHY ("Ouch! You bump into a wall.") in the
-    // final stop reason and live progress.
+    // as both visited (so pickAdjacentUnvisited skips it) AND blocked
+    // (so bfsToFrontier won't route THROUGH it on subsequent iters).
+    // The visited-only marking was insufficient: BFS-to-frontier
+    // happily routed through visited-but-blocked tiles, returning the
+    // same first-step every iteration. Production run
+    // bbh-20260508-203614 burned 148+ steps on `k` against a single
+    // locked door at (66,16) before this distinction was added.
+    // Capture NetHack's message so the user sees WHY ("This door is
+    // locked.") in the final stop reason and live progress.
     const movedThisStep =
       playerNow !== null && (playerNow.x !== cur.x || playerNow.y !== cur.y);
     if (!movedThisStep) {
-      visited.add(`${cur.x + dx},${cur.y + dy}`);
+      const targetKey = `${cur.x + dx},${cur.y + dy}`;
+      visited.add(targetKey);
+      blockedTiles.add(targetKey);
       const msg = result.message.trim();
       if (msg.length > 0) {
         lastExploreBlockMessage = msg;
