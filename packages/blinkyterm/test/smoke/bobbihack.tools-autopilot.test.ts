@@ -544,6 +544,40 @@ describe("handleAutopilotExplore", () => {
     expect(sentKeys).toEqual([]);
   });
 
+  test("does not loop forever when the engine refuses to move the player", async () => {
+    // Pre-fix bug: if NetHack rejects the keystroke (locked door, mis-
+    // classified terrain, boulder, etc.), the player's position
+    // doesn't change; pickAdjacentUnvisited only filters by `visited`,
+    // which only tracks positions the player has actually occupied; so
+    // the same direction got picked over and over and the autopilot
+    // burned the whole stepCap without moving.
+    //
+    // Setup: player at (11, 5); only walkable neighbor is (12, 5) east.
+    // Surrounding cells default to spaces in the seed, which the map
+    // records as `unknown` (walkable=no), so the picker has exactly one
+    // move available. Every "turn" the engine returns the same player
+    // position; without the fix, the picker would re-pick east forever.
+    // No walls in the seed — keeps `detectEngulfed`'s heuristic from
+    // false-firing on the test scene.
+    const seedRows = buildRows([
+      { x: 11, y: 5, ch: "@" },
+      { x: 12, y: 5, ch: "." },
+    ]);
+    // Each turn returns the same scene: player still at (11, 5). The
+    // autopilot's keystroke is "ignored" by the simulated engine.
+    const turns: MockTurn[] = [
+      { rows: seedRows },
+      { rows: seedRows },
+      { rows: seedRows },
+    ];
+    const { ctx, sentKeys } = mockCtx({ seed: { rows: seedRows }, turns });
+    const out = await handleAutopilotExplore({ stepCap: 50 }, ctx);
+    // Should give up well before step_cap. Pre-fix: sentKeys.length would
+    // hit 50 and the summary would say "step_cap".
+    expect(sentKeys.length).toBeLessThanOrEqual(2);
+    expect(out).toMatch(/explored entire known map|fully_explored/);
+  });
+
   test("returns 'explored entire known map' when no frontier exists", async () => {
     // Tiny enclosed room: walls all around.
     const seedRows = buildRows([

@@ -605,6 +605,18 @@ export async function handleAutopilotExplore(
       visited.add(`${playerNow.x},${playerNow.y}`);
     }
 
+    // If the keystroke produced no movement, the engine refused the
+    // step (locked door, boulder, terrain we misclassified as walkable,
+    // diagonal blocked by walls, etc.). Mark the intended target tile
+    // as visited so pickAdjacentUnvisited won't pick it again next
+    // iteration — otherwise we'd burn the entire stepCap re-trying the
+    // same wall and the player never moves.
+    const movedThisStep =
+      playerNow !== null && (playerNow.x !== cur.x || playerNow.y !== cur.y);
+    if (!movedThisStep) {
+      visited.add(`${cur.x + dx},${cur.y + dy}`);
+    }
+
     const ictx: InterruptContext = {
       cur: frameFromResult(result),
       enteredTrapTile: enteredTrap,
