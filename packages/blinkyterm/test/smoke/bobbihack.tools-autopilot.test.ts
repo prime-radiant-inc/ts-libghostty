@@ -454,6 +454,24 @@ describe("handleAutopilotTo", () => {
     expect(sentKeys).toEqual([]);
     expect(out).toContain("arrived after 0 steps");
   });
+
+  test("does not loop when engine refuses to move along the planned path", async () => {
+    // Sibling of the explore-side wall-bumping fix. Map shows a clear
+    // corridor east, so pathfind picks it. But the engine consistently
+    // returns the same player position (locked door, terrain we got
+    // wrong, etc.). Pre-fix: replan returns the same path; same key
+    // gets sent every step until step_cap. Post-fix: the failed tile
+    // joins blockedTiles, replan returns a path through it again, and
+    // we bail with `blocked_unreachable`.
+    const seedRows = corridorRows(10, 5, 10, 15);
+    // Every "turn" returns the same scene: player still at (10, 5).
+    const stuck: MockTurn[] = Array.from({ length: 5 }, () => ({ rows: seedRows }));
+    const { ctx, sentKeys } = mockCtx({ seed: { rows: seedRows }, turns: stuck });
+    const out = await handleAutopilotTo({ floor: "D1", x: 15, y: 5 }, ctx);
+    // One key sent (the first east attempt), then bail.
+    expect(sentKeys.length).toBeLessThanOrEqual(2);
+    expect(out).toContain("blocked_unreachable");
+  });
 });
 
 // ---------------------------------------------------------------------------

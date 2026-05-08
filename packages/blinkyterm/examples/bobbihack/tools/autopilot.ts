@@ -163,6 +163,12 @@ export async function handleAutopilotTo(
   let lastResult: FrameAwaitResult | null = null;
   let stepsTaken = 0;
   let stopReason: string | null = null;
+  // Tiles where the engine refused to let us step in this run (locked
+  // doors, mimics, terrain we misclassified). pathfind doesn't know
+  // about these — its walkability comes from GameMap, which only
+  // reflects what the map view shows. Without tracking these locally
+  // we'd replan and get the same path back, looping forever.
+  const blockedTiles = new Set<string>();
 
   while (stepsTaken < stepCap) {
     if (ctx.signal.aborted) {
@@ -250,10 +256,20 @@ export async function handleAutopilotTo(
     if (playerNow !== null && playerNow.x === next.x && playerNow.y === next.y) {
       path = path.slice(1);
     } else {
-      // Engine ignored the move (closed door, locked, blocked). Replan.
+      // Engine ignored the move (closed door, locked, blocked, hostile
+      // adjacent that isn't a `monster_visible` interrupt yet, etc.).
+      // Record the failed target as locally blocked.
+      blockedTiles.add(`${next.x},${next.y}`);
       path = map.pathfind(playerNow ?? cur, goal);
       if (path === null) {
         stopReason = "no_path_after_replan";
+        break;
+      }
+      // If pathfind still routes through a tile we know is blocked at
+      // runtime, the goal is effectively unreachable on this floor —
+      // keep retrying would just spin. Bail.
+      if (path.some((s) => blockedTiles.has(`${s.x},${s.y}`))) {
+        stopReason = "blocked_unreachable";
         break;
       }
     }
