@@ -97,6 +97,28 @@ test("agent-pane title flips to 'paused' after 30s", () => {
   expect(out).toContain("no API response");
 });
 
+test("tool history word-wraps long entries instead of truncating", () => {
+  let s = initTri();
+  s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
+  // Long streamed text → long summary on the tool record.
+  s = onAgentEvent(s, {
+    kind: "thinking",
+    delta:
+      "Heading east through a long corridor that should make this entry word-wrap onto a continuation line so the user can read the whole thing rather than seeing a truncated tail",
+  });
+  s = onAgentEvent(s, { kind: "action", move: "autopilot_explore" });
+  s = onTurnEnd(s);
+  const out = render(s, "", 1000);
+  // The summary truncates at SUMMARY_LEN (60) on the state side, so the
+  // visible tool line is "#1 cellChange → autopilot_explore  \"<60 chars>\"" —
+  // which is well over the 80-ish col width of the tools pane and must
+  // wrap. Look for both the head and a fragment of the summary so we
+  // know neither got truncated away.
+  expect(out).toContain("#1");
+  expect(out).toContain("autopilot_explore");
+  expect(out).toContain("Heading east");
+});
+
 test("tool history shows the pending tool as a dim '…'-prefixed last row", () => {
   let s = initTri();
   // One completed turn so we have a baseline non-pending row above.

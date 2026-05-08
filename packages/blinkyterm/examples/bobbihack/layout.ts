@@ -42,7 +42,12 @@ const NETHACK_INNER_ROWS = 24;
 const NETHACK_HPAD = 1;     // cells of horizontal padding inside the box
 const NETHACK_COLS = NETHACK_INNER_COLS + 2 * NETHACK_HPAD + 2; // 84
 const NETHACK_ROWS = NETHACK_INNER_ROWS + 2;                    // 26
-const GAP = 1;
+const GAP = 1;                  // cross-column / cross-row separator
+// Vertical gap inside a single column (NetHack stacked over Tools in
+// tri). Set to 0 so the boxes share an adjacent row — wastes no space
+// and the borders read fine touching: NetHack's bottom `└──┘` sits
+// directly above Tools's top `┌──┐`.
+const VGAP_IN_COLUMN = 0;
 const STATUS_BAR_ROWS = 1;               // reserved at the bottom
 const SIDE_MIN_THINKING_COLS = 41;       // total side-by-side min: 84 + 1 + 41 = 126
 const STACKED_MIN_THINKING_ROWS = 12;    // ... 26 + 1 + 12 + 1(status) = 40
@@ -54,7 +59,7 @@ export function layout(hostCols: number, hostRows: number): Layout {
   const paneRows = hostRows - STATUS_BAR_ROWS;
 
   const triMinCols = NETHACK_COLS + GAP + TRI_MIN_CHAT_COLS;          // 84 + 1 + 30 = 115
-  const triMinRows = NETHACK_ROWS + GAP + TRI_MIN_TOOLS_ROWS + STATUS_BAR_ROWS; // 26+1+8+1 = 36
+  const triMinRows = NETHACK_ROWS + VGAP_IN_COLUMN + TRI_MIN_TOOLS_ROWS + STATUS_BAR_ROWS; // 26+0+8+1 = 35
   const sideMinCols = NETHACK_COLS + GAP + SIDE_MIN_THINKING_COLS;    // 126
   const sideMinRows = NETHACK_ROWS + STATUS_BAR_ROWS;                 // 27
   const stackedMinCols = NETHACK_COLS;                                // 84
@@ -63,8 +68,8 @@ export function layout(hostCols: number, hostRows: number): Layout {
   const statusBar: Box = { row: hostRows, col: 1, cols: hostCols, rows: STATUS_BAR_ROWS };
 
   if (hostCols >= triMinCols && hostRows >= triMinRows) {
-    const toolsRow = NETHACK_ROWS + GAP + 1;
-    const toolsRows = paneRows - NETHACK_ROWS - GAP;                  // remaining above status bar
+    const toolsRow = NETHACK_ROWS + VGAP_IN_COLUMN + 1;
+    const toolsRows = paneRows - NETHACK_ROWS - VGAP_IN_COLUMN;       // remaining above status bar
     return {
       kind: "tri",
       nethack: { row: 1, col: 1, cols: NETHACK_COLS, rows: NETHACK_ROWS },

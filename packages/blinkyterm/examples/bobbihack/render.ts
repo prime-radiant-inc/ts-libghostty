@@ -219,14 +219,19 @@ function drawToolsPane(
   const innerRows = box.rows - 2;
   if (innerRows <= 0) return;
 
-  // Build all lines (committed history then optional pending). Each
-  // entry is one line; we'll take the last innerRows.
-  const lines: { text: string; pending: boolean }[] = history.map((rec) => ({
-    text: formatToolLine(rec, innerCols),
-    pending: false,
-  }));
+  // Each entry can produce multiple wrapped lines. Build the full
+  // ordered sequence (oldest committed → newest committed → pending),
+  // tagging pending lines so they render dim. Take the last innerRows.
+  const lines: { text: string; pending: boolean }[] = [];
+  for (const rec of history) {
+    for (const wrapped of formatToolLineWrapped(rec, innerCols)) {
+      lines.push({ text: wrapped, pending: false });
+    }
+  }
   if (pending !== null) {
-    lines.push({ text: formatPendingLine(pending, innerCols), pending: true });
+    for (const wrapped of formatPendingLineWrapped(pending, innerCols)) {
+      lines.push({ text: wrapped, pending: true });
+    }
   }
   const startIdx = Math.max(0, lines.length - innerRows);
   const visible = lines.slice(startIdx);
@@ -249,12 +254,71 @@ function drawToolsPane(
   }
 }
 
-function formatPendingLine(pending: PendingTool, innerCols: number): string {
-  // Visual marker: leading `…` + (optional progress detail).
+// Continuation indent for wrapped tool/pending lines. Two spaces matches
+// the chat pane's wrap indent.
+const TOOL_WRAP_INDENT = "  ";
+
+function formatToolLineWrapped(rec: ToolRecord, innerCols: number): string[] {
+  const head = `#${rec.number} ${rec.frameReason} → ${rec.decision}`;
+  const tail = rec.summary ? `  "${rec.summary}"` : "";
+  return wrapWithIndent(head + tail, innerCols, TOOL_WRAP_INDENT);
+}
+
+function formatPendingLineWrapped(pending: PendingTool, innerCols: number): string[] {
   const head = `… #${pending.number} ${pending.name}${pending.argsSummary}`;
   const tail = pending.progress.length > 0 ? `  ${pending.progress}` : "";
-  const full = head + tail;
-  return full.length > innerCols ? full.slice(0, innerCols) : full;
+  return wrapWithIndent(head + tail, innerCols, TOOL_WRAP_INDENT);
+}
+
+/**
+ * Word-wrap `text` to `width`, indenting continuation lines by `indent`.
+ * Falls back to character-truncation for words longer than `width`.
+ * Returns at least one line.
+ */
+function wrapWithIndent(text: string, width: number, indent: string): string[] {
+  if (width <= 0 || text === "") return [text];
+  const continueWidth = Math.max(1, width - indent.length);
+  const words = text.split(/\s+/).filter((w) => w.length > 0);
+  if (words.length === 0) return [""];
+
+  const lines: string[] = [];
+  let current = "";
+  let isContinuation = false;
+  const lineWidth = (): number => (isContinuation ? continueWidth : width);
+
+  for (const w of words) {
+    const limit = lineWidth();
+    if (current === "") {
+      // Word longer than the line — emit truncated and keep going on the
+      // next line with the rest. (Rare for tool calls; just be safe.)
+      if (w.length > limit) {
+        lines.push(prefix(isContinuation, indent) + w.slice(0, limit));
+        current = "";
+        isContinuation = true;
+        // Push the remainder of the word as continuation chunks.
+        let rest = w.slice(limit);
+        while (rest.length > continueWidth) {
+          lines.push(indent + rest.slice(0, continueWidth));
+          rest = rest.slice(continueWidth);
+        }
+        current = rest;
+      } else {
+        current = w;
+      }
+    } else if (current.length + 1 + w.length <= limit) {
+      current += " " + w;
+    } else {
+      lines.push(prefix(isContinuation, indent) + current);
+      isContinuation = true;
+      current = w.length > continueWidth ? w.slice(0, continueWidth) : w;
+    }
+  }
+  if (current !== "") lines.push(prefix(isContinuation, indent) + current);
+  return lines;
+}
+
+function prefix(isContinuation: boolean, indent: string): string {
+  return isContinuation ? indent : "";
 }
 
 /**
@@ -381,12 +445,6 @@ function drawErrorBanner(parts: string[], box: Box, banner: string): void {
   if (trimmed.length < innerCols) parts.push(" ".repeat(innerCols - trimmed.length));
 }
 
-function formatToolLine(rec: ToolRecord, innerCols: number): string {
-  const head = `#${rec.number} ${rec.frameReason} → ${rec.decision}`;
-  const summary = rec.summary ? `  "${rec.summary}"` : "";
-  const full = head + summary;
-  return full.length > innerCols ? full.slice(0, innerCols) : full;
-}
 
 interface RenderedStatus {
   text: string;

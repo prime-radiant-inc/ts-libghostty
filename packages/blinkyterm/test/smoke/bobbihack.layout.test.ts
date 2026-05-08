@@ -6,10 +6,10 @@ test("tri layout when host is both wide and tall", () => {
   expect(out.kind).toBe("tri");
   if (out.kind !== "tri") return;
   expect(out.nethack).toEqual({ row: 1, col: 1, cols: 84, rows: 26 });
-  // Tools box directly below NetHack with a 1-row gap. 1-row global
-  // status bar is reserved at the bottom, so tools fills paneRows -
-  // NetHack - gap = (60 - 1) - 26 - 1 = 32 rows.
-  expect(out.tools).toEqual({ row: 28, col: 1, cols: 84, rows: 32 });
+  // Tools box sits directly below NetHack — no in-column gap. Status
+  // bar reserves the bottom row, so tools fills paneRows - NetHack =
+  // (60 - 1) - 26 = 33 rows.
+  expect(out.tools).toEqual({ row: 27, col: 1, cols: 84, rows: 33 });
   // Chat fills the right column up to but not including the status bar:
   // 200 - 84 - 1 = 115 wide; 60 - 1 = 59 tall.
   expect(out.chat).toEqual({ row: 1, col: 86, cols: 115, rows: 59 });
@@ -17,13 +17,13 @@ test("tri layout when host is both wide and tall", () => {
   expect(out.statusBar).toEqual({ row: 60, col: 1, cols: 200, rows: 1 });
 });
 
-test("tri at exact threshold (115x36)", () => {
-  const out = layout(115, 36);
+test("tri at exact threshold (115x35)", () => {
+  const out = layout(115, 35);
   expect(out.kind).toBe("tri");
   if (out.kind !== "tri") return;
-  expect(out.tools.rows).toBe(8);   // 36 - 1(status) - 26 - 1(gap) = 8
+  expect(out.tools.rows).toBe(8);   // 35 - 1(status) - 26 = 8
   expect(out.chat.cols).toBe(30);   // 115 - 84 - 1
-  expect(out.statusBar.row).toBe(36);
+  expect(out.statusBar.row).toBe(35);
 });
 
 test("side-by-side when wide but not tall enough for tri", () => {
