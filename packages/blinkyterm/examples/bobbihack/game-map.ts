@@ -9,6 +9,8 @@ import {
   type StatusLine,
   type TileKind,
 } from "./parsers";
+import type { ClassifiedCell } from "./cell-classifier";
+import { dangerWeight } from "./danger-classes";
 
 export type FloorId = string;
 
@@ -227,7 +229,29 @@ export class GameMap {
   // back tiles the engine refused at runtime (locked doors, peaceful
   // blockers, terrain we misclassified) so a replan routes around
   // rather than re-attempting the same path.
-  pathfind(from: Step, to: Step, excluded?: ReadonlySet<string>): Step[] | null {
+  //
+  // Optional `classifiedGrid` is the per-frame `(terrain, foreground)`
+  // tuple grid produced by `cell-classifier.ts:buildClassifiedGrid`.
+  // When provided, neighbor step costs include the v2 danger-weight
+  // multiplier (`danger-classes.ts:dangerWeight`) so the planner detours
+  // around hostiles, danger-class monsters, the `I` unseen-monster
+  // marker, and high-tier warning digits. When omitted, pathfind
+  // falls back to the v1 cost model (door_closed = 1.5×, otherwise
+  // 1×) — byte-identical to pre-v2 behavior so existing callers /
+  // tests don't drift. See spec §"Layer 2".
+  //
+  // The danger weights are *finite* multipliers, never +∞: a single
+  // danger-class monster increases the cost of stepping next to it
+  // (the step cost becomes ~28 instead of ~1.4) but does not make
+  // the path impassable. When there's no alternate route, the
+  // planner still returns a path through; when an alternate of
+  // length ≤ ~28 steps exists, the planner prefers it.
+  pathfind(
+    from: Step,
+    to: Step,
+    excluded?: ReadonlySet<string>,
+    classifiedGrid?: ReadonlyArray<ReadonlyArray<ClassifiedCell>>,
+  ): Step[] | null {
     if (this.current === null) return null;
     const floor = this.floors.get(this.current);
     if (floor === undefined) return null;
@@ -313,7 +337,17 @@ export class GameMap {
         const stepCost = isDiagonal ? Math.SQRT2 : 1;
         // Prefer known-open doors over closed doors.
         const tileCost = tile.kind === "door_closed" ? 1.5 : 1;
-        const tentativeG = bestNode.g + stepCost * tileCost;
+        // v2: when a classified grid is provided, multiply by the
+        // danger weight of the destination cell. When omitted, the
+        // multiplier is 1.0 — byte-identical to the v1 cost model.
+        // dangerWeight is defensive against out-of-bounds indices
+        // (returns 1.0 for null/undefined cells) so we don't need
+        // a guard here.
+        const dangerMul =
+          classifiedGrid !== undefined
+            ? dangerWeight(classifiedGrid[ny]?.[nx])
+            : 1.0;
+        const tentativeG = bestNode.g + stepCost * tileCost * dangerMul;
         const existing = open.get(nKey);
         if (existing !== undefined && tentativeG >= existing.g) continue;
 

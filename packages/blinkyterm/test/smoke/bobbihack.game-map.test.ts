@@ -263,6 +263,242 @@ describe("GameMap.pathfind", () => {
   });
 });
 
+// v2 (Phase 2 of NetHack-aware autopilot): pathfind consumes an
+// optional ClassifiedCell grid and applies danger-weight multipliers
+// to step costs. When the grid is omitted, behavior must be identical
+// to the v1 cost model — the existing tests above exercise that
+// invariant. The tests below exercise the v2 behavior directly.
+describe("GameMap.pathfind (v2 danger-aware costs)", () => {
+  test("classifiedGrid is optional — omitting it does not change paths", () => {
+    // Open 5x3 corridor: @ at (3,5), goal at (8,5). Without the grid
+    // the path is the v1 straight-line. Calling with `undefined` for
+    // both excluded and classifiedGrid must produce the same path
+    // shape.
+    const m = new GameMap();
+    const f = frame([
+      "",
+      "",
+      "",
+      "  ----------",
+      "  |........|",
+      "  |@.......|",
+      "  |........|",
+      "  ----------",
+    ]);
+    m.updateFromFrame(f, status(1, 1), "");
+    const baseline = m.pathfind({ x: 3, y: 5 }, { x: 8, y: 5 });
+    const withUndef = m.pathfind(
+      { x: 3, y: 5 },
+      { x: 8, y: 5 },
+      undefined,
+      undefined,
+    );
+    expect(withUndef).toEqual(baseline);
+    expect(baseline?.length).toBe(5);
+  });
+
+  test("a danger-class monster on the shortest path makes the planner detour", () => {
+    // Two-row corridor: row 5 holds a 'D' (dragon, danger-class) at
+    // (5,5); row 6 is open floor. Without the v2 grid pathfind takes
+    // row 5 (5 steps); with the v2 grid it should detour via row 6.
+    const m = new GameMap();
+    const f = frame([
+      "",
+      "",
+      "",
+      "  ----------",
+      "  |........|",
+      "  |@.......|", // row 5
+      "  |........|", // row 6
+      "  ----------",
+    ]);
+    m.updateFromFrame(f, status(1, 1), "");
+
+    const goal = { x: 8, y: 5 };
+    const start = { x: 3, y: 5 };
+
+    // Build a classified grid where (5,5) hosts a non-pet dragon.
+    const cols = 80;
+    const rows2d: ReadonlyArray<ReadonlyArray<{
+      terrain: null;
+      foreground:
+        | { kind: "monster"; letter: string; class: "dragon"; color: number;
+            pet: boolean; bold: boolean; }
+        | null;
+    }>> = (() => {
+      const g: {
+        terrain: null;
+        foreground:
+          | { kind: "monster"; letter: string; class: "dragon"; color: number;
+              pet: boolean; bold: boolean; }
+          | null;
+      }[][] = [];
+      for (let y = 0; y < 24; y++) {
+        const line: typeof g[number] = new Array(cols);
+        for (let x = 0; x < cols; x++) {
+          line[x] = { terrain: null, foreground: null };
+        }
+        g.push(line);
+      }
+      g[5]![5] = {
+        terrain: null,
+        foreground: {
+          kind: "monster",
+          letter: "D",
+          class: "dragon",
+          color: 7,
+          pet: false,
+          bold: false,
+        },
+      };
+      return g;
+    })();
+
+    const v1 = m.pathfind(start, goal);
+    const v2 = m.pathfind(start, goal, undefined, rows2d as never);
+
+    // The v1 path passes through (5,5) — the shortest line.
+    expect(v1?.some((s) => s.x === 5 && s.y === 5)).toBe(true);
+    // The v2 path avoids (5,5) — detouring via row 6 (or row 4).
+    expect(v2).not.toBeNull();
+    expect(v2!.some((s) => s.x === 5 && s.y === 5)).toBe(false);
+  });
+
+  test("a pet on the path costs nothing — does not detour", () => {
+    // Same shape as above, but the 'd' at (5,5) is the pet.
+    // dangerWeight returns 1.0 for pets, so the planner takes the
+    // shortest line through.
+    const m = new GameMap();
+    const f = frame([
+      "",
+      "",
+      "",
+      "  ----------",
+      "  |........|",
+      "  |@.......|",
+      "  |........|",
+      "  ----------",
+    ]);
+    m.updateFromFrame(f, status(1, 1), "");
+
+    const cols = 80;
+    const grid: { terrain: null; foreground: unknown }[][] = [];
+    for (let y = 0; y < 24; y++) {
+      const line: { terrain: null; foreground: unknown }[] = [];
+      for (let x = 0; x < cols; x++) {
+        line.push({ terrain: null, foreground: null });
+      }
+      grid.push(line);
+    }
+    grid[5]![5] = {
+      terrain: null,
+      foreground: {
+        kind: "monster",
+        letter: "d",
+        class: "dog",
+        color: 7,
+        pet: true,
+        bold: false,
+      },
+    };
+
+    const path = m.pathfind({ x: 3, y: 5 }, { x: 8, y: 5 }, undefined, grid as never);
+    expect(path).not.toBeNull();
+    expect(path!.some((s) => s.x === 5 && s.y === 5)).toBe(true);
+  });
+
+  test("a danger-class monster does NOT block a path when no detour exists", () => {
+    // Single-tile-wide corridor: only one route. Even at 20× cost
+    // the planner must still return the path — the multiplier is
+    // finite, never +∞.
+    const m = new GameMap();
+    const f = frame([
+      "",
+      "",
+      "",
+      "  -----",
+      "  |...|",
+      "  -----",
+    ]);
+    m.updateFromFrame(f, status(1, 1), "");
+
+    const cols = 80;
+    const grid: { terrain: null; foreground: unknown }[][] = [];
+    for (let y = 0; y < 24; y++) {
+      const line: { terrain: null; foreground: unknown }[] = [];
+      for (let x = 0; x < cols; x++) {
+        line.push({ terrain: null, foreground: null });
+      }
+      grid.push(line);
+    }
+    grid[4]![4] = {
+      terrain: null,
+      foreground: {
+        kind: "monster",
+        letter: "D",
+        class: "dragon",
+        color: 7,
+        pet: false,
+        bold: false,
+      },
+    };
+
+    const path = m.pathfind({ x: 3, y: 4 }, { x: 5, y: 4 }, undefined, grid as never);
+    expect(path).not.toBeNull();
+    expect(path!.length).toBe(2);
+  });
+
+  test("excluded set composes with classifiedGrid", () => {
+    // (5,5) is excluded explicitly AND has a hostile in the
+    // classified grid. The exclusion should make pathfind treat
+    // (5,5) as non-walkable; the danger weight is irrelevant on an
+    // excluded tile.
+    const m = new GameMap();
+    const f = frame([
+      "",
+      "",
+      "",
+      "  ----------",
+      "  |........|",
+      "  |@.......|",
+      "  |........|",
+      "  ----------",
+    ]);
+    m.updateFromFrame(f, status(1, 1), "");
+
+    const cols = 80;
+    const grid: { terrain: null; foreground: unknown }[][] = [];
+    for (let y = 0; y < 24; y++) {
+      const line: { terrain: null; foreground: unknown }[] = [];
+      for (let x = 0; x < cols; x++) {
+        line.push({ terrain: null, foreground: null });
+      }
+      grid.push(line);
+    }
+    grid[5]![5] = {
+      terrain: null,
+      foreground: {
+        kind: "monster",
+        letter: "o",
+        class: "orc",
+        color: 7,
+        pet: false,
+        bold: false,
+      },
+    };
+
+    const excluded = new Set<string>(["5,5"]);
+    const path = m.pathfind(
+      { x: 3, y: 5 },
+      { x: 8, y: 5 },
+      excluded,
+      grid as never,
+    );
+    expect(path).not.toBeNull();
+    expect(path!.some((s) => s.x === 5 && s.y === 5)).toBe(false);
+  });
+});
+
 describe("GameMap.renderAscii", () => {
   test("returns terrain glyphs only (no @, monsters, items)", () => {
     const m = new GameMap();
