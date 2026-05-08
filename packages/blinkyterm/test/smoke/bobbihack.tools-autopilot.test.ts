@@ -464,13 +464,20 @@ describe("handleAutopilotTo", () => {
     // joins blockedTiles, replan returns a path through it again, and
     // we bail with `blocked_unreachable`.
     const seedRows = corridorRows(10, 5, 10, 15);
-    // Every "turn" returns the same scene: player still at (10, 5).
-    const stuck: MockTurn[] = Array.from({ length: 5 }, () => ({ rows: seedRows }));
+    // Every "turn" returns the same scene with NetHack's "door is
+    // locked" refusal on the message line.
+    const stuck: MockTurn[] = Array.from({ length: 5 }, () => ({
+      rows: seedRows,
+      message: "The door is locked.",
+    }));
     const { ctx, sentKeys } = mockCtx({ seed: { rows: seedRows }, turns: stuck });
     const out = await handleAutopilotTo({ floor: "D1", x: 15, y: 5 }, ctx);
     // One key sent (the first east attempt), then bail.
     expect(sentKeys.length).toBeLessThanOrEqual(2);
     expect(out).toContain("blocked_unreachable");
+    // The engine's refusal message must surface in the stop reason so
+    // the user can see WHY (rather than a bare reason code).
+    expect(out).toContain("The door is locked.");
   });
 });
 

@@ -33,6 +33,18 @@ import type { TileKind } from "../parsers";
 const DEFAULT_STEP_CAP = 50;
 
 // (dx, dy) → vi-key.
+// Append a NetHack engine message to a stop-reason code so the user
+// sees both the structured reason and the human-readable cause:
+//   "blocked_unreachable: \"The door is locked.\""
+function withMessage(reason: string, message: string): string {
+  if (message.length === 0) return reason;
+  return `${reason}: ${JSON.stringify(message)}`;
+}
+
+function truncate(s: string, max: number): string {
+  return s.length <= max ? s : s.slice(0, max - 1) + "…";
+}
+
 function deltaToViKey(dx: number, dy: number): string | null {
   if (dx === -1 && dy === -1) return "y"; // NW
   if (dx === 0 && dy === -1) return "k";  // N
@@ -169,6 +181,10 @@ export async function handleAutopilotTo(
   // reflects what the map view shows. Without tracking these locally
   // we'd replan and get the same path back, looping forever.
   const blockedTiles = new Set<string>();
+  // The most recent NetHack message captured at a non-movement step.
+  // Surfaced in the stop reason and live progress so the user sees WHY
+  // we got stuck ("The door is locked.") rather than a bare code.
+  let lastBlockMessage = "";
 
   while (stepsTaken < stepCap) {
     if (ctx.signal.aborted) {
@@ -258,18 +274,24 @@ export async function handleAutopilotTo(
     } else {
       // Engine ignored the move (closed door, locked, blocked, hostile
       // adjacent that isn't a `monster_visible` interrupt yet, etc.).
-      // Record the failed target as locally blocked.
+      // Capture NetHack's message so the user sees WHY (e.g. "The door
+      // is locked.") rather than a bare `blocked_unreachable`.
+      const msg = result.message.trim();
+      if (msg.length > 0) {
+        lastBlockMessage = msg;
+        ctx.reportProgress?.(`${stepsTaken}/${stepCap} — ${truncate(msg, 40)}`);
+      }
       blockedTiles.add(`${next.x},${next.y}`);
       path = map.pathfind(playerNow ?? cur, goal);
       if (path === null) {
-        stopReason = "no_path_after_replan";
+        stopReason = withMessage("no_path_after_replan", lastBlockMessage);
         break;
       }
       // If pathfind still routes through a tile we know is blocked at
       // runtime, the goal is effectively unreachable on this floor —
       // keep retrying would just spin. Bail.
       if (path.some((s) => blockedTiles.has(`${s.x},${s.y}`))) {
-        stopReason = "blocked_unreachable";
+        stopReason = withMessage("blocked_unreachable", lastBlockMessage);
         break;
       }
     }
@@ -557,6 +579,10 @@ export async function handleAutopilotExplore(
   let stepsTaken = 0;
   let stopReason: string | null = null;
   let prevDir: readonly [number, number] | null = null;
+  // Most recent NetHack message captured on a non-movement step. Used
+  // as additional context if explore exits via "explored entire known
+  // map" — the message often reveals what stopped progress.
+  let lastExploreBlockMessage = "";
 
   while (stepsTaken < stepCap) {
     if (ctx.signal.aborted) {
@@ -584,7 +610,7 @@ export async function handleAutopilotExplore(
     }
 
     if (stepDir === null) {
-      stopReason = "explored entire known map";
+      stopReason = withMessage("explored entire known map", lastExploreBlockMessage);
       break;
     }
 
@@ -626,11 +652,18 @@ export async function handleAutopilotExplore(
     // diagonal blocked by walls, etc.). Mark the intended target tile
     // as visited so pickAdjacentUnvisited won't pick it again next
     // iteration — otherwise we'd burn the entire stepCap re-trying the
-    // same wall and the player never moves.
+    // same wall and the player never moves. Capture NetHack's message
+    // so the user sees WHY ("Ouch! You bump into a wall.") in the
+    // final stop reason and live progress.
     const movedThisStep =
       playerNow !== null && (playerNow.x !== cur.x || playerNow.y !== cur.y);
     if (!movedThisStep) {
       visited.add(`${cur.x + dx},${cur.y + dy}`);
+      const msg = result.message.trim();
+      if (msg.length > 0) {
+        lastExploreBlockMessage = msg;
+        ctx.reportProgress?.(`${stepsTaken}/${stepCap} — ${truncate(msg, 40)}`);
+      }
     }
 
     const ictx: InterruptContext = {

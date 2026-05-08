@@ -106,16 +106,16 @@ test("tool history word-wraps long entries instead of truncating", () => {
     delta:
       "Heading east through a long corridor that should make this entry word-wrap onto a continuation line so the user can read the whole thing rather than seeing a truncated tail",
   });
-  s = onAgentEvent(s, { kind: "action", move: "autopilot_explore" });
+  s = onAgentEvent(s, { kind: "action", move: "east" });
   s = onTurnEnd(s);
   const out = render(s, "", 1000);
   // The summary truncates at SUMMARY_LEN (60) on the state side, so the
-  // visible tool line is "#1 cellChange → autopilot_explore  \"<60 chars>\"" —
-  // which is well over the 80-ish col width of the tools pane and must
-  // wrap. Look for both the head and a fragment of the summary so we
-  // know neither got truncated away.
+  // visible tool line is "#1 cellChange → east  \"<60 chars>\"" — which
+  // exceeds the 80-ish col width of the tools pane and must wrap. Look
+  // for both the head and a fragment of the summary so we know neither
+  // got truncated away.
   expect(out).toContain("#1");
-  expect(out).toContain("autopilot_explore");
+  expect(out).toContain("→ east");
   expect(out).toContain("Heading east");
 });
 
