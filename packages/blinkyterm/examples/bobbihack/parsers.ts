@@ -1,6 +1,8 @@
 // NetHack 3.6 message-line, status-line, and glyph parsers. Pure functions
 // with no side effects. The conductor + GameMap consume these.
 
+import type { CellStyle } from "libghostty-vt";
+
 export type TileKind =
   | "floor"
   | "corridor"
@@ -253,12 +255,88 @@ const TERRAIN_GLYPHS: Record<string, TileKind> = {
 // charset.
 const TRANSIENT_RE = /^[@a-zA-Z?!()=*$%/"\[\])~]$/u;
 
+/**
+ * @deprecated Use `classifyTerrain(char, style)` for color-aware terrain
+ * classification. `classifyGlyph` is kept as a thin wrapper for backward
+ * compatibility during the v2 migration; it delegates to
+ * `classifyTerrain(char, undefined)` and therefore can't disambiguate
+ * lava-vs-water, tree-vs-corridor-vs-iron-bars.
+ */
 export function classifyGlyph(char: string): TileKind | null {
+  return classifyTerrain(char, undefined);
+}
+
+// CLR_* values from NetHack 5.0/include/color.h, mapped to the basic
+// 16-color palette indices used by libghostty-vt.
+const CLR_RED = 1;
+const CLR_GREEN = 2;
+const CLR_BLUE = 4;
+const CLR_CYAN = 6;
+const CLR_BRIGHT_BLUE = 12;
+
+function fgPaletteIndex(style: CellStyle | undefined): number | null {
+  if (style === undefined) return null;
+  const fg = style.fg;
+  if (fg === undefined) return null;
+  if (Array.isArray(fg)) return null;
+  if (typeof fg === "object" && "palette" in fg) {
+    const idx = fg.palette;
+    if (typeof idx === "number") return idx;
+  }
+  return null;
+}
+
+/**
+ * Color-aware terrain classifier. Disambiguates the overloaded glyphs
+ * NetHack uses for distinct terrains:
+ *
+ *   `}` red → lava, blue/bright_blue → water (default water).
+ *   `#` green → tree, cyan/bright_cyan → iron_bars (default corridor).
+ *
+ * For the `_` altar / iron-chain ambiguity, defaults to altar — iron
+ * chains are rare and the v2 spec accepts the misclassification (see
+ * spec §"Layer 1").
+ *
+ * Pass `undefined` for `style` to fall back to the default of each
+ * overloaded glyph (matches v1 `classifyGlyph` behavior).
+ */
+export function classifyTerrain(
+  char: string,
+  style: CellStyle | undefined,
+): TileKind | null {
   if (char.length !== 1) return null;
+
+  if (char === "}") {
+    const fg = fgPaletteIndex(style);
+    if (fg === CLR_RED) return "lava";
+    return "water";
+  }
+
+  if (char === "#") {
+    const fg = fgPaletteIndex(style);
+    if (fg === CLR_GREEN) return "tree";
+    // CLR_CYAN (6) and bright cyan (14) both indicate iron bars; HI_METAL
+    // resolves to bright cyan in the default palette per
+    // NetHack-5.0/include/color.h.
+    if (fg === CLR_CYAN || fg === 14) {
+      // Iron bars block movement; we fold them into "wall" since v2 has
+      // no dedicated iron_bars TileKind. Conservative — the planner
+      // already refuses to walk walls.
+      return "wall";
+    }
+    return "corridor";
+  }
+
   if (TERRAIN_GLYPHS[char] !== undefined) return TERRAIN_GLYPHS[char];
   if (TRANSIENT_RE.test(char)) return null;
   return null;
 }
+
+// Suppress unused-warning lints for `CLR_BLUE` and `CLR_BRIGHT_BLUE`.
+// The named constants document the palette positions even though we
+// only test for the `red`/`green`/`cyan` variants explicitly.
+void CLR_BLUE;
+void CLR_BRIGHT_BLUE;
 
 // Branch detection from message-line text. Returns the branch label (or
 // branch-with-sublabel for special floors) or null.

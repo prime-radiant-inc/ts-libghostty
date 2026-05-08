@@ -3,10 +3,27 @@ import {
   parseStatusLine,
   parseMessageLine,
   classifyGlyph,
+  classifyTerrain,
   detectBranch,
   detectRogueLevel,
   detectPolymorph,
 } from "../../examples/bobbihack/parsers";
+import type { CellStyle } from "libghostty-vt";
+
+function styleWithFg(palette: number): CellStyle {
+  return {
+    fg: { palette },
+    bold: false,
+    faint: false,
+    italic: false,
+    underline: "none",
+    overline: false,
+    strikethrough: false,
+    blink: false,
+    inverse: false,
+    invisible: false,
+  };
+}
 
 describe("parseStatusLine", () => {
   test("parses standard NetHack 3.6 two-line status", () => {
@@ -163,6 +180,55 @@ describe("classifyGlyph", () => {
 
   test("returns 'unknown' for empty space", () => {
     expect(classifyGlyph(" ")).toBe("unknown");
+  });
+});
+
+describe("classifyTerrain (color-aware)", () => {
+  test("default '}' is water (no style)", () => {
+    expect(classifyTerrain("}", undefined)).toBe("water");
+  });
+
+  test("'}' with red fg is lava", () => {
+    expect(classifyTerrain("}", styleWithFg(1))).toBe("lava");
+  });
+
+  test("'}' with blue fg is water", () => {
+    expect(classifyTerrain("}", styleWithFg(4))).toBe("water");
+  });
+
+  test("'}' with bright-blue fg is water", () => {
+    expect(classifyTerrain("}", styleWithFg(12))).toBe("water");
+  });
+
+  test("default '#' is corridor (no style)", () => {
+    expect(classifyTerrain("#", undefined)).toBe("corridor");
+  });
+
+  test("'#' with green fg is tree", () => {
+    expect(classifyTerrain("#", styleWithFg(2))).toBe("tree");
+  });
+
+  test("'#' with cyan fg is iron-bars (folded into wall)", () => {
+    expect(classifyTerrain("#", styleWithFg(6))).toBe("wall");
+    expect(classifyTerrain("#", styleWithFg(14))).toBe("wall");
+  });
+
+  test("default '_' is altar", () => {
+    expect(classifyTerrain("_", undefined)).toBe("altar");
+  });
+
+  test("non-overloaded terrain glyphs match classifyGlyph", () => {
+    expect(classifyTerrain(".", undefined)).toBe("floor");
+    expect(classifyTerrain("|", undefined)).toBe("wall");
+    expect(classifyTerrain("+", undefined)).toBe("door_closed");
+    expect(classifyTerrain("<", undefined)).toBe("stairs_up");
+    expect(classifyTerrain("^", undefined)).toBe("trap_known");
+  });
+
+  test("transient glyphs return null (terrain layer absent)", () => {
+    expect(classifyTerrain("d", undefined)).toBeNull();
+    expect(classifyTerrain("@", undefined)).toBeNull();
+    expect(classifyTerrain("?", undefined)).toBeNull();
   });
 });
 
