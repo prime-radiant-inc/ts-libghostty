@@ -422,11 +422,37 @@ const TOOL_SCHEMAS: ToolSchema[] = [
   },
 ];
 
-function loadSystemPrompt(): string {
+// Load a system prompt from `prompts/<name>.txt`. The name comes from the
+// `BOBBIHACK_SYSTEM_PROMPT` env var (default: "default"). Each variant is
+// a plain text file in `prompts/`. The conductor logs the prompt's hash
+// per run, so head-to-head variant comparisons can group runs by hash.
+function loadSystemPrompt(): { text: string; name: string } {
+  const requested = process.env.BOBBIHACK_SYSTEM_PROMPT?.trim() || "default";
+  // Allow only [a-zA-Z0-9_-] in the name to avoid path traversal via env.
+  if (!/^[a-zA-Z0-9_-]+$/.test(requested)) {
+    console.error(
+      `[bobbihack] BOBBIHACK_SYSTEM_PROMPT="${requested}" is invalid. Use [a-zA-Z0-9_-]+. Falling back to "default".`,
+    );
+    return loadSystemPromptByName("default");
+  }
+  return loadSystemPromptByName(requested);
+}
+
+function loadSystemPromptByName(name: string): { text: string; name: string } {
+  const path = join(import.meta.dir, "prompts", `${name}.txt`);
   try {
-    return readFileSync(join(import.meta.dir, "system-prompt.txt"), "utf8");
+    return { text: readFileSync(path, "utf8"), name };
   } catch {
-    return "You are an LLM agent playing NetHack. Use the available tools to act.";
+    if (name !== "default") {
+      console.error(
+        `[bobbihack] system prompt "${name}" not found at ${path}; falling back to "default".`,
+      );
+      return loadSystemPromptByName("default");
+    }
+    return {
+      text: "You are an LLM agent playing NetHack. Use the available tools to act.",
+      name: "fallback-inline",
+    };
   }
 }
 
@@ -726,13 +752,16 @@ async function main(): Promise<void> {
   console.log(`[bobbihack] run-id: ${runId}; client: ${label}`);
   console.log(`[bobbihack] artifacts: ${dirs.runDir}`);
 
+  const sys = loadSystemPrompt();
+  console.log(`[bobbihack] system prompt: ${sys.name} (${sys.text.length} chars)`);
+
   try {
     await runConductor({
       client,
       toolCtx: ctx,
       toolHandlers,
       runLog,
-      systemPrompt: loadSystemPrompt(),
+      systemPrompt: sys.text,
       toolSchemas: TOOL_SCHEMAS,
       messagesPath: join(dirs.runDir, "messages.json"),
       model: label,

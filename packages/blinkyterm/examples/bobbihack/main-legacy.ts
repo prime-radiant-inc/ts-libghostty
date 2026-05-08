@@ -199,7 +199,7 @@ function loadSystemPrompt(): string | undefined {
   // it's editable without touching code; missing/unreadable file falls
   // through to the agent's compiled-in default.
   try {
-    return readFileSync(join(import.meta.dir, "system-prompt.txt"), "utf8");
+    return readFileSync(join(import.meta.dir, "prompts", "default.txt"), "utf8");
   } catch {
     return undefined;
   }
