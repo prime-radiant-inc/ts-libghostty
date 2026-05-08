@@ -15,7 +15,7 @@
 // different.
 
 import type { CellStyle } from "libghostty-vt";
-import type { TileKind } from "./parsers";
+import { classifyTerrain, type TileKind } from "./parsers";
 
 // 58 monster classes. Mirrors MONSYM minus INVISIBLE — see header comment.
 // `ghost` corresponds to the ` ` (space) char, which we do not treat as a
@@ -196,4 +196,96 @@ export function colorFromStyle(style: CellStyle | undefined): number {
     return -1;
   }
   return -1;
+}
+
+// Item glyphs per the NetHack default charset. Excludes letters and the
+// monster-special chars claimed by `LETTER_TO_CLASS`. The `[` armor glyph
+// is here; `]` is mimic-def in `LETTER_TO_CLASS` and takes precedence.
+const ITEM_GLYPH_RE = /^[?!()=*$%/"\[]$/u;
+
+// Single-cell classifier. Computes terrain (consulting color for the
+// `}` water-vs-lava and `#` corridor-vs-tree disambiguation) and then
+// the foreground (player/monster/item/unseen-monster/warning).
+//
+// `position` and `playerXY` are consulted only to flag the player's `@`
+// as `kind: 'player'`. Without them, a `@` is classified as a `human`
+// monster (which is the correct semantics for any *other* `@` on screen,
+// e.g. an elf or a shopkeeper).
+//
+// Order of precedence:
+//   1. Terrain glyphs (`.`, `|`, etc.) → terrain set, foreground null.
+//   2. The player's `@` at `playerXY` → foreground 'player'.
+//   3. The 'I' marker → foreground 'unseen-monster'.
+//   4. Digits 1..5 → foreground 'warning'.
+//   5. LETTER_TO_CLASS lookup → foreground 'monster'.
+//   6. Item glyph regex → foreground 'item'.
+//   7. Otherwise foreground null.
+export function classifyCell(
+  text: string,
+  style: CellStyle | undefined,
+  position?: { x: number; y: number },
+  playerXY?: { x: number; y: number } | null,
+): ClassifiedCell {
+  if (text.length !== 1) {
+    return { terrain: null, foreground: null };
+  }
+
+  const terrain = classifyTerrain(text, style);
+
+  // Player's own `@` short-circuits to the player foreground regardless
+  // of what LETTER_TO_CLASS would say.
+  if (
+    text === "@" &&
+    playerXY !== null &&
+    playerXY !== undefined &&
+    position !== undefined &&
+    position.x === playerXY.x &&
+    position.y === playerXY.y
+  ) {
+    return { terrain, foreground: { kind: "player" } };
+  }
+
+  // Unseen-monster marker (NetHack 5.0 MONSYM 35: INVISIBLE).
+  if (text === "I") {
+    return { terrain, foreground: { kind: "unseen-monster" } };
+  }
+
+  // Warning digits 1..5. The Warning extrinsic surfaces a 1-char digit
+  // on a map cell; the digit's tier corresponds to the danger of the
+  // detected creature.
+  if (text >= "1" && text <= "5") {
+    const tier = (text.charCodeAt(0) - "0".charCodeAt(0)) as 1 | 2 | 3 | 4 | 5;
+    return { terrain, foreground: { kind: "warning", tier } };
+  }
+
+  // Monster-class lookup (covers @, &, ', ;, :, ~, ] specials).
+  const klass = LETTER_TO_CLASS[text];
+  if (klass !== undefined) {
+    return {
+      terrain,
+      foreground: {
+        kind: "monster",
+        letter: text,
+        class: klass,
+        color: colorFromStyle(style),
+        pet: style?.inverse === true,
+        bold: style?.bold === true,
+      },
+    };
+  }
+
+  // Item glyphs.
+  if (ITEM_GLYPH_RE.test(text)) {
+    return {
+      terrain,
+      foreground: {
+        kind: "item",
+        letter: text,
+        color: colorFromStyle(style),
+      },
+    };
+  }
+
+  // Plain terrain or unrecognized cell — no foreground.
+  return { terrain, foreground: null };
 }

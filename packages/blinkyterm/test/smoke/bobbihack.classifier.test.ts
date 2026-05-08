@@ -6,6 +6,7 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  classifyCell,
   colorFromStyle,
   LETTER_TO_CLASS,
   type ClassifiedCell,
@@ -116,6 +117,158 @@ describe("colorFromStyle", () => {
 describe("ClassifiedCell type shape", () => {
   test("an empty cell can be constructed", () => {
     const cell: ClassifiedCell = { terrain: null, foreground: null };
+    expect(cell.terrain).toBeNull();
+    expect(cell.foreground).toBeNull();
+  });
+});
+
+describe("classifyCell", () => {
+  test("plain floor returns terrain only", () => {
+    const cell = classifyCell(".", undefined);
+    expect(cell.terrain).toBe("floor");
+    expect(cell.foreground).toBeNull();
+  });
+
+  test("a wall returns terrain only", () => {
+    const cell = classifyCell("|", undefined);
+    expect(cell.terrain).toBe("wall");
+    expect(cell.foreground).toBeNull();
+  });
+
+  test("a closed door returns terrain only", () => {
+    const cell = classifyCell("+", undefined);
+    expect(cell.terrain).toBe("door_closed");
+    expect(cell.foreground).toBeNull();
+  });
+
+  test("'@' without playerXY classifies as a human monster", () => {
+    const cell = classifyCell("@", undefined);
+    expect(cell.foreground?.kind).toBe("monster");
+    if (cell.foreground?.kind === "monster") {
+      expect(cell.foreground.class).toBe("human");
+    }
+  });
+
+  test("'@' AT the player's xy classifies as player", () => {
+    const cell = classifyCell(
+      "@",
+      undefined,
+      { x: 5, y: 10 },
+      { x: 5, y: 10 },
+    );
+    expect(cell.foreground?.kind).toBe("player");
+  });
+
+  test("'@' at a different xy still classifies as a human monster", () => {
+    const cell = classifyCell(
+      "@",
+      undefined,
+      { x: 7, y: 10 },
+      { x: 5, y: 10 },
+    );
+    expect(cell.foreground?.kind).toBe("monster");
+  });
+
+  test("'I' classifies as unseen-monster regardless of style", () => {
+    const cell = classifyCell("I", undefined);
+    expect(cell.foreground?.kind).toBe("unseen-monster");
+    const cellInv = classifyCell("I", defaultStyle({ inverse: true }));
+    expect(cellInv.foreground?.kind).toBe("unseen-monster");
+  });
+
+  test("digits 1..5 classify as warning with the correct tier", () => {
+    for (const [ch, tier] of [
+      ["1", 1],
+      ["2", 2],
+      ["3", 3],
+      ["4", 4],
+      ["5", 5],
+    ] as const) {
+      const cell = classifyCell(ch, undefined);
+      expect(cell.foreground?.kind).toBe("warning");
+      if (cell.foreground?.kind === "warning") {
+        expect(cell.foreground.tier).toBe(tier);
+      }
+    }
+  });
+
+  test("digit 6 is NOT classified as warning (out of 1..5 range)", () => {
+    const cell = classifyCell("6", undefined);
+    expect(cell.foreground).toBeNull();
+  });
+
+  test("'d' inverse-styled classifies as a pet dog", () => {
+    const cell = classifyCell("d", defaultStyle({ inverse: true }));
+    expect(cell.foreground?.kind).toBe("monster");
+    if (cell.foreground?.kind === "monster") {
+      expect(cell.foreground.class).toBe("dog");
+      expect(cell.foreground.pet).toBe(true);
+      expect(cell.foreground.letter).toBe("d");
+    }
+  });
+
+  test("'d' non-inverse classifies as a non-pet dog (jackal etc.)", () => {
+    const cell = classifyCell("d", defaultStyle());
+    expect(cell.foreground?.kind).toBe("monster");
+    if (cell.foreground?.kind === "monster") {
+      expect(cell.foreground.class).toBe("dog");
+      expect(cell.foreground.pet).toBe(false);
+    }
+  });
+
+  test("'D' classifies as dragon, capturing the bold flag and color", () => {
+    const cell = classifyCell(
+      "D",
+      defaultStyle({ bold: true, fg: { palette: 1 } }),
+    );
+    expect(cell.foreground?.kind).toBe("monster");
+    if (cell.foreground?.kind === "monster") {
+      expect(cell.foreground.class).toBe("dragon");
+      expect(cell.foreground.bold).toBe(true);
+      expect(cell.foreground.color).toBe(1);
+    }
+  });
+
+  test("'?' classifies as item (scroll)", () => {
+    const cell = classifyCell("?", undefined);
+    expect(cell.foreground?.kind).toBe("item");
+    if (cell.foreground?.kind === "item") {
+      expect(cell.foreground.letter).toBe("?");
+    }
+  });
+
+  test("'!' classifies as item (potion)", () => {
+    const cell = classifyCell("!", undefined);
+    expect(cell.foreground?.kind).toBe("item");
+  });
+
+  test("'[' classifies as item (armor)", () => {
+    const cell = classifyCell("[", undefined);
+    expect(cell.foreground?.kind).toBe("item");
+  });
+
+  test("']' classifies as monster (mimic-def), NOT item", () => {
+    const cell = classifyCell("]", undefined);
+    expect(cell.foreground?.kind).toBe("monster");
+    if (cell.foreground?.kind === "monster") {
+      expect(cell.foreground.class).toBe("mimic-def");
+    }
+  });
+
+  test("color-disambiguated '}' — red is lava (terrain set), no foreground", () => {
+    const cell = classifyCell("}", defaultStyle({ fg: { palette: 1 } }));
+    expect(cell.terrain).toBe("lava");
+    expect(cell.foreground).toBeNull();
+  });
+
+  test("color-disambiguated '}' — blue is water", () => {
+    const cell = classifyCell("}", defaultStyle({ fg: { palette: 4 } }));
+    expect(cell.terrain).toBe("water");
+    expect(cell.foreground).toBeNull();
+  });
+
+  test("multi-character text returns the empty cell", () => {
+    const cell = classifyCell("ab", undefined);
     expect(cell.terrain).toBeNull();
     expect(cell.foreground).toBeNull();
   });
