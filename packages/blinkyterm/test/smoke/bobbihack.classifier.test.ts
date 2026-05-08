@@ -6,13 +6,44 @@
 
 import { describe, expect, test } from "bun:test";
 import {
+  buildClassifiedGrid,
   classifyCell,
   colorFromStyle,
   LETTER_TO_CLASS,
   type ClassifiedCell,
   type MonsterClass,
 } from "../../examples/bobbihack/cell-classifier";
-import type { CellStyle } from "libghostty-vt";
+import type { CellInfo, CellStyle } from "libghostty-vt";
+import type { FrameSnapshot } from "../../src/types";
+
+// Build a minimal stub `FrameSnapshot` from a cell map. Only `cellAt` is
+// exercised by `buildClassifiedGrid`.
+function stubSnapshot(cells: Map<string, CellInfo>): FrameSnapshot {
+  return {
+    text: "",
+    title: "",
+    cursor: { x: 0, y: 0, visible: true },
+    bellsSinceLast: 0,
+    titleChangesSinceLast: [],
+    toAnsi: () => "",
+    toHtml: () => "",
+    toVt: () => "",
+    cellAt(x: number, y: number) {
+      return cells.get(`${x},${y}`) ?? null;
+    },
+  };
+}
+
+function cellInfo(text: string, style?: CellStyle): CellInfo {
+  const out: CellInfo = {
+    text,
+    wide: false,
+    isWideContinuation: false,
+    protected: false,
+    ...(style !== undefined ? { style } : {}),
+  };
+  return out;
+}
 
 function defaultStyle(overrides: Partial<CellStyle> = {}): CellStyle {
   return {
@@ -271,5 +302,110 @@ describe("classifyCell", () => {
     const cell = classifyCell("ab", undefined);
     expect(cell.terrain).toBeNull();
     expect(cell.foreground).toBeNull();
+  });
+});
+
+describe("buildClassifiedGrid", () => {
+  // Helper: 24-row map with row 0 = message, rows 1..21 = map, rows 22-23 = status.
+  function makeRows(mapRows: string[]): string[] {
+    const blank80 = " ".repeat(80);
+    const rows: string[] = new Array(24);
+    rows[0] = blank80; // message
+    for (let i = 0; i < 21; i++) {
+      rows[i + 1] = (mapRows[i] ?? blank80).padEnd(80, " ");
+    }
+    rows[22] = blank80; // status row 1
+    rows[23] = blank80; // status row 2
+    return rows;
+  }
+
+  test("returns a row-shaped grid with empty placeholders for non-map rows", () => {
+    const rows = makeRows([]);
+    const snapshot = stubSnapshot(new Map());
+    const grid = buildClassifiedGrid(snapshot, rows, null);
+    expect(grid.length).toBe(24);
+    // Row 0 (message line) is all empties.
+    expect(grid[0]?.length).toBe(80);
+    expect(grid[0]?.[0]).toEqual({ terrain: null, foreground: null });
+    // Rows 22 and 23 (status) likewise.
+    expect(grid[22]?.[5]).toEqual({ terrain: null, foreground: null });
+    expect(grid[23]?.[5]).toEqual({ terrain: null, foreground: null });
+  });
+
+  test("classifies map rows from cellAt style data", () => {
+    const rows = makeRows(["@.d#"]);
+    const cells = new Map<string, CellInfo>();
+    cells.set("0,1", cellInfo("@"));
+    cells.set("1,1", cellInfo("."));
+    cells.set("2,1", cellInfo("d", defaultStyle({ inverse: true })));
+    cells.set("3,1", cellInfo("#"));
+    const snapshot = stubSnapshot(cells);
+    const grid = buildClassifiedGrid(snapshot, rows, { x: 0, y: 1 });
+    // Player's @ at (0, 1).
+    expect(grid[1]?.[0]?.foreground?.kind).toBe("player");
+    // Floor at (1, 1).
+    expect(grid[1]?.[1]?.terrain).toBe("floor");
+    // Pet dog at (2, 1).
+    const dogFg = grid[1]?.[2]?.foreground;
+    expect(dogFg?.kind).toBe("monster");
+    if (dogFg?.kind === "monster") {
+      expect(dogFg.class).toBe("dog");
+      expect(dogFg.pet).toBe(true);
+    }
+    // Corridor at (3, 1).
+    expect(grid[1]?.[3]?.terrain).toBe("corridor");
+  });
+
+  test("falls back to row text when cellAt returns null", () => {
+    const rows = makeRows([".d"]);
+    const snapshot = stubSnapshot(new Map());
+    const grid = buildClassifiedGrid(snapshot, rows, null);
+    expect(grid[1]?.[0]?.terrain).toBe("floor");
+    const fg = grid[1]?.[1]?.foreground;
+    expect(fg?.kind).toBe("monster");
+    if (fg?.kind === "monster") {
+      expect(fg.class).toBe("dog");
+      expect(fg.pet).toBe(false);
+    }
+  });
+
+  test("classifies '}' as lava when style has red palette index", () => {
+    const rows = makeRows(["}"]);
+    const cells = new Map<string, CellInfo>();
+    cells.set("0,1", cellInfo("}", defaultStyle({ fg: { palette: 1 } })));
+    const snapshot = stubSnapshot(cells);
+    const grid = buildClassifiedGrid(snapshot, rows, null);
+    expect(grid[1]?.[0]?.terrain).toBe("lava");
+  });
+
+  test("does not throw on a snapshot whose cellAt throws", () => {
+    const rows = makeRows([".d"]);
+    const snapshot = stubSnapshot(new Map());
+    // Replace cellAt to throw.
+    const badSnapshot: FrameSnapshot = {
+      ...snapshot,
+      cellAt: () => {
+        throw new Error("boom");
+      },
+    };
+    expect(() => buildClassifiedGrid(badSnapshot, rows, null)).not.toThrow();
+  });
+
+  test("classifies an 'I' marker", () => {
+    const rows = makeRows(["I"]);
+    const snapshot = stubSnapshot(new Map());
+    const grid = buildClassifiedGrid(snapshot, rows, null);
+    expect(grid[1]?.[0]?.foreground?.kind).toBe("unseen-monster");
+  });
+
+  test("classifies a warning digit '4'", () => {
+    const rows = makeRows(["4"]);
+    const snapshot = stubSnapshot(new Map());
+    const grid = buildClassifiedGrid(snapshot, rows, null);
+    const fg = grid[1]?.[0]?.foreground;
+    expect(fg?.kind).toBe("warning");
+    if (fg?.kind === "warning") {
+      expect(fg.tier).toBe(4);
+    }
   });
 });

@@ -14,7 +14,8 @@
 // (a placeholder for a creature we cannot classify) are categorically
 // different.
 
-import type { CellStyle } from "libghostty-vt";
+import type { CellInfo, CellStyle } from "libghostty-vt";
+import type { FrameSnapshot } from "../../src/types";
 import { classifyTerrain, type TileKind } from "./parsers";
 
 // 58 monster classes. Mirrors MONSYM minus INVISIBLE — see header comment.
@@ -288,4 +289,63 @@ export function classifyCell(
 
   // Plain terrain or unrecognized cell — no foreground.
   return { terrain, foreground: null };
+}
+
+// Map-row guard. NetHack uses row 0 for the message line and the bottom
+// two rows for status. Map cells live on rows 1..rows.length-3 inclusive.
+// Mirrors `interrupts.ts:isMapRow` semantics; duplicated here so the
+// classifier doesn't depend on the interrupts module.
+function isMapRow(y: number, totalRows: number): boolean {
+  return y >= 1 && y <= totalRows - 3;
+}
+
+// Build a 2D grid of `ClassifiedCell` matching the rows array.
+//
+// Rows outside the map region (row 0 message line, last two status rows)
+// are filled with the empty `{ terrain: null, foreground: null }`
+// placeholder so callers can index without bounds checks.
+//
+// The player's `@` at `playerXY` is classified as `kind: 'player'`
+// instead of a human monster.
+//
+// Pure function. The returned arrays are not frozen — same convention as
+// `glyph-class.ts:buildGlyphClass`. Per-cell freeze cost isn't worth it
+// for a per-frame walk.
+export function buildClassifiedGrid(
+  snapshot: FrameSnapshot,
+  rows: ReadonlyArray<string>,
+  playerXY: { x: number; y: number } | null,
+): ReadonlyArray<ReadonlyArray<ClassifiedCell>> {
+  const empty: ClassifiedCell = { terrain: null, foreground: null };
+  const grid: ClassifiedCell[][] = new Array(rows.length);
+  for (let y = 0; y < rows.length; y++) {
+    const row = rows[y]!;
+    const lineLen = row.length;
+    const line: ClassifiedCell[] = new Array(lineLen);
+    if (!isMapRow(y, rows.length)) {
+      for (let x = 0; x < lineLen; x++) line[x] = empty;
+      grid[y] = line;
+      continue;
+    }
+    for (let x = 0; x < lineLen; x++) {
+      const ch = row[x] ?? "";
+      if (ch.length !== 1) {
+        line[x] = empty;
+        continue;
+      }
+      // Read the cell from the snapshot for the actual style. Falls
+      // back to the row character if cellAt misses or throws (a stub
+      // snapshot may not implement cellAt).
+      let cell: CellInfo | null = null;
+      try {
+        cell = snapshot.cellAt(x, y);
+      } catch {
+        cell = null;
+      }
+      const text = cell?.text ?? ch;
+      line[x] = classifyCell(text, cell?.style, { x, y }, playerXY);
+    }
+    grid[y] = line;
+  }
+  return grid;
 }
