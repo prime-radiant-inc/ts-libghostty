@@ -3,9 +3,15 @@
 // co-occurring interrupts in the tool_result summary.
 
 import type { StatusLine } from "./parsers";
+import type { GlyphClass } from "./glyph-class";
 
 export interface InterruptFrame {
   rows: string[];
+  // Parallel grid to `rows` classifying letter/`@` glyphs (see
+  // ./glyph-class.ts). Optional: callers that don't have it default to
+  // an empty grid, which makes `detectHostileAppeared` treat every
+  // letter as hostile (the pre-attribute behavior).
+  glyphClass?: ReadonlyArray<ReadonlyArray<GlyphClass | undefined>>;
   status: StatusLine;
   message: string;
   frameReason?: string;
@@ -40,22 +46,39 @@ const MODAL_PATTERNS = [
   /Pick (up|an? item)/i,
 ];
 
-function detectMonsterAppeared(
-  prevRows: string[] | undefined,
-  curRows: string[],
+// Attribute-aware monster detector. Pets (rendered with `inverse: true` in
+// NetHack 5.0.0 with `hilite_pet` set) are classified as `pet` upstream
+// and skipped here so autopilot doesn't abort on every pet step. Every
+// other tracked glyph (`normal`) is treated as hostile, including
+// peacefuls — NetHack 5.0.0 doesn't expose a hilite for them, so they're
+// indistinguishable from hostiles in this revision (known limitation,
+// see the design doc's "Risks and fallbacks" #3).
+//
+// The interrupt is still named `monster_visible` for log/test schema
+// stability; the meaning has tightened from "any letter glyph appeared"
+// to "a hostile-or-unclassifiable letter glyph appeared."
+function detectHostileAppeared(
+  prev: InterruptFrame | undefined,
+  cur: InterruptFrame,
 ): string | false {
-  if (prevRows === undefined) return false;
-  for (let y = 0; y < curRows.length; y++) {
-    const cur = curRows[y]!;
-    const prev = prevRows[y] ?? "";
-    for (let x = 0; x < cur.length; x++) {
-      const ch = cur[x]!;
-      // Letter glyphs (other than @) are monsters in default NetHack charset.
-      if (/^[a-zA-Z]$/.test(ch) && ch !== "@") {
-        // Was it there in the prev frame at the same position?
-        if (prev[x] !== ch) {
-          return `${ch} at (${x},${y})`;
-        }
+  if (prev === undefined) return false;
+  const curClassGrid = cur.glyphClass ?? [];
+  for (let y = 0; y < cur.rows.length; y++) {
+    const curRow = cur.rows[y]!;
+    const prevRow = prev.rows[y] ?? "";
+    const curClassRow = curClassGrid[y] ?? [];
+    for (let x = 0; x < curRow.length; x++) {
+      const ch = curRow[x]!;
+      // Only letters (other than @) trigger this interrupt — same shape
+      // as the original detector. The class lookup determines hostility.
+      if (!/^[a-zA-Z]$/.test(ch) || ch === "@") continue;
+      const klass = curClassRow[x];
+      if (klass === "pet") continue;
+      // klass === "normal" (or undefined when the caller didn't supply a
+      // grid — fall through to the pre-attribute "treat as hostile"
+      // behavior, which is the safe default).
+      if (prevRow[x] !== ch) {
+        return `${ch} at (${x},${y})`;
       }
     }
   }
@@ -171,9 +194,14 @@ export const INTERRUPTS: Interrupt[] = [
       /Your .* misses you/i.test(c.cur.message),
   },
   {
+    // Fires when a hostile-or-unclassifiable letter glyph appears in the
+    // current frame at a position it didn't occupy in the previous
+    // frame. Pets (classified upstream via `style.inverse === true`) are
+    // skipped. Peacefuls are not distinguishable in NetHack 5.0.0 and
+    // also trip this interrupt — known limitation.
     name: "monster_visible",
     priority: 240,
-    detect: (c) => detectMonsterAppeared(c.prev?.rows, c.cur.rows),
+    detect: (c) => detectHostileAppeared(c.prev, c.cur),
   },
 
   // 300-399: status effect onsets

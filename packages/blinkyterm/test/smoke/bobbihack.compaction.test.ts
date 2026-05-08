@@ -623,6 +623,7 @@ describe("conductor integration — compaction wired end-to-end", () => {
         const rows = Array.from({ length: 24 }, () => " ".repeat(80));
         return {
           rows,
+          glyphClass: rows.map(() => []),
           status: statusLine,
           message: "",
           frameReason: "cellChange",

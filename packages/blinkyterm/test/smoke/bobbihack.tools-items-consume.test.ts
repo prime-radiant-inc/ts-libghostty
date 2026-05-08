@@ -44,6 +44,7 @@ function mockCtx(): { ctx: ToolContext; sentKeys: string[] } {
       const rows = Array.from({ length: 24 }, () => " ".repeat(80));
       return {
         rows,
+        glyphClass: rows.map(() => []),
         status: status(),
         message: "",
         frameReason: "cellChange",

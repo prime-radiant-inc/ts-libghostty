@@ -157,6 +157,7 @@ describe("handleInventory", () => {
           frame?.rows ?? Array.from({ length: 24 }, () => " ".repeat(80));
         return {
           rows,
+          glyphClass: rows.map(() => []),
           status: status(),
           message: frame?.message ?? "",
           frameReason: "cellChange",

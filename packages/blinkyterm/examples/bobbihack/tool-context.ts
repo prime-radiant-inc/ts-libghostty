@@ -4,6 +4,7 @@
 
 import type { GameMap } from "./game-map";
 import type { StatusLine } from "./parsers";
+import type { GlyphClass } from "./glyph-class";
 
 export interface RunState {
   gameOver: boolean;
@@ -12,6 +13,12 @@ export interface RunState {
 
 export interface FrameAwaitResult {
   rows: string[];
+  // Parallel grid to `rows`: `glyphClass[y][x]` classifies the letter or
+  // `@` glyph at (x, y), or `undefined` if `rows[y][x]` is not a tracked
+  // glyph (terrain, items, cursor) or is the player's own `@`. Used by
+  // the autopilot interrupt detector to ignore pet movement. See
+  // ./glyph-class.ts for the classifier.
+  glyphClass: ReadonlyArray<ReadonlyArray<GlyphClass | undefined>>;
   status: StatusLine;
   message: string;
   frameReason: string;

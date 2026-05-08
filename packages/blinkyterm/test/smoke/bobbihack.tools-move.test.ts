@@ -61,7 +61,14 @@ function mockCtx(turns: MockTurn[]): { ctx: ToolContext; sentKeys: string[] } {
       const screenAnsi = rows.join("\n");
       // Update map (this mirrors what the real ctx would do).
       map.updateFromFrame(rows, s, message);
-      return { rows, status: s, message, frameReason, screenAnsi };
+      return {
+        rows,
+        glyphClass: rows.map(() => []),
+        status: s,
+        message,
+        frameReason,
+        screenAnsi,
+      };
     },
   };
   return { ctx, sentKeys };

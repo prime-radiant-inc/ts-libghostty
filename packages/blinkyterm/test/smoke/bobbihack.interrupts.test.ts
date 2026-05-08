@@ -177,6 +177,19 @@ describe("hunger_transition", () => {
 describe("monster_visible", () => {
   const detect = INTERRUPTS.find((i) => i.name === "monster_visible")!.detect;
 
+  // Build a glyphClass grid the same shape as `rows`, with `cls` applied
+  // at (x, y). Other cells are undefined (-> "treat as hostile" fallback).
+  function gridWith(
+    rows: string[],
+    marks: { x: number; y: number; cls: "pet" | "normal" }[],
+  ): ReadonlyArray<ReadonlyArray<"pet" | "normal" | undefined>> {
+    const grid: ("pet" | "normal" | undefined)[][] = rows.map((r) =>
+      new Array(r.length).fill(undefined),
+    );
+    for (const m of marks) grid[m.y]![m.x] = m.cls;
+    return grid;
+  }
+
   test("fires when a letter glyph appears in current frame that wasn't in prev", () => {
     const prevRows = Array.from({ length: 24 }, () => " ".repeat(80));
     prevRows[5] = "  ----- ".padEnd(80, " ");
@@ -195,6 +208,85 @@ describe("monster_visible", () => {
 
   test("does not fire when no letter glyphs", () => {
     expect(detect(ctx())).toBe(false);
+  });
+
+  test("does NOT fire when only pet glyphs moved (pet ignored)", () => {
+    // Prev: pet 'd' at (5, 6). Cur: pet 'd' at (6, 6) (one tile east).
+    const blank = Array.from({ length: 24 }, () => " ".repeat(80));
+    const prevRows = [...blank];
+    prevRows[6] = "     d".padEnd(80, " ");
+    const curRows = [...blank];
+    curRows[6] = "      d".padEnd(80, " ");
+    const result = detect(
+      ctx({
+        prev: {
+          rows: prevRows,
+          status: status(),
+          message: "",
+          glyphClass: gridWith(prevRows, [{ x: 5, y: 6, cls: "pet" }]),
+        },
+        cur: {
+          ...ctx().cur,
+          rows: curRows,
+          glyphClass: gridWith(curRows, [{ x: 6, y: 6, cls: "pet" }]),
+        },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+
+  test("DOES fire when a `normal` glyph appears at a new position", () => {
+    const blank = Array.from({ length: 24 }, () => " ".repeat(80));
+    const prevRows = [...blank];
+    const curRows = [...blank];
+    curRows[6] = "     k".padEnd(80, " "); // kobold appeared
+    const result = detect(
+      ctx({
+        prev: {
+          rows: prevRows,
+          status: status(),
+          message: "",
+          glyphClass: gridWith(prevRows, []),
+        },
+        cur: {
+          ...ctx().cur,
+          rows: curRows,
+          glyphClass: gridWith(curRows, [{ x: 5, y: 6, cls: "normal" }]),
+        },
+      }),
+    );
+    expect(result).toBeTruthy();
+  });
+
+  test("DOES fire on a hostile in a frame that also moved a pet (mixed scene)", () => {
+    // Prev: pet at (5, 6), no hostile.
+    // Cur:  pet at (6, 6), kobold at (10, 6).
+    const blank = Array.from({ length: 24 }, () => " ".repeat(80));
+    const prevRows = [...blank];
+    prevRows[6] = "     d    ".padEnd(80, " ");
+    const curRows = [...blank];
+    curRows[6] = "      d   k".padEnd(80, " ");
+    const result = detect(
+      ctx({
+        prev: {
+          rows: prevRows,
+          status: status(),
+          message: "",
+          glyphClass: gridWith(prevRows, [{ x: 5, y: 6, cls: "pet" }]),
+        },
+        cur: {
+          ...ctx().cur,
+          rows: curRows,
+          glyphClass: gridWith(curRows, [
+            { x: 6, y: 6, cls: "pet" },
+            { x: 10, y: 6, cls: "normal" },
+          ]),
+        },
+      }),
+    );
+    expect(result).toBeTruthy();
+    // detail names the kobold, not the pet.
+    expect(typeof result === "string" ? result : "").toContain("k at (10,6)");
   });
 });
 

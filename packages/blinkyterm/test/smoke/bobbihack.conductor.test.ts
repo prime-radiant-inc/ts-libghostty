@@ -71,6 +71,7 @@ function setup(plan: ScriptedTurn[]): {
       const s = status({ turn: calls.length + 1 });
       return {
         rows,
+        glyphClass: rows.map(() => []),
         status: s,
         message: "",
         frameReason: "cellChange",

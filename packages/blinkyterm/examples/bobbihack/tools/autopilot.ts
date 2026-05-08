@@ -53,6 +53,7 @@ function errJson(error: string): string {
 function frameFromResult(r: FrameAwaitResult): InterruptFrame & { frameReason: string } {
   return {
     rows: r.rows,
+    glyphClass: r.glyphClass,
     status: r.status,
     message: r.message,
     frameReason: r.frameReason,

@@ -59,6 +59,7 @@ import { handleQueryTerrain } from "./tools/query";
 import { handleAutopilotTo, handleAutopilotExplore } from "./tools/autopilot";
 import { RunLog } from "./observability";
 import type { ToolContext, RunState } from "./tool-context";
+import { buildGlyphClass } from "./glyph-class";
 import {
   initialState,
   onAgentEvent,
@@ -587,6 +588,7 @@ async function main(): Promise<void> {
         const blank = Array.from({ length: 24 }, () => " ".repeat(80));
         return {
           rows: blank,
+          glyphClass: blank.map(() => []),
           status: parseStatusLine("", ""),
           message: "",
           frameReason: "exited" as const,
@@ -611,7 +613,11 @@ async function main(): Promise<void> {
         runState.endReason = "runner_exited";
         requestPaint();
       }
-      return { rows, status, message, frameReason: frame.reason, screenAnsi };
+      // Classify glyphs for the autopilot interrupt detector. Uses the
+      // post-frame player position from `map` (just updated above) so the
+      // player's own `@` doesn't get classified.
+      const glyphClass = buildGlyphClass(frame.snapshot, rows, map.currentPlayerXY);
+      return { rows, glyphClass, status, message, frameReason: frame.reason, screenAnsi };
     },
   };
 

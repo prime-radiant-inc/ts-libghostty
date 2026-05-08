@@ -109,7 +109,12 @@ function mockCtx(opts: MockOpts): {
       if (opts.abortAfter !== undefined && stepIdx >= opts.abortAfter) {
         ac.abort();
       }
-      return { rows: turn.rows, status: s, message, frameReason, screenAnsi };
+      // Mock has no real cells — supply an empty per-row glyphClass grid.
+      // The detector falls back to its pre-attribute "treat as hostile"
+      // behavior when class is undefined, which is what these tests
+      // expect (kobolds-as-hostile etc.).
+      const glyphClass = turn.rows.map(() => [] as (undefined)[]);
+      return { rows: turn.rows, glyphClass, status: s, message, frameReason, screenAnsi };
     },
   };
   return { ctx, sentKeys, map };
