@@ -222,7 +222,12 @@ export class GameMap {
     this.currentPlayerXY = playerXY;
   }
 
-  pathfind(from: Step, to: Step): Step[] | null {
+  // Optional `excluded` is a set of "x,y" tile keys to treat as
+  // non-walkable for this call only — used by autopilot_to to feed
+  // back tiles the engine refused at runtime (locked doors, peaceful
+  // blockers, terrain we misclassified) so a replan routes around
+  // rather than re-attempting the same path.
+  pathfind(from: Step, to: Step, excluded?: ReadonlySet<string>): Step[] | null {
     if (this.current === null) return null;
     const floor = this.floors.get(this.current);
     if (floor === undefined) return null;
@@ -233,6 +238,7 @@ export class GameMap {
     const goalTile = floor.tiles.get(goal);
     if (goalTile === undefined) return null;
     if (goalTile.walkable === "no") return null;
+    if (excluded?.has(goal)) return null;
 
     // 8-connectivity A*. Simple priority-queue-as-sorted-array; grids are
     // small (80x24) so this is fine.
@@ -293,6 +299,7 @@ export class GameMap {
         const ny = bestNode.y + dy!;
         const nKey = TILE_KEY(nx, ny);
         if (closed.has(nKey)) continue;
+        if (excluded?.has(nKey)) continue;
 
         const tile = floor.tiles.get(nKey);
         if (tile === undefined) continue;

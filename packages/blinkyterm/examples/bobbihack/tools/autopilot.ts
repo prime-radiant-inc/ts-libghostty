@@ -202,9 +202,9 @@ export async function handleAutopilotTo(
 
     // If the path is empty or its first step doesn't begin from cur, replan.
     if (path === null || path.length === 0) {
-      path = map.pathfind(cur, goal);
+      path = map.pathfind(cur, goal, blockedTiles);
       if (path === null || path.length === 0) {
-        stopReason = "no_path_after_replan";
+        stopReason = withMessage("no_path_after_replan", lastBlockMessage);
         break;
       }
     }
@@ -224,9 +224,9 @@ export async function handleAutopilotTo(
     const key = deltaToViKey(dx, dy);
     if (key === null) {
       // Path step is non-adjacent → corruption; replan.
-      path = map.pathfind(cur, goal);
+      path = map.pathfind(cur, goal, blockedTiles);
       if (path === null || path.length === 0) {
-        stopReason = "no_path_after_replan";
+        stopReason = withMessage("no_path_after_replan", lastBlockMessage);
         break;
       }
       continue;
@@ -282,15 +282,13 @@ export async function handleAutopilotTo(
         ctx.reportProgress?.(`${stepsTaken}/${stepCap} — ${truncate(msg, 40)}`);
       }
       blockedTiles.add(`${next.x},${next.y}`);
-      path = map.pathfind(playerNow ?? cur, goal);
+      // Replan excluding every tile we know the engine refused this
+      // run. If a detour exists, pathfind finds it; if the only
+      // viable route went through the blocked tile, pathfind returns
+      // null and we surface no_path_after_replan with the engine's
+      // message ("The door is locked.", etc.).
+      path = map.pathfind(playerNow ?? cur, goal, blockedTiles);
       if (path === null) {
-        stopReason = withMessage("no_path_after_replan", lastBlockMessage);
-        break;
-      }
-      // If pathfind still routes through a tile we know is blocked at
-      // runtime, the goal is effectively unreachable on this floor —
-      // keep retrying would just spin. Bail.
-      if (path.some((s) => blockedTiles.has(`${s.x},${s.y}`))) {
         stopReason = withMessage("blocked_unreachable", lastBlockMessage);
         break;
       }

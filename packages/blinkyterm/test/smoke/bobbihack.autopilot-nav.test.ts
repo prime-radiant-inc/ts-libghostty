@@ -472,35 +472,35 @@ describe("autopilot_to navigation", () => {
     expect(r.finalPos).toEqual(fx.goal!);
   });
 
-  test("REGRESSION: locked door bails with blocked_unreachable + engine message", async () => {
-    // The "autopilot_to wall-bumping" bug from 2026-05-08. Pathfind
-    // sees the closed door as walkable; engine refuses. Without the
-    // blockedTiles set, autopilot would loop forever sending 'l'.
+  test("REGRESSION: locked-door-only-route bails with blocked_unreachable + engine message", async () => {
+    // The "autopilot_to wall-bumping" bug from 2026-05-08. Wall
+    // separates @ from goal; the locked door is the only opening.
+    // Without per-call exclusion, autopilot would replan and get
+    // the same path back forever; with it, replan returns null and
+    // we surface blocked_unreachable with the engine's message.
     const fx = parseFixture({
       map: `
 --------
-|......|
+|...|..|
+|...|..|
 |@..+.*|
+|...|..|
 --------`,
-      lockedDoors: [[4, 2]],
+      lockedDoors: [[4, 3]],
     });
     const r = await runAutopilotTo(fx, null, { stepCap: 50 });
     expect(r.stopReason).toContain("blocked_unreachable");
     expect(r.stopReason).toContain("The door is locked.");
-    // Bails FAST — not the full stepCap.
+    // Bails FAST — a few approach steps + one bump, not the cap.
     expect(r.steps).toBeLessThan(15);
     expect(r.finalPos.x).toBeLessThan(fx.goal!.x);
   });
 
-  test("locked door on shorter path — autopilot bails (documents A* behavior)", async () => {
+  test("locked door with a detour — autopilot replans around and arrives", async () => {
     // Two corridors converging on the goal. East path through a
-    // locked door is shorter (3 tiles); north detour is longer.
-    // A* doesn't know the door is locked, so it picks the short
-    // path. Engine refuses → blocked_unreachable.
-    //
-    // This test DOCUMENTS current behavior. If autopilot ever
-    // learns to detour around runtime-blocked tiles by feeding
-    // blockedTiles into pathfind, flip this assertion.
+    // locked door is shorter (3 tiles); the row-1 detour is longer.
+    // After the first bump, autopilot excludes the door from
+    // pathfind and routes via the alternate path. End: arrives.
     const fx = parseFixture({
       map: `
 ----------
@@ -511,7 +511,11 @@ describe("autopilot_to navigation", () => {
       lockedDoors: [[3, 2]],
     });
     const r = await runAutopilotTo(fx, null, { stepCap: 50 });
-    expect(r.stopReason).toContain("blocked_unreachable");
+    expect(r.stopReason).toBe("arrived");
+    expect(r.finalPos).toEqual(fx.goal!);
+    // The agent should have bumped the door at most once and then
+    // detoured. Total steps is bounded by detour length + bump.
+    expect(r.steps).toBeLessThan(15);
   });
 
   test("returns 'no path' when goal is fully walled off", async () => {

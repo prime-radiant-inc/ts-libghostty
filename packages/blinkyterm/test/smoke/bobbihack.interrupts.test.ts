@@ -420,3 +420,58 @@ describe("runInterruptChecks", () => {
     expect(result.primary?.detail).toBeDefined();
   });
 });
+
+describe("engulfed", () => {
+  // Build a 24-row buffer with a 3x3 glyph block painted at (cx, cy).
+  // The block is given as a 3-line string ("/-\\\n|@|\n\\-/").
+  function rowsWithBlock(cx: number, cy: number, block: string): string[] {
+    const lines = block.split("\n");
+    const rows = Array.from({ length: 24 }, () =>
+      Array.from({ length: 80 }, () => " "),
+    );
+    for (let dy = 0; dy < lines.length; dy++) {
+      const line = lines[dy]!;
+      for (let dx = 0; dx < line.length; dx++) {
+        rows[cy - 1 + dy]![cx - 1 + dx] = line[dx]!;
+      }
+    }
+    return rows.map((r) => r.join(""));
+  }
+
+  const detect = INTERRUPTS.find((i) => i.name === "engulfed")!.detect;
+
+  test("fires on the canonical /-\\ | @ | \\-/ swallower rendering", () => {
+    const rows = rowsWithBlock(10, 10, "/-\\\n|@|\n\\-/");
+    expect(detect(ctx({ cur: { ...ctx().cur, rows } }))).toBe(true);
+  });
+
+  test("does NOT fire on plain dungeon walls (regression for false-fire)", () => {
+    // The shape that bit production runs on 2026-05-08: @ in a
+    // small room with `-` walls top/bottom, `|` walls left/right.
+    // Old heuristic matched corner '-' glyphs as engulfer corners.
+    const rows = rowsWithBlock(10, 10, "---\n|@|\n---");
+    expect(detect(ctx({ cur: { ...ctx().cur, rows } }))).toBe(false);
+  });
+
+  test("does NOT fire when @ is adjacent to a wall but not boxed", () => {
+    // Very common: player walking along a corridor edge.
+    const rows = rowsWithBlock(10, 10, "---\n.@.\n...");
+    expect(detect(ctx({ cur: { ...ctx().cur, rows } }))).toBe(false);
+  });
+
+  test("does NOT fire on partial slash patterns (3 of 4 corners)", () => {
+    // If only some slashes are present (e.g. mixed terrain), the
+    // tightened heuristic must reject — the rendering is all-or-
+    // nothing in real NetHack.
+    const rows = rowsWithBlock(10, 10, "/-\\\n|@|\n---"); // bottom corners are dashes
+    expect(detect(ctx({ cur: { ...ctx().cur, rows } }))).toBe(false);
+  });
+
+  test("does NOT fire when @ is in the first or last row (no above/below)", () => {
+    // Edge case: @ at y=0 or y=23 has no above/below row — must
+    // safely return false rather than read undefined.
+    const rows = Array.from({ length: 24 }, () => " ".repeat(80));
+    rows[0] = "         @          ".padEnd(80, " ");
+    expect(detect(ctx({ cur: { ...ctx().cur, rows } }))).toBe(false);
+  });
+});

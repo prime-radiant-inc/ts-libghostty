@@ -118,25 +118,36 @@ function detectNewItem(
 }
 
 function detectEngulfed(curRows: string[]): boolean {
-  // Heuristic: the player @ appears in the center surrounded by walls of an
-  // engulfer. We approximate by checking for "/-\\" / "|@|" / "\\-/" patterns
-  // — not exhaustive, but matches NetHack's engulfer rendering.
-  // Find @.
-  for (let y = 0; y < curRows.length; y++) {
-    const idx = curRows[y]!.indexOf("@");
-    if (idx < 0) continue;
-    // Check tiles around for engulfer-like glyphs (the inside of a swallower
-    // is rendered with characters specific to the monster — e.g. 'D' for
-    // dragon swallow, 'P' for purple worm. Detection is approximate.
-    if (y > 0 && y < curRows.length - 1) {
-      const above = curRows[y - 1]!;
-      const below = curRows[y + 1]!;
-      // Look for wall-like pattern surrounding the @.
-      const hasWalls =
-        (above[idx - 1] === "/" || above[idx - 1] === "-") &&
-        (above[idx] === "-" || above[idx] === "@") &&
-        (below[idx - 1] === "\\" || below[idx - 1] === "-");
-      if (hasWalls) return true;
+  // NetHack renders engulfers with a unique 3x3 box of slashes and
+  // dashes around the swallowed player:
+  //
+  //     /-\
+  //     |@|
+  //     \-/
+  //
+  // The diagnostic glyphs are the slashes — '/' and '\\' do not
+  // appear in plain dungeon wall rendering, so requiring them in
+  // all four corners cleanly rejects regular `--/||` walls (which
+  // an earlier looser heuristic was matching, false-firing on any
+  // @ adjacent to a top/bottom wall — confirmed in production
+  // run logs from 2026-05-08).
+  for (let y = 1; y < curRows.length - 1; y++) {
+    const cur = curRows[y]!;
+    const idx = cur.indexOf("@");
+    if (idx <= 0 || idx >= cur.length - 1) continue;
+    const above = curRows[y - 1]!;
+    const below = curRows[y + 1]!;
+    if (
+      above[idx - 1] === "/" &&
+      above[idx] === "-" &&
+      above[idx + 1] === "\\" &&
+      cur[idx - 1] === "|" &&
+      cur[idx + 1] === "|" &&
+      below[idx - 1] === "\\" &&
+      below[idx] === "-" &&
+      below[idx + 1] === "/"
+    ) {
+      return true;
     }
   }
   return false;
