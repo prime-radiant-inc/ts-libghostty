@@ -421,6 +421,31 @@ describe("runInterruptChecks", () => {
   });
 });
 
+describe("modal_prompt", () => {
+  const detect = INTERRUPTS.find((i) => i.name === "modal_prompt")!.detect;
+
+  test("returns the message text as detail (not a bare true)", () => {
+    // Production run bbh-20260508-201818-5c1ab1 returned a bare
+    // "modal_prompt" stop reason; the user had to look at the
+    // screen to know what was being prompted. Detail-as-text fixes
+    // that.
+    const c = ctx({
+      cur: { ...ctx().cur, message: "Really quit without saving? [yn] (n)" },
+    });
+    expect(detect(c)).toBe("Really quit without saving? [yn] (n)");
+  });
+
+  test("--More-- pages return their message as detail too", () => {
+    const c = ctx({ cur: { ...ctx().cur, message: "You hit the kobold.--More--" } });
+    expect(detect(c)).toBe("You hit the kobold.--More--");
+  });
+
+  test("returns false when no modal pattern matches", () => {
+    const c = ctx({ cur: { ...ctx().cur, message: "You walk east." } });
+    expect(detect(c)).toBe(false);
+  });
+});
+
 describe("engulfed", () => {
   // Build a 24-row buffer with a 3x3 glyph block painted at (cx, cy).
   // The block is given as a 3-line string ("/-\\\n|@|\n\\-/").

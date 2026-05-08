@@ -177,8 +177,17 @@ export const INTERRUPTS: Interrupt[] = [
     name: "modal_prompt",
     priority: 100,
     detect: (c) => {
+      // Return the message text on hit so the autopilot's stop
+      // reason includes WHICH modal fired ("Really quit without
+      // saving? [yn]" rather than a bare "modal_prompt"). Without
+      // the detail the agent had to inspect the screen to figure
+      // out what to dismiss; with it, the tool-history line is
+      // self-explanatory.
       for (const re of MODAL_PATTERNS) {
-        if (re.test(c.cur.message)) return true;
+        if (re.test(c.cur.message)) {
+          const trimmed = c.cur.message.trim();
+          return trimmed.length > 0 ? trimmed : true;
+        }
       }
       return false;
     },

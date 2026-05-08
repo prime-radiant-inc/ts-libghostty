@@ -237,6 +237,17 @@ export async function handleAutopilotTo(
     stepsTaken += 1;
     ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
 
+    // Re-check abort AFTER the frame too. If the user hit Ctrl+C
+    // mid-step, SIGINT propagated to NetHack via the PTY group and
+    // NetHack now shows "Really quit without saving? [yn]" — which
+    // would otherwise win the priority race against the next
+    // top-of-loop signal check, returning `modal_prompt` to the
+    // agent when the real reason is `abort_signal`.
+    if (ctx.signal.aborted) {
+      stopReason = "abort_signal";
+      break;
+    }
+
     if (ctx.runState.gameOver) {
       stopReason = ctx.runState.endReason ?? "runner_exited";
       break;
@@ -631,6 +642,12 @@ export async function handleAutopilotExplore(
     lastResult = result;
     stepsTaken += 1;
     ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
+
+    // Re-check abort AFTER the frame; see handleAutopilotTo for why.
+    if (ctx.signal.aborted) {
+      stopReason = "abort_signal";
+      break;
+    }
 
     if (ctx.runState.gameOver) {
       stopReason = ctx.runState.endReason ?? "runner_exited";

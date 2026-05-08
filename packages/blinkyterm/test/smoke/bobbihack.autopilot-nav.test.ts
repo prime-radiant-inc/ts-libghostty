@@ -561,6 +561,43 @@ describe("autopilot_to navigation", () => {
     expect(r.toolResult).toContain("abort_signal");
   });
 
+  test("REGRESSION: abort_signal wins over modal_prompt set by SIGINT", async () => {
+    // Production run bbh-20260508-201818-5c1ab1: user Ctrl+C'd
+    // mid-autopilot, SIGINT propagated to NetHack via the PTY,
+    // NetHack showed "Really quit without saving? [yn]", and the
+    // autopilot reported `stopped: modal_prompt` — confusing,
+    // because the real cause was the user. With abort-after-frame,
+    // abort_signal wins.
+    //
+    // Simulated by having abortAfter=1 and a fake engine that
+    // injects a quit-modal on the next frame (the message field).
+    const fx = parseFixture({
+      map: `
+--------
+|......|
+|@....*|
+--------`,
+    });
+    const { ctx, sentKeys, ac } = makeContext(fx);
+    // Patch sendKeysAndWait: after the first call, abort + return
+    // a frame whose message would otherwise trigger modal_prompt.
+    const orig = ctx.sendKeysAndWait;
+    let n = 0;
+    ctx.sendKeysAndWait = async (k) => {
+      const r = await orig(k);
+      n += 1;
+      if (n === 1) {
+        ac.abort();
+        return { ...r, message: "Really quit without saving? [yn] (n)" };
+      }
+      return r;
+    };
+    const out = await handleAutopilotTo({ floor: "D1", x: fx.goal!.x, y: fx.goal!.y, stepCap: 50 }, ctx);
+    expect(out).toContain("abort_signal");
+    expect(out).not.toContain("modal_prompt");
+    expect(sentKeys.length).toBe(1);
+  });
+
   test("zero-distance goal returns 'arrived after 0 steps'", async () => {
     const fx = parseFixture({
       map: `
