@@ -213,6 +213,7 @@ export async function handleAutopilotTo(
     const result = await ctx.sendKeysAndWait(key);
     lastResult = result;
     stepsTaken += 1;
+    ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
 
     if (ctx.runState.gameOver) {
       stopReason = ctx.runState.endReason ?? "runner_exited";
@@ -589,6 +590,7 @@ export async function handleAutopilotExplore(
     const result = await ctx.sendKeysAndWait(key);
     lastResult = result;
     stepsTaken += 1;
+    ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
 
     if (ctx.runState.gameOver) {
       stopReason = ctx.runState.endReason ?? "runner_exited";

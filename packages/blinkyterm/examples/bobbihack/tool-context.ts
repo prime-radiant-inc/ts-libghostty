@@ -38,4 +38,11 @@ export interface ToolContext {
   // Updates the GameMap as a side effect. The returned status/message/rows
   // are post-keystroke.
   sendKeysAndWait: (keys: string) => Promise<FrameAwaitResult>;
+  // Optional progress reporter. Tools that take many seconds (e.g.
+  // autopilot_explore with a large stepCap) call this after each
+  // internal step; the conductor relays it to the UI as a status-detail
+  // update so the user sees "tool: autopilot_explore (47/150)" instead
+  // of staring at a frozen "tool: autopilot_explore" for 30 seconds.
+  // Tests can omit it; tools should treat it as best-effort.
+  reportProgress?: (detail: string) => void;
 }

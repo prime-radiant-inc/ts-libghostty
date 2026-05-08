@@ -5,6 +5,9 @@ import {
   onChildExited,
   onConductorStatus,
   onResize,
+  onToolPendingClear,
+  onToolPendingProgress,
+  onToolPendingStart,
   onTurnEnd,
   onTurnStart,
 } from "../../examples/bobbihack/state";
@@ -117,6 +120,33 @@ test("toolHistory is newest-LAST and bounded by capacity", () => {
   }
   // Newest at the END now (the renderer takes a tail slice).
   expect(s.toolHistory.map((h) => h.number)).toEqual([3, 4, 5]);
+});
+
+test("pendingTool reducers: start, progress, clear", () => {
+  let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
+  expect(s.pendingTool).toBeNull();
+  s = onToolPendingStart(s, {
+    number: 5,
+    name: "autopilot_explore",
+    argsSummary: "(stepCap:150)",
+    progress: "",
+  });
+  expect(s.pendingTool).toEqual({
+    number: 5,
+    name: "autopilot_explore",
+    argsSummary: "(stepCap:150)",
+    progress: "",
+  });
+  s = onToolPendingProgress(s, "23/150");
+  expect(s.pendingTool?.progress).toBe("23/150");
+  s = onToolPendingClear(s);
+  expect(s.pendingTool).toBeNull();
+});
+
+test("onToolPendingProgress is a no-op when no pending tool", () => {
+  const s0 = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
+  const s1 = onToolPendingProgress(s0, "ignored");
+  expect(s1).toBe(s0);
 });
 
 test("onConductorStatus updates the status field", () => {

@@ -36,6 +36,18 @@ export interface ChatRecord {
   readonly text: string;
 }
 
+// Marker for a tool call that's started but hasn't completed yet. The
+// renderer shows this as the visually-last row in the tool-history
+// pane (dim, prefixed with `…`) so the user can see the call landed
+// before the result arrives. Long-running tools (autopilot_explore
+// with a large stepCap) used to leave the pane silent for 30+ seconds.
+export interface PendingTool {
+  readonly number: number;
+  readonly name: string;
+  readonly argsSummary: string;     // short "(stepCap:150)" form
+  readonly progress: string;         // most recent reportProgress detail; "" if none
+}
+
 export type Status = "running" | "quitting" | "exited" | "tooSmall";
 
 // What the conductor is doing right now. Drives the agent-pane title
@@ -63,6 +75,7 @@ export interface ViewState {
   readonly currentTurn: TurnState | null;
   readonly toolHistory: readonly ToolRecord[];   // oldest-first; newest-at-end
   readonly chatHistory: readonly ChatRecord[];   // oldest-first; newest-at-end
+  readonly pendingTool: PendingTool | null;       // visible tool currently executing
   readonly historyCapacity: number;
   readonly agentLabel: string;                   // model id only
   readonly costLine: string;                     // most recent cost summary; "" before first turn
@@ -92,12 +105,27 @@ export function initialState(args: InitArgs): ViewState {
     currentTurn: null,
     toolHistory: [],
     chatHistory: [],
+    pendingTool: null,
     historyCapacity: args.historyCapacity ?? DEFAULT_HISTORY_CAPACITY,
     agentLabel: args.agentLabel,
     costLine: "",
     conductorStatus: { kind: "idle", since: now, detail: "" },
     errorBanner: null,
   };
+}
+
+export function onToolPendingStart(state: ViewState, pending: PendingTool): ViewState {
+  return { ...state, pendingTool: pending };
+}
+
+export function onToolPendingProgress(state: ViewState, progress: string): ViewState {
+  if (state.pendingTool === null) return state;
+  return { ...state, pendingTool: { ...state.pendingTool, progress } };
+}
+
+export function onToolPendingClear(state: ViewState): ViewState {
+  if (state.pendingTool === null) return state;
+  return { ...state, pendingTool: null };
 }
 
 export function onCostLine(state: ViewState, line: string): ViewState {

@@ -2,6 +2,7 @@ import type { Box, Layout } from "./layout";
 import type {
   ChatRecord,
   ConductorStatus,
+  PendingTool,
   ToolRecord,
   ViewState,
 } from "./state";
@@ -60,7 +61,7 @@ export function render(
 
   if (state.layout.kind === "tri") {
     drawNethackPane(parts, state.layout.nethack, state.nethack.pid, nethackContent);
-    drawToolsPane(parts, state.layout.tools, state.toolHistory);
+    drawToolsPane(parts, state.layout.tools, state.toolHistory, state.pendingTool);
     drawChatPane(parts, state.layout.chat, state, now);
     drawStatusBar(parts, state.layout.statusBar, state);
   } else {
@@ -200,25 +201,60 @@ function drawNethackPane(
  * Tool history pane (left-bottom in tri). Renders newest-at-bottom; if
  * there are more entries than rows, only the most-recent fit. Each line:
  *   "#NNN reason → decision  summary"
+ *
+ * If `pending` is non-null, its row is appended after the committed
+ * entries (rendered dim with a `…` prefix) so the user can see a tool
+ * that's started but not yet returned. When the pending tool completes
+ * it'll move into `history`, taking the same visual position.
  */
-function drawToolsPane(parts: string[], box: Box, history: readonly ToolRecord[]): void {
+function drawToolsPane(
+  parts: string[],
+  box: Box,
+  history: readonly ToolRecord[],
+  pending: PendingTool | null,
+): void {
   drawBox(parts, box, ` Tool history `, TOOL_BORDER);
 
   const innerCols = box.cols - 2;
   const innerRows = box.rows - 2;
   if (innerRows <= 0) return;
 
-  // Format every entry into a single line, then take the last innerRows.
-  const lines = history.map((rec) => formatToolLine(rec, innerCols));
+  // Build all lines (committed history then optional pending). Each
+  // entry is one line; we'll take the last innerRows.
+  const lines: { text: string; pending: boolean }[] = history.map((rec) => ({
+    text: formatToolLine(rec, innerCols),
+    pending: false,
+  }));
+  if (pending !== null) {
+    lines.push({ text: formatPendingLine(pending, innerCols), pending: true });
+  }
   const startIdx = Math.max(0, lines.length - innerRows);
   const visible = lines.slice(startIdx);
 
   for (let i = 0; i < innerRows; i++) {
     parts.push(goto(box.row + 1 + i, box.col + 1));
-    const line = visible[i] ?? "";
-    parts.push(line);
-    if (line.length < innerCols) parts.push(" ".repeat(innerCols - line.length));
+    const entry = visible[i];
+    if (entry === undefined) {
+      parts.push(" ".repeat(innerCols));
+      continue;
+    }
+    if (entry.pending) {
+      parts.push(`${ESC}90m`); // dim
+      parts.push(entry.text);
+      parts.push(RESET);
+    } else {
+      parts.push(entry.text);
+    }
+    if (entry.text.length < innerCols) parts.push(" ".repeat(innerCols - entry.text.length));
   }
+}
+
+function formatPendingLine(pending: PendingTool, innerCols: number): string {
+  // Visual marker: leading `…` + (optional progress detail).
+  const head = `… #${pending.number} ${pending.name}${pending.argsSummary}`;
+  const tail = pending.progress.length > 0 ? `  ${pending.progress}` : "";
+  const full = head + tail;
+  return full.length > innerCols ? full.slice(0, innerCols) : full;
 }
 
 /**

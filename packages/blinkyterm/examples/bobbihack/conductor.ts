@@ -34,6 +34,11 @@ export interface ConductorEvents {
   onAssistantMessageStart?: () => void;
   onTextDelta?: (delta: string) => void;
   onToolStart?: (name: string, args: unknown, turn: number) => void;
+  // In-progress detail from a tool that opted into progress reporting
+  // (autopilot_explore etc.). Fires zero or more times between the
+  // matching onToolStart and onToolComplete. UI surfaces this as the
+  // agent-pane status detail.
+  onToolProgress?: (name: string, detail: string, turn: number) => void;
   onToolComplete?: (name: string, summary: string, turn: number) => void;
   onRunEnd?: (reason: string) => void;
   // Phase 8: per-turn cost summary line, e.g.
@@ -305,7 +310,21 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
         try {
           turnCounter += 1;
           events?.onToolStart?.(tu.name, tu.input, turnCounter);
-          const content = await handler(tu.input, toolCtx);
+
+          // Hand the tool a per-call progress reporter that relays to
+          // events.onToolProgress with the current tool name + turn.
+          // Cleared after the handler returns so callbacks from a
+          // previously-running tool can't race onto the next call.
+          const turnAtStart = turnCounter;
+          toolCtx.reportProgress = (detail: string): void => {
+            events?.onToolProgress?.(tu.name, detail, turnAtStart);
+          };
+          let content: string;
+          try {
+            content = await handler(tu.input, toolCtx);
+          } finally {
+            delete toolCtx.reportProgress;
+          }
           toolResults.push({
             type: "tool_result",
             tool_use_id: tu.id,

@@ -68,6 +68,9 @@ import {
   onConductorStatus,
   onCostLine,
   onResize,
+  onToolPendingClear,
+  onToolPendingProgress,
+  onToolPendingStart,
   onTurnEnd,
   onTurnStart,
   type ConductorStatus,
@@ -715,6 +718,22 @@ async function main(): Promise<void> {
     state = onConductorStatus(state, status);
   }
 
+  // Compact "(k:v, k:v)" summary of a tool's input object — used in
+  // the pending tool-history row so the user can tell `autopilot_explore({stepCap:150})`
+  // apart from a default `autopilot_explore({})`. Truncates after 30
+  // chars so the row doesn't dominate the pane.
+  function summarizeArgs(args: unknown): string {
+    if (args === undefined || args === null) return "";
+    if (typeof args !== "object") return `(${String(args)})`;
+    const entries = Object.entries(args as Record<string, unknown>);
+    if (entries.length === 0) return "({})";
+    const inside = entries
+      .map(([k, v]) => `${k}:${typeof v === "string" ? JSON.stringify(v) : String(v)}`)
+      .join(", ");
+    const out = `(${inside})`;
+    return out.length > 30 ? out.slice(0, 29) + "…)" : out;
+  }
+
   // Initial status: we're about to issue the first API request, so the
   // conductor is in a "thinking" state until the first response arrives.
   setStatus("thinking");
@@ -734,7 +753,7 @@ async function main(): Promise<void> {
         pendingThinking += delta;
       }
     },
-    onToolStart: (name, _args, _turn) => {
+    onToolStart: (name, args, _turn) => {
       conductorTurn += 1;
       state = onTurnStart(state, { turn: conductorTurn, frameReason: lastFrameReason });
       if (pendingThinking.length > 0) {
@@ -742,6 +761,19 @@ async function main(): Promise<void> {
         pendingThinking = "";
       }
       setStatus("tool_running", name);
+      state = onToolPendingStart(state, {
+        number: conductorTurn,
+        name,
+        argsSummary: summarizeArgs(args),
+        progress: "",
+      });
+      requestPaint();
+    },
+    onToolProgress: (name, detail, _turn) => {
+      // Update the agent-title status detail so e.g. autopilot_explore
+      // shows "tool: autopilot_explore (47/150)" instead of frozen.
+      setStatus("tool_running", `${name} (${detail})`);
+      state = onToolPendingProgress(state, detail);
       requestPaint();
     },
     onToolComplete: (name, summary, _turn) => {
@@ -751,6 +783,7 @@ async function main(): Promise<void> {
       const decisionLabel = summary.length > 0 ? `${name} → ${summary.slice(0, 60)}` : name;
       state = onAgentEvent(state, { kind: "action", move: decisionLabel as AgentDecision });
       state = onTurnEnd(state);
+      state = onToolPendingClear(state);
       // Tool finished; conductor now waits for the next API response.
       // Reset the "thinking" timer so the title shows time-since-tool,
       // which is where stalls (4-minute hangs etc.) show up.

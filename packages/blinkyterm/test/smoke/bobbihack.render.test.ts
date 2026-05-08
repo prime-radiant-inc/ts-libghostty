@@ -4,6 +4,8 @@ import {
   initialState,
   onAgentEvent,
   onConductorStatus,
+  onToolPendingProgress,
+  onToolPendingStart,
   onTurnEnd,
   onTurnStart,
 } from "../../examples/bobbihack/state";
@@ -93,6 +95,37 @@ test("agent-pane title flips to 'paused' after 30s", () => {
   const out = render(s, "", 1000 + 35_000); // 35s elapsed
   expect(out).toContain("paused");
   expect(out).toContain("no API response");
+});
+
+test("tool history shows the pending tool as a dim '…'-prefixed last row", () => {
+  let s = initTri();
+  // One completed turn so we have a baseline non-pending row above.
+  s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
+  s = onAgentEvent(s, { kind: "action", move: "east" });
+  s = onTurnEnd(s);
+  // Now mark a new tool as pending.
+  s = onToolPendingStart(s, {
+    number: 2,
+    name: "autopilot_explore",
+    argsSummary: "(stepCap:150)",
+    progress: "",
+  });
+  const out = render(s, "", 1000);
+  expect(out).toContain("…");
+  expect(out).toContain("autopilot_explore(stepCap:150)");
+});
+
+test("pending tool row shows progress detail when reported", () => {
+  let s = initTri();
+  s = onToolPendingStart(s, {
+    number: 1,
+    name: "autopilot_explore",
+    argsSummary: "(stepCap:150)",
+    progress: "",
+  });
+  s = onToolPendingProgress(s, "47/150");
+  const out = render(s, "", 1000);
+  expect(out).toContain("47/150");
 });
 
 test("agent-pane title shows tool name when tool_running", () => {
