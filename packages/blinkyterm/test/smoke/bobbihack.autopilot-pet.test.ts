@@ -1,202 +1,212 @@
-// End-to-end smoke test for the attribute-aware autopilot interrupt
-// fix. Spawns a real NetHack with `hilite_pet` enabled, gets to the
-// dungeon, and sends a series of movement keys. The detector
-// (`runInterruptChecks`) is run on each consecutive frame pair. The
-// pre-fix behavior was that `monster_visible` fired on the very first
-// step because the pet moves around (and auto-swaps) with the player.
-// The fix is verified by:
-//   1. The detector does NOT report `monster_visible` as primary on any
-//      pair of frames where the only letter-glyph movement was a pet.
-//   2. At least one frame contained a pet glyph (so we're not just
-//      lucky — `hilite_pet` is actually working in this binary).
+// End-to-end smoke for the attribute-aware monster_visible fix. Spawns
+// real NetHack with hilite_pet enabled, dismisses the startup splash,
+// then drives `handleAutopilotExplore` for up to 5 steps and asserts
+// the autopilot did NOT stop with `monster_visible` despite the pet
+// being adjacent and moving every turn. Also asserts the pet was
+// actually classified at least once during the run, so the test fails
+// loudly if `hilite_pet` ever silently breaks (pet would otherwise
+// classify `normal` and the detector would fire on its first move,
+// failing the no-monster_visible assertion — but a sanity guard on
+// petCount catches the case where the pet wandered off-screen before
+// any move was sent).
 //
-// Skipped cleanly when NetHack is not on PATH.
+// Set AUTOPILOT_TRACE=1 for per-step timing trace, AUTOPILOT_DUMP=1
+// for verbose row-by-row dumps of splash + result. Both are off by
+// default to keep CI output tidy.
 //
 // Spec: docs/superpowers/specs/2026-05-07-bobbihack-attribute-aware-interrupts-design.md.
 
 import { describe, expect, test } from "bun:test";
-import { Runner } from "../../src/index";
+import { Runner, type Frame } from "../../src/index";
 import { hasNethack, nethackEnv } from "../../examples/shared/nethack-setup";
 import { GameMap } from "../../examples/bobbihack/game-map";
 import { parseStatusLine, parseMessageLine } from "../../examples/bobbihack/parsers";
-import { buildGlyphClass, type GlyphClass } from "../../examples/bobbihack/glyph-class";
-import {
-  runInterruptChecks,
-  type InterruptContext,
-  type InterruptFrame,
-} from "../../examples/bobbihack/interrupts";
-import type { Frame } from "../../src/index";
+import { buildGlyphClass } from "../../examples/bobbihack/glyph-class";
+import { handleAutopilotExplore } from "../../examples/bobbihack/tools/autopilot";
+import type { ToolContext, FrameAwaitResult } from "../../examples/bobbihack/tool-context";
 
-interface CapturedFrame {
-  rows: string[];
-  glyphClass: ReadonlyArray<ReadonlyArray<GlyphClass | undefined>>;
-  status: ReturnType<typeof parseStatusLine>;
-  message: string;
-  frameReason: string;
-  petCount: number;
+const TRACE = process.env.AUTOPILOT_TRACE === "1";
+const DUMP = process.env.AUTOPILOT_DUMP === "1";
+
+function trace(...args: unknown[]): void {
+  if (TRACE) console.log("[autopilot-trace]", ...args);
 }
 
-function captureFrame(frame: Frame, map: GameMap): CapturedFrame {
-  const rows = frame.snapshot.text.split("\n");
-  const message = parseMessageLine(rows[0] ?? "");
-  const status = parseStatusLine(
-    rows[rows.length - 2] ?? "",
-    rows[rows.length - 1] ?? "",
-  );
-  map.updateFromFrame(rows, status, message);
-  const glyphClass = buildGlyphClass(frame.snapshot, rows, map.currentPlayerXY);
-  let petCount = 0;
-  for (const row of glyphClass) {
-    for (const cls of row) if (cls === "pet") petCount++;
-  }
-  return {
-    rows,
-    glyphClass,
-    status,
-    message,
-    frameReason: frame.reason,
-    petCount,
-  };
+function dumpFrame(label: string, rows: string[]): void {
+  if (!DUMP) return;
+  console.log(`---- ${label} ----`);
+  rows.forEach((r, y) => console.log(`${String(y).padStart(2)} |${r}|`));
 }
 
-function toInterruptFrame(c: CapturedFrame): InterruptFrame & { frameReason: string } {
-  return {
-    rows: c.rows,
-    glyphClass: c.glyphClass,
-    status: c.status,
-    message: c.message,
-    frameReason: c.frameReason,
-  };
-}
-
-describe("bobbihack autopilot does not abort on pet movement", () => {
+describe("bobbihack autopilot end-to-end", () => {
   test.skipIf(!hasNethack())(
-    "monster_visible does not fire when the only glyph movement is the pet",
+    "handleAutopilotExplore runs past pet without aborting",
     async () => {
+      const t0 = performance.now();
+      trace("spawn nethack");
       const runner = await Runner.spawn(["nethack"], {
         cols: 80,
         rows: 24,
         env: nethackEnv(),
         frame: { minIntervalMs: 100, maxIntervalMs: 5_000, quiesceMs: 100 },
       });
+      trace(`spawned in ${(performance.now() - t0).toFixed(0)}ms`);
 
       try {
         const iter = runner.frames()[Symbol.asyncIterator]();
         const map = new GameMap();
 
-        // Drive past intro splash. NetHack prints a multi-screen
-        // intro followed by --More-- prompts before the dungeon view
-        // is finally drawn. We send \r/space until we get a frame where
-        // (a) an actual `@` glyph exists on screen, and (b) the message
-        // line is not a --More-- prompt. The status line is already
-        // populated in early frames (it shows Dlvl:1 even on the
-        // splash) so dlvl alone is not a reliable signal.
-        let dungeon: CapturedFrame | null = null;
-        for (let attempt = 0; attempt < 12; attempt++) {
+        // ---- splash dismissal ----
+        // Three modal types we know about, in observed startup order:
+        //   1. role intro --More-- ("It is written in the Book of...")
+        //   2. welcome --More-- ("Velkommen agent, welcome to NetHack!")
+        //   3. yn prompt "Do you want a tutorial?" — needs `n`, not space
+        // After all three, the dungeon is unobstructed. Dismissal:
+        //   --More-- → space (any key works but space is canonical)
+        //   tutorial yn prompt → n
+        //   (end) menu marker → space (closes a paged menu)
+        // Use raw rows for prompt detection — parseMessageLine strips
+        // --More-- before returning.
+        let dungeonReached = false;
+        let dungeonFrame: Frame | undefined;
+        for (let attempt = 0; attempt < 40; attempt++) {
           const next = await Promise.race([
             iter.next(),
             new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
           ]);
-          if (next === null) break;
+          if (next === null) {
+            trace(`splash[${attempt}]: TIMEOUT`);
+            break;
+          }
           if (next.done || next.value === undefined) break;
-          const cap = captureFrame(next.value, map);
-          const hasAtGlyph = cap.rows.some((r) => r.includes("@"));
-          const isMore = cap.message.includes("--More--");
-          if (hasAtGlyph && !isMore && map.currentPlayerXY !== null) {
-            dungeon = cap;
+          const rows = next.value.snapshot.text.split("\n");
+          const rawAll = rows.join("\n");
+          const rawMsg = rows[0] ?? "";
+          const message = parseMessageLine(rawMsg);
+          const stat = parseStatusLine(
+            rows[rows.length - 2] ?? "",
+            rows[rows.length - 1] ?? "",
+          );
+          map.updateFromFrame(rows, stat, message);
+          const hasMore = /--More--/.test(rawAll);
+          const hasReturnPrompt = /Hit return to continue/i.test(rawAll);
+          const hasTutorialPrompt = /Do you want a tutorial\?/i.test(rawAll);
+          const hasYnPrompt = /\[(yn|ynq|yna)/i.test(rawAll); // generic yn
+          const hasEndMarker = /\(end\)/.test(rawAll);
+          const hasAt = map.currentPlayerXY !== null;
+          const terrainCount = rows.reduce(
+            (n, r) => n + (r.match(/[.#]/g)?.length ?? 0),
+            0,
+          );
+          trace(
+            `splash[${attempt}] ${(performance.now() - t0).toFixed(0)}ms reason=${next.value.reason}`,
+            `hasMore=${hasMore} tutorial=${hasTutorialPrompt} yn=${hasYnPrompt} end=${hasEndMarker} terrain=${terrainCount} hasAt=${hasAt}`,
+            `rawMsg=${JSON.stringify(rawMsg.trim().slice(0, 60))}`,
+          );
+          if (DUMP && attempt < 5) dumpFrame(`splash ${attempt}`, rows);
+
+          // Pick a dismissal key. Order matters: --More-- can co-render
+          // with menu paging; resolve --More-- first.
+          let key: string | null = null;
+          if (hasTutorialPrompt) key = "n";
+          else if (hasMore) key = " ";
+          else if (hasReturnPrompt) key = "\r";
+          else if (hasEndMarker) key = " ";
+          else if (hasYnPrompt) key = "n";
+          else if (hasAt && terrainCount >= 10) {
+            // No prompts visible AND we have a player + visible dungeon.
+            dungeonReached = true;
+            dungeonFrame = next.value;
+            break;
+          }
+
+          if (key === null) {
+            trace(`splash[${attempt}]: no recognised prompt and no dungeon — bailing`);
             break;
           }
           if (runner.exited) break;
-          // Use space to dismiss --More-- (NetHack accepts \r or space).
-          await runner.sendText(" ");
-        }
-        expect(dungeon).not.toBeNull();
-        if (dungeon === null) return;
-
-        // Sanity: the valkyrie starts adjacent to a pet (kitten or small
-        // dog). With hilite_pet on, that pet must classify as `pet`. If
-        // it doesn't, hilite_pet has silently broken in this build and
-        // the rest of the test isn't meaningful.
-        expect(dungeon.petCount).toBeGreaterThan(0);
-
-        // Send a few movement keys and run the interrupt detector on
-        // each consecutive (prev, cur) pair. Walking around in the
-        // starting room produces frames where the pet has moved (pets
-        // move every player turn). With the bug, monster_visible would
-        // fire on the first such pair. With the fix, it must not fire
-        // unless an actual hostile glyph appears.
-        const captured: CapturedFrame[] = [dungeon];
-        const moves = ["l", "h", "j", "k", "l", "h", "j", "k"];
-        for (const key of moves) {
-          if (runner.exited) break;
           await runner.sendText(key);
-          const next = await Promise.race([
-            iter.next(),
-            new Promise<null>((r) => setTimeout(() => r(null), 5_000)),
-          ]);
-          if (next === null) break;
-          if (next.done || next.value === undefined) break;
-          const cap = captureFrame(next.value, map);
-          captured.push(cap);
-          if (cap.message.includes("--More--")) {
-            // Dismiss any popup so we keep moving.
-            await runner.sendText(" ");
-            const dismiss = await Promise.race([
+        }
+        expect(dungeonReached).toBe(true);
+        if (!dungeonReached) return;
+        if (DUMP && dungeonFrame !== undefined) {
+          dumpFrame("dungeon (entry)", dungeonFrame.snapshot.text.split("\n"));
+        }
+        trace(`dungeon reached at t=${(performance.now() - t0).toFixed(0)}ms; player @ ${JSON.stringify(map.currentPlayerXY)}`);
+
+        // ---- build real ToolContext ----
+        const ac = new AbortController();
+        const sendKeysCallTimes: number[] = [];
+        let maxPetCount = 0;
+        const ctx: ToolContext = {
+          map,
+          runState: { gameOver: false, endReason: null },
+          signal: ac.signal,
+          journalDir: "",
+          sendKeysAndWait: async (keys: string): Promise<FrameAwaitResult> => {
+            const callIdx = sendKeysCallTimes.length;
+            const tCall = performance.now();
+            sendKeysCallTimes.push(tCall);
+            trace(`sendKeysAndWait[${callIdx}] keys=${JSON.stringify(keys)} (t=${(tCall - t0).toFixed(0)}ms)`);
+            await runner.sendText(keys);
+            const next = await Promise.race([
               iter.next(),
-              new Promise<null>((r) => setTimeout(() => r(null), 2_000)),
+              new Promise<"timeout">((r) => setTimeout(() => r("timeout"), 5_000)),
             ]);
-            if (dismiss !== null && !dismiss.done && dismiss.value !== undefined) {
-              captured.push(captureFrame(dismiss.value, map));
+            if (next === "timeout") {
+              throw new Error(`frame iterator hung on call ${callIdx} after key ${JSON.stringify(keys)}`);
             }
-          }
-        }
-
-        // We need at least one (prev, cur) pair to make the detector
-        // assertion meaningful.
-        expect(captured.length).toBeGreaterThanOrEqual(2);
-
-        // Run the detector on every consecutive pair and collect any
-        // monster_visible hits. The fix is correct iff the detector
-        // never fires on pure-pet movement. If it does fire we accept
-        // it ONLY if the detail name corresponds to a glyph the
-        // captured frame classified as `normal` (i.e. an actual hostile
-        // appeared mid-test, which is a real-world flake we tolerate).
-        let petSeenAcrossRun = dungeon.petCount > 0;
-        const spuriousFires: string[] = [];
-        for (let i = 1; i < captured.length; i++) {
-          const prev = captured[i - 1]!;
-          const cur = captured[i]!;
-          if (cur.petCount > 0) petSeenAcrossRun = true;
-          const ictx: InterruptContext = {
-            prev: toInterruptFrame(prev),
-            cur: toInterruptFrame(cur),
-          };
-          const result = runInterruptChecks(ictx);
-          if (result.primary?.name === "monster_visible") {
-            // Tolerate hostiles that legitimately wandered into view.
-            // Parse "<ch> at (x,y)" to find the cell and confirm it was
-            // classified normal (not pet).
-            const detail = result.primary.detail ?? "";
-            const m = detail.match(/^(\S) at \((\d+),(\d+)\)$/);
-            if (m !== null) {
-              const x = Number(m[2]);
-              const y = Number(m[3]);
-              const cls = cur.glyphClass[y]?.[x];
-              if (cls === "pet") {
-                // This is the bug we're fixing — record it as a real
-                // failure.
-                spuriousFires.push(`pair ${i - 1}->${i}: ${detail} (classified pet)`);
-              }
-              // If cls === "normal" or undefined, treat as a real
-              // hostile encounter and stop scanning further pairs;
-              // we've already verified no spurious pet-fire occurred.
-              break;
+            if (next.done || next.value === undefined) {
+              throw new Error(`iter.done unexpectedly on call ${callIdx}`);
             }
-          }
-        }
+            const frame = next.value;
+            trace(`sendKeysAndWait[${callIdx}] frame received reason=${frame.reason}`);
+            const rows = frame.snapshot.text.split("\n");
+            const message = parseMessageLine(rows[0] ?? "");
+            const status = parseStatusLine(
+              rows[rows.length - 2] ?? "",
+              rows[rows.length - 1] ?? "",
+            );
+            map.updateFromFrame(rows, status, message);
+            const glyphClass = buildGlyphClass(frame.snapshot, rows, map.currentPlayerXY);
+            let petCount = 0;
+            for (const row of glyphClass) {
+              for (const cls of row) if (cls === "pet") petCount += 1;
+            }
+            if (petCount > maxPetCount) maxPetCount = petCount;
+            return {
+              rows,
+              glyphClass,
+              status,
+              message,
+              frameReason: frame.reason,
+              screenAnsi: frame.snapshot.toAnsi(),
+            };
+          },
+        };
 
-        expect(spuriousFires).toEqual([]);
-        expect(petSeenAcrossRun).toBe(true);
+        // ---- run the autopilot ----
+        trace("invoking handleAutopilotExplore({stepCap: 5})");
+        const tAutopilotStart = performance.now();
+        const result = await handleAutopilotExplore({ stepCap: 5 }, ctx);
+        const tAutopilotEnd = performance.now();
+        trace(`autopilot returned in ${(tAutopilotEnd - tAutopilotStart).toFixed(0)}ms`);
+        if (DUMP) console.log("---- autopilot result (first 600 chars) ----\n" + result.slice(0, 600));
+
+        // ---- assertions ----
+        // The fix is correct iff the autopilot did NOT stop with
+        // monster_visible primary because of pet movement. Other stop
+        // reasons (modal_prompt from --More--, step_cap, etc.) are fine.
+        expect(result).not.toContain("interrupt: monster_visible (");
+
+        // Sanity: at least one sendKeysAndWait happened (no immediate bail).
+        expect(sendKeysCallTimes.length).toBeGreaterThanOrEqual(1);
+
+        // Sanity: the pet was on screen and classified as `pet` during at
+        // least one autopilot frame. If hilite_pet ever silently stops
+        // working, this is the canary — without it the no-monster_visible
+        // assertion above could pass vacuously.
+        expect(maxPetCount).toBeGreaterThan(0);
       } finally {
         try {
           await runner.terminate({ signal: "SIGTERM", thenAfterMs: 500 });
@@ -205,6 +215,6 @@ describe("bobbihack autopilot does not abort on pet movement", () => {
         }
       }
     },
-    45_000,
+    60_000,
   );
 });
