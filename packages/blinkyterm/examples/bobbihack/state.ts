@@ -18,23 +18,54 @@ export interface TurnState {
   readonly committed: AgentDecision | null;
 }
 
-export interface TurnRecord {
+// One entry in the tool-history pane (left-bottom in tri mode). Mirrors
+// what was previously called TurnRecord — kept under the same shape so
+// renderers and tests don't churn — but the *list* is now ordered
+// newest-at-end, not newest-at-start.
+export interface ToolRecord {
   readonly number: number;
   readonly frameReason: FrameReason;
   readonly summary: string;
   readonly decision: AgentDecision | "error";
 }
 
+// One entry in the chat pane (right column in tri mode). Carries the
+// model's free-form text for that turn, separate from the tool-call shape.
+export interface ChatRecord {
+  readonly number: number;
+  readonly text: string;
+}
+
 export type Status = "running" | "quitting" | "exited" | "tooSmall";
+
+// What the conductor is doing right now. Drives the agent-pane title
+// indicator. `since` is epoch ms; the renderer derives elapsed and
+// flips display to "paused Xs" once elapsed crosses a threshold.
+// `detail` is opaque text the renderer appends to the kind label.
+export type ConductorStatusKind =
+  | "idle"
+  | "thinking"
+  | "tool_running"
+  | "reconnecting"
+  | "error"
+  | "exited";
+
+export interface ConductorStatus {
+  readonly kind: ConductorStatusKind;
+  readonly since: number;          // epoch ms
+  readonly detail: string;         // tool name, error code, etc. — may be ""
+}
 
 export interface ViewState {
   readonly layout: Layout;
   readonly status: Status;
   readonly nethack: NethackPane;
   readonly currentTurn: TurnState | null;
-  readonly history: readonly TurnRecord[];
+  readonly toolHistory: readonly ToolRecord[];   // oldest-first; newest-at-end
+  readonly chatHistory: readonly ChatRecord[];   // oldest-first; newest-at-end
   readonly historyCapacity: number;
   readonly agentLabel: string;
+  readonly conductorStatus: ConductorStatus;
   readonly errorBanner: string | null;
 }
 
@@ -44,9 +75,11 @@ export interface InitArgs {
   agentLabel: string;
   pid: number;
   historyCapacity?: number;
+  now?: number; // epoch ms; tests inject
 }
 
 export function initialState(args: InitArgs): ViewState {
+  const now = args.now ?? Date.now();
   return {
     layout: layout(args.hostCols, args.hostRows),
     status: "running",
@@ -56,9 +89,11 @@ export function initialState(args: InitArgs): ViewState {
       title: "",
     },
     currentTurn: null,
-    history: [],
+    toolHistory: [],
+    chatHistory: [],
     historyCapacity: args.historyCapacity ?? DEFAULT_HISTORY_CAPACITY,
     agentLabel: args.agentLabel,
+    conductorStatus: { kind: "idle", since: now, detail: "" },
     errorBanner: null,
   };
 }
@@ -113,18 +148,44 @@ export function onTurnEnd(state: ViewState): ViewState {
   if (state.currentTurn === null) return state;
   const turn = state.currentTurn;
   const decision: AgentDecision | "error" = turn.committed ?? "error";
-  const summary = turn.streamingText.replace(/\s+/g, " ").trim().slice(0, SUMMARY_LEN);
-  const record: TurnRecord = {
+  const fullText = turn.streamingText.replace(/\s+/g, " ").trim();
+  const summary = fullText.slice(0, SUMMARY_LEN);
+
+  // Tool record is keyed off the committed decision + summary line
+  // (used in the tool-history pane).
+  const tool: ToolRecord = {
     number: turn.number,
     frameReason: turn.frameReason,
     summary,
     decision,
   };
-  const next = [record, ...state.history].slice(0, state.historyCapacity);
-  // Keep `currentTurn` populated so the live area continues to display the
-  // just-completed turn (with its committed move) until the next onTurnStart
-  // replaces it. Otherwise the live area flashes blank between turns.
-  return { ...state, history: next };
+  // Chat record carries the full streaming text for that turn (the
+  // chat pane wraps it across as many rows as needed). If the model
+  // emitted no text, skip the chat entry — there's nothing to show.
+  const nextToolHistory = pushBounded(state.toolHistory, tool, state.historyCapacity);
+  const nextChatHistory =
+    fullText.length > 0
+      ? pushBounded(
+          state.chatHistory,
+          { number: turn.number, text: fullText },
+          state.historyCapacity,
+        )
+      : state.chatHistory;
+
+  return {
+    ...state,
+    toolHistory: nextToolHistory,
+    chatHistory: nextChatHistory,
+    // Keep `currentTurn` populated so the live area continues to show
+    // the just-completed turn until the next onTurnStart replaces it.
+  };
+}
+
+export function onConductorStatus(
+  state: ViewState,
+  status: ConductorStatus,
+): ViewState {
+  return { ...state, conductorStatus: status };
 }
 
 export function onResize(state: ViewState, hostCols: number, hostRows: number): ViewState {
@@ -142,4 +203,12 @@ export function onChildExited(
     status: "exited",
     errorBanner: `child ${reason} (code=${code}) — press q to exit`,
   };
+}
+
+// Append `record` to `list`, dropping the oldest when over capacity.
+// Returns a new array (lists in ViewState are readonly).
+function pushBounded<T>(list: readonly T[], record: T, cap: number): readonly T[] {
+  if (cap <= 0) return list;
+  if (list.length < cap) return [...list, record];
+  return [...list.slice(list.length - cap + 1), record];
 }

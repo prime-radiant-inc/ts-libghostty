@@ -3,18 +3,21 @@ import {
   initialState,
   onAgentEvent,
   onChildExited,
+  onConductorStatus,
   onResize,
   onTurnEnd,
   onTurnStart,
 } from "../../examples/bobbihack/state";
 
-test("initialState has empty pane and history", () => {
-  const s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 999 });
+test("initialState has empty histories and an idle conductor", () => {
+  const s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 999, now: 1000 });
   expect(s.status).toBe("running");
-  expect(s.history).toEqual([]);
+  expect(s.toolHistory).toEqual([]);
+  expect(s.chatHistory).toEqual([]);
   expect(s.currentTurn).toBeNull();
   expect(s.agentLabel).toBe("mock");
-  expect(s.layout.kind).toBe("side");
+  expect(s.layout.kind).toBe("tri");
+  expect(s.conductorStatus).toEqual({ kind: "idle", since: 1000, detail: "" });
 });
 
 test("onTurnStart sets currentTurn with empty streamingText", () => {
@@ -49,7 +52,7 @@ test("onAgentEvent thinking is ignored when no current turn", () => {
   expect(s1).toBe(s0);
 });
 
-test("onTurnEnd appends to history and keeps currentTurn for the live area", () => {
+test("onTurnEnd appends to toolHistory and chatHistory; currentTurn stays sticky", () => {
   let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
   s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
   s = onAgentEvent(s, { kind: "thinking", delta: "going east " });
@@ -61,13 +64,26 @@ test("onTurnEnd appends to history and keeps currentTurn for the live area", () 
   // until the next onTurnStart replaces it.
   expect(s.currentTurn).not.toBeNull();
   expect(s.currentTurn?.committed).toBe("east");
-  expect(s.history.length).toBe(1);
-  expect(s.history[0]).toMatchObject({
+
+  expect(s.toolHistory.length).toBe(1);
+  expect(s.toolHistory[0]).toMatchObject({
     number: 1,
     frameReason: "cellChange",
     decision: "east",
   });
-  expect(s.history[0]?.summary).toContain("going east");
+  expect(s.toolHistory[0]?.summary).toContain("going east");
+
+  expect(s.chatHistory.length).toBe(1);
+  expect(s.chatHistory[0]).toEqual({ number: 1, text: "going east to fight goblin" });
+});
+
+test("onTurnEnd skips chatHistory when there's no streaming text", () => {
+  let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
+  s = onTurnStart(s, { turn: 1, frameReason: "cellChange" });
+  s = onAgentEvent(s, { kind: "action", move: "east" });
+  s = onTurnEnd(s);
+  expect(s.toolHistory.length).toBe(1);
+  expect(s.chatHistory.length).toBe(0);
 });
 
 test("onTurnStart replaces a sticky completed turn", () => {
@@ -89,24 +105,35 @@ test("onTurnEnd records error decision when committed is null", () => {
   s = onTurnStart(s, { turn: 7, frameReason: "bell" });
   s = onAgentEvent(s, { kind: "error", message: "rate limited" });
   s = onTurnEnd(s);
-  expect(s.history[0]?.decision).toBe("error");
+  expect(s.toolHistory[0]?.decision).toBe("error");
 });
 
-test("history is newest-first and bounded by capacity", () => {
+test("toolHistory is newest-LAST and bounded by capacity", () => {
   let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1, historyCapacity: 3 });
   for (let i = 1; i <= 5; i++) {
     s = onTurnStart(s, { turn: i, frameReason: "cellChange" });
     s = onAgentEvent(s, { kind: "action", move: "north" });
     s = onTurnEnd(s);
   }
-  expect(s.history.map((h) => h.number)).toEqual([5, 4, 3]);
+  // Newest at the END now (the renderer takes a tail slice).
+  expect(s.toolHistory.map((h) => h.number)).toEqual([3, 4, 5]);
+});
+
+test("onConductorStatus updates the status field", () => {
+  let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1, now: 1000 });
+  s = onConductorStatus(s, { kind: "thinking", since: 2000, detail: "" });
+  expect(s.conductorStatus).toEqual({ kind: "thinking", since: 2000, detail: "" });
+  s = onConductorStatus(s, { kind: "tool_running", since: 3000, detail: "autopilot_explore" });
+  expect(s.conductorStatus).toEqual({ kind: "tool_running", since: 3000, detail: "autopilot_explore" });
 });
 
 test("onResize recomputes layout", () => {
   let s = initialState({ hostCols: 200, hostRows: 60, agentLabel: "mock", pid: 1 });
-  expect(s.layout.kind).toBe("side");
+  expect(s.layout.kind).toBe("tri");
   s = onResize(s, 100, 40);
   expect(s.layout.kind).toBe("stacked");
+  s = onResize(s, 130, 28);   // wide but short — falls back to side
+  expect(s.layout.kind).toBe("side");
 });
 
 test("onChildExited freezes status and stores exit info", () => {

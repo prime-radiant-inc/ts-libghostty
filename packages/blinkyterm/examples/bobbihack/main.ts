@@ -65,9 +65,12 @@ import {
   onAgentEvent,
   onChildExited,
   onChildFrame,
+  onConductorStatus,
   onResize,
   onTurnEnd,
   onTurnStart,
+  type ConductorStatus,
+  type ConductorStatusKind,
   type ViewState,
 } from "./state";
 import { render } from "./render";
@@ -554,10 +557,19 @@ async function main(): Promise<void> {
   process.stdout.write(ENTER_ALT);
   process.on("SIGWINCH", onWinch);
 
+  // Repaint once a second so the agent-pane status title updates its
+  // elapsed-time display ("thinking 12s" → "paused 4m12s") without
+  // needing an event to fire. Costs one render() per second; cheap.
+  // Cleared during teardown.
+  const statusTickHandle = setInterval(() => {
+    requestPaint();
+  }, 1000);
+
   let restored = false;
   const restoreTerminal = (): void => {
     if (restored) return;
     restored = true;
+    clearInterval(statusTickHandle);
     process.removeListener("SIGWINCH", onWinch);
     process.stdout.write(SHOW_CURSOR + EXIT_ALT);
   };
@@ -696,9 +708,22 @@ async function main(): Promise<void> {
   // tool fires, then it goes onto that turn's streamingText.
   let pendingThinking = "";
   let conductorTurn = 0;
+
+  function setStatus(kind: ConductorStatusKind, detail = ""): void {
+    const status: ConductorStatus = { kind, since: Date.now(), detail };
+    state = onConductorStatus(state, status);
+  }
+
+  // Initial status: we're about to issue the first API request, so the
+  // conductor is in a "thinking" state until the first response arrives.
+  setStatus("thinking");
+
   const events: ConductorEvents = {
     onAssistantMessageStart: () => {
       pendingThinking = "";
+      // Already "thinking"; first chunk has now arrived. Don't reset
+      // since — keep the timer counting from when we started waiting,
+      // which is where stalls show up.
     },
     onTextDelta: (delta) => {
       if (state.currentTurn !== null) {
@@ -708,25 +733,31 @@ async function main(): Promise<void> {
         pendingThinking += delta;
       }
     },
-    onToolStart: (_name, _args, _turn) => {
+    onToolStart: (name, _args, _turn) => {
       conductorTurn += 1;
       state = onTurnStart(state, { turn: conductorTurn, frameReason: lastFrameReason });
       if (pendingThinking.length > 0) {
         state = onAgentEvent(state, { kind: "thinking", delta: pendingThinking });
         pendingThinking = "";
       }
+      setStatus("tool_running", name);
       requestPaint();
     },
     onToolComplete: (name, summary, _turn) => {
-      // Use the tool name as the "decision" — render.ts displays it as
-      // a string in formatHistoryLine. Append the summary so the
-      // history line carries useful context.
+      // Use the tool name as the "decision" — render.ts displays it
+      // verbatim in the tool-history pane. Append the summary so the
+      // line carries useful context.
       const decisionLabel = summary.length > 0 ? `${name} → ${summary.slice(0, 60)}` : name;
       state = onAgentEvent(state, { kind: "action", move: decisionLabel as AgentDecision });
       state = onTurnEnd(state);
+      // Tool finished; conductor now waits for the next API response.
+      // Reset the "thinking" timer so the title shows time-since-tool,
+      // which is where stalls (4-minute hangs etc.) show up.
+      setStatus("thinking");
       requestPaint();
     },
     onRunEnd: (reason) => {
+      setStatus("exited", reason);
       // Surface the end reason in the error banner if it wasn't a
       // graceful end.
       if (reason !== "model_stopped_without_tool_use" && reason !== "exited") {
