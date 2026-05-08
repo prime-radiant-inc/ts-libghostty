@@ -661,6 +661,9 @@ async function main(): Promise<void> {
       const glyphClass = buildGlyphClass(frame.snapshot, rows, map.currentPlayerXY);
       return { rows, glyphClass, status, message, frameReason: frame.reason, screenAnsi };
     },
+    logAutopilotStep: (ev) => {
+      runLog.append({ event: "autopilot_step", ...ev });
+    },
   };
 
   // Wrap each tool handler to stamp the precedingAction for trapdoor

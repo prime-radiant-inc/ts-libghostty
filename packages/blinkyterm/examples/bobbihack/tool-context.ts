@@ -45,4 +45,21 @@ export interface ToolContext {
   // of staring at a frozen "tool: autopilot_explore" for 30 seconds.
   // Tests can omit it; tools should treat it as best-effort.
   reportProgress?: (detail: string) => void;
+  // Optional per-step trace logger for autopilot tools. Wired from
+  // main.ts to runLog.append; tests can omit. Lets a "stuck" run be
+  // diagnosed from run.jsonl alone (which key, did it move, what
+  // did the engine say) instead of needing a re-run with manual
+  // observation.
+  logAutopilotStep?: (event: {
+    tool: "autopilot_to" | "autopilot_explore";
+    step: number;
+    key: string;
+    dx: number;
+    dy: number;
+    fromXY: { x: number; y: number };
+    toXY: { x: number; y: number } | null;
+    moved: boolean;
+    decision: "adjacent" | "bfs" | "path";
+    message: string;
+  }) => void;
 }

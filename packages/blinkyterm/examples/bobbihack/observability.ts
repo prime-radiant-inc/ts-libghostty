@@ -75,6 +75,31 @@ export interface MaxTokensRecoveryEvent {
   attempt: number;
 }
 
+// Per-iteration trace of an autopilot tool call. Lets us
+// reconstruct, from logs alone, where each keystroke went and
+// whether the engine accepted it — the only way to diagnose
+// "autopilot took 29 keystrokes for 4 visible moves" without
+// re-running the game.
+export interface AutopilotStepEvent {
+  event: "autopilot_step";
+  tool: "autopilot_to" | "autopilot_explore";
+  step: number;       // 1-indexed within this autopilot call.
+  key: string;        // The vi-key sent ("h", "u", etc.).
+  dx: number;
+  dy: number;
+  fromXY: { x: number; y: number };
+  toXY: { x: number; y: number } | null;  // null if player position unknown after.
+  moved: boolean;
+  // How the autopilot picked this step (autopilot_explore only):
+  // "adjacent" = pickAdjacentUnvisited; "bfs" = bfsToFrontier;
+  // "path" = autopilot_to's pre-planned A* path.
+  decision: "adjacent" | "bfs" | "path";
+  // The message line text (truncated). Engine-emitted refusal
+  // messages live here ("Ouch! You bump into a wall.", "The door
+  // is locked.", etc.).
+  message: string;
+}
+
 export type RunEvent =
   | RunStartEvent
   | TurnEvent
@@ -83,7 +108,8 @@ export type RunEvent =
   | InterruptEvent
   | ErrorEvent
   | RunEndEvent
-  | MaxTokensRecoveryEvent;
+  | MaxTokensRecoveryEvent
+  | AutopilotStepEvent;
 
 export class RunLog {
   #fd: number | null;

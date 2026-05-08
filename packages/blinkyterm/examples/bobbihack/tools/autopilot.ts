@@ -237,6 +237,24 @@ export async function handleAutopilotTo(
     stepsTaken += 1;
     ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
 
+    // Per-step trace.
+    {
+      const after = map.currentPlayerXY;
+      const moved = after !== null && (after.x !== cur.x || after.y !== cur.y);
+      ctx.logAutopilotStep?.({
+        tool: "autopilot_to",
+        step: stepsTaken,
+        key,
+        dx,
+        dy,
+        fromXY: { x: cur.x, y: cur.y },
+        toXY: after,
+        moved,
+        decision: "path",
+        message: truncate(result.message.trim(), 80),
+      });
+    }
+
     // Re-check abort AFTER the frame too. If the user hit Ctrl+C
     // mid-step, SIGINT propagated to NetHack via the PTY group and
     // NetHack now shows "Really quit without saving? [yn]" — which
@@ -612,10 +630,12 @@ export async function handleAutopilotExplore(
       visited,
       prevDir,
     );
+    let decision: "adjacent" | "bfs" = "adjacent";
 
     // Step 2 (BFS to nearest frontier) when no adjacent unvisited.
     if (stepDir === null) {
       stepDir = bfsToFrontier(floor, cur.x, cur.y, visited);
+      decision = "bfs";
     }
 
     if (stepDir === null) {
@@ -642,6 +662,24 @@ export async function handleAutopilotExplore(
     lastResult = result;
     stepsTaken += 1;
     ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
+
+    // Per-step trace.
+    {
+      const after = map.currentPlayerXY;
+      const moved = after !== null && (after.x !== cur.x || after.y !== cur.y);
+      ctx.logAutopilotStep?.({
+        tool: "autopilot_explore",
+        step: stepsTaken,
+        key,
+        dx,
+        dy,
+        fromXY: { x: cur.x, y: cur.y },
+        toXY: after,
+        moved,
+        decision,
+        message: truncate(result.message.trim(), 80),
+      });
+    }
 
     // Re-check abort AFTER the frame; see handleAutopilotTo for why.
     if (ctx.signal.aborted) {

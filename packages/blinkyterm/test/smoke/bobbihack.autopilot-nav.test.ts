@@ -115,6 +115,10 @@ function parseFixture(spec: FixtureSpec): Fixture {
   };
 }
 
+// Test-only: re-export the per-step event shape so tests can spread
+// it into assertions without re-writing the type.
+type StepEvent = Parameters<NonNullable<ToolContext["logAutopilotStep"]>>[0];
+
 // ---------------------------------------------------------------------------
 // Fake engine.
 
@@ -256,6 +260,8 @@ interface HarnessResult {
   steps: number;
   /** Stop-reason text extracted from the tool result, if any. */
   stopReason: string | null;
+  /** Per-step trace events emitted by the autopilot. */
+  stepEvents: StepEvent[];
 }
 
 interface RunOpts {
@@ -270,10 +276,12 @@ function makeContext(fixture: Fixture): {
   sentKeys: string[];
   state: EngineState;
   ac: AbortController;
+  steps: Parameters<NonNullable<ToolContext["logAutopilotStep"]>>[0][];
 } {
   const sentKeys: string[] = [];
   const map = new GameMap();
   const ac = new AbortController();
+  const steps: Parameters<NonNullable<ToolContext["logAutopilotStep"]>>[0][] = [];
   const state: EngineState = {
     rows: [...fixture.rows],
     player: { ...fixture.start },
@@ -289,6 +297,7 @@ function makeContext(fixture: Fixture): {
     runState: { gameOver: false, endReason: null },
     signal: ac.signal,
     journalDir: "",
+    logAutopilotStep: (ev) => steps.push(ev),
     sendKeysAndWait: async (keys: string): Promise<FrameAwaitResult> => {
       sentKeys.push(keys);
       // Real autopilot only sends single vi-keys, but be defensive.
@@ -310,7 +319,7 @@ function makeContext(fixture: Fixture): {
       };
     },
   };
-  return { ctx, sentKeys, state, ac };
+  return { ctx, sentKeys, state, ac, steps };
 }
 
 // Pull the stop reason out of the tool result. The handler emits one of:
@@ -334,7 +343,7 @@ async function runAutopilotTo(
 ): Promise<HarnessResult> {
   const target = goal ?? fixture.goal;
   if (target === null) throw new Error("runAutopilotTo: fixture has no goal '*' and none given");
-  const { ctx, sentKeys, state, ac } = makeContext(fixture);
+  const { ctx, sentKeys, state, ac, steps } = makeContext(fixture);
   if (opts.abortAfter !== undefined) {
     // Wrap sendKeysAndWait to abort after N calls.
     const orig = ctx.sendKeysAndWait;
@@ -360,6 +369,7 @@ async function runAutopilotTo(
     finalPos: state.player,
     steps: sentKeys.length,
     stopReason: extractStopReason(toolResult),
+    stepEvents: steps,
   };
 }
 
@@ -367,7 +377,7 @@ async function runAutopilotExplore(
   fixture: Fixture,
   opts: RunOpts = {},
 ): Promise<HarnessResult> {
-  const { ctx, sentKeys, state, ac } = makeContext(fixture);
+  const { ctx, sentKeys, state, ac, steps } = makeContext(fixture);
   if (opts.abortAfter !== undefined) {
     const orig = ctx.sendKeysAndWait;
     let n = 0;
@@ -388,6 +398,7 @@ async function runAutopilotExplore(
     finalPos: state.player,
     steps: sentKeys.length,
     stopReason: extractStopReason(toolResult),
+    stepEvents: steps,
   };
 }
 
@@ -470,6 +481,42 @@ describe("autopilot_to navigation", () => {
     const r = await runAutopilotTo(fx, null);
     expect(r.stopReason).toBe("arrived");
     expect(r.finalPos).toEqual(fx.goal!);
+  });
+
+  test("autopilot_to emits per-step trace events with decision='path'", async () => {
+    const fx = parseFixture({
+      map: `
+--------
+|......|
+|@....*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null);
+    expect(r.stepEvents.length).toBe(r.steps);
+    for (const ev of r.stepEvents) {
+      expect(ev.tool).toBe("autopilot_to");
+      expect(ev.decision).toBe("path");
+    }
+    // moved=true on every step for an unobstructed corridor.
+    expect(r.stepEvents.every((e) => e.moved)).toBe(true);
+  });
+
+  test("locked door step is logged with moved=false and engine message", async () => {
+    const fx = parseFixture({
+      map: `
+--------
+|...|..|
+|...|..|
+|@..+.*|
+|...|..|
+--------`,
+      lockedDoors: [[4, 3]],
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    // At least one step should be moved=false with the locked-door message.
+    const refusals = r.stepEvents.filter((e) => !e.moved);
+    expect(refusals.length).toBeGreaterThan(0);
+    expect(refusals.some((e) => e.message.includes("door is locked"))).toBe(true);
   });
 
   test("REGRESSION: locked-door-only-route bails with blocked_unreachable + engine message", async () => {
@@ -703,6 +750,31 @@ describe("autopilot_explore navigation", () => {
     expect(r.stopReason).toContain("explored entire known map");
     expect(r.finalPos.y).toBeGreaterThanOrEqual(1);
     expect(r.finalPos.y).toBeLessThanOrEqual(2);
+  });
+
+  test("emits per-step trace events with key, decision, moved, message", async () => {
+    const fx = parseFixture({
+      map: `
+------
+|....|
+|.@..|
+|....|
+------`,
+    });
+    const r = await runAutopilotExplore(fx, { stepCap: 5 });
+    expect(r.stepEvents.length).toBe(r.steps);
+    // Every event has the expected shape.
+    for (const ev of r.stepEvents) {
+      expect(ev.tool).toBe("autopilot_explore");
+      expect(typeof ev.step).toBe("number");
+      expect("hjklyubn".includes(ev.key)).toBe(true);
+      expect(["adjacent", "bfs"].includes(ev.decision)).toBe(true);
+      expect(typeof ev.moved).toBe("boolean");
+    }
+    // Step numbers are 1-indexed and contiguous.
+    expect(r.stepEvents.map((e) => e.step)).toEqual(
+      Array.from({ length: r.stepEvents.length }, (_, i) => i + 1),
+    );
   });
 
   test("explore makes progress when unknown tiles exist beyond a corridor", async () => {
