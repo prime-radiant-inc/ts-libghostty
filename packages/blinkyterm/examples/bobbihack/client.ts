@@ -80,6 +80,12 @@ export interface ScriptedTurn {
   toolUses?: { name: string; input: unknown }[];
   usage?: UsageStats;
   error?: { status?: number; code?: string; message: string };
+  // Override the auto-derived stop_reason. Useful for simulating
+  // truncation: { text: "thinking…", stopReason: "max_tokens" } —
+  // the conductor's max-tokens recovery path uses stop_reason, not
+  // content shape, to distinguish "truncated mid-thought" from
+  // "model decided to stop."
+  stopReason?: StopReason;
 }
 
 export class MockAnthropicClient implements AnthropicClient {
@@ -139,7 +145,11 @@ export class MockAnthropicClient implements AnthropicClient {
             });
           }
           const stop_reason: StopReason =
-            content.some((b) => b.type === "tool_use") ? "tool_use" : "end_turn";
+            turn.stopReason !== undefined
+              ? turn.stopReason
+              : content.some((b) => b.type === "tool_use")
+              ? "tool_use"
+              : "end_turn";
 
           return {
             role: "assistant",

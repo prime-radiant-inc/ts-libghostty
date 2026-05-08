@@ -142,6 +142,67 @@ describe("runConductor — happy path", () => {
   });
 });
 
+describe("runConductor — max_tokens recovery", () => {
+  test("truncated text-only turn → injects corrective message and continues", async () => {
+    // First turn: model rambles and gets truncated (stop_reason =
+    // max_tokens, no tool_use). Second turn: model is concise and
+    // emits a tool_use. Third turn: graceful end.
+    const plan: ScriptedTurn[] = [
+      { text: "let me think about this for a long time…", stopReason: "max_tokens" },
+      { text: "okay, going east.", toolUses: [{ name: "move", input: { direction: "east" } }] },
+      { text: "all done." },
+    ];
+    const { deps, calls, runState, runLogPath, tmpDir } = setup(plan);
+    await runConductor(deps);
+    // Tool actually executed → recovery worked.
+    expect(calls).toEqual([{ name: "move", args: { direction: "east" } }]);
+    // Final end reason is the graceful one, not max_tokens_*.
+    expect(runState.endReason).toBe("model_stopped_without_tool_use");
+    // run.jsonl recorded the recovery.
+    const log = readFileSync(runLogPath, "utf8")
+      .split("\n")
+      .filter((l) => l.length > 0)
+      .map((l) => JSON.parse(l) as { event: string });
+    const events = log.map((e) => e.event);
+    expect(events).toContain("max_tokens_recovery");
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("3 consecutive truncations → bails with max_tokens_recoveries_exhausted", async () => {
+    const plan: ScriptedTurn[] = [
+      { text: "rambling 1…", stopReason: "max_tokens" },
+      { text: "rambling 2…", stopReason: "max_tokens" },
+      { text: "rambling 3…", stopReason: "max_tokens" },
+      // Should never reach turn 4 because we cap at 2 recoveries.
+      { text: "I won't be reached.", toolUses: [{ name: "move", input: {} }] },
+    ];
+    const { deps, calls, runState, tmpDir } = setup(plan);
+    await runConductor(deps);
+    expect(calls).toEqual([]); // No tool executed.
+    expect(runState.endReason).toBe("max_tokens_recoveries_exhausted");
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  test("counter resets after a successful tool_use turn", async () => {
+    // Truncate, recover (1), tool_use (resets), truncate, recover (1
+    // again — not 2), tool_use, end. If the counter didn't reset, the
+    // second recovery would be capped at 0 → bail. We expect to
+    // reach the end naturally.
+    const plan: ScriptedTurn[] = [
+      { text: "rambling…", stopReason: "max_tokens" },
+      { text: "going east.", toolUses: [{ name: "move", input: { direction: "east" } }] },
+      { text: "rambling again…", stopReason: "max_tokens" },
+      { text: "going west.", toolUses: [{ name: "move", input: { direction: "west" } }] },
+      { text: "done." },
+    ];
+    const { deps, calls, runState, tmpDir } = setup(plan);
+    await runConductor(deps);
+    expect(calls.length).toBe(2);
+    expect(runState.endReason).toBe("model_stopped_without_tool_use");
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+});
+
 describe("runConductor — multiple tool_uses per assistant turn", () => {
   test("batched tool_use blocks all execute and produce one user-message of tool_results", async () => {
     const plan: ScriptedTurn[] = [

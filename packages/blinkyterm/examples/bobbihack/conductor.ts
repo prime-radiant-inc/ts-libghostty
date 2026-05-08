@@ -168,6 +168,12 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
   });
 
   let turnCounter = 0;
+  // Tracks consecutive turns where the model emitted text but no
+  // tool_use because it hit the max_tokens cap mid-thought. We
+  // recover by injecting a corrective user message and retrying;
+  // capped at 2 consecutive recoveries so a stuck model can't burn
+  // budget forever in a "think → truncate → retry" loop.
+  let consecutiveMaxTokensRecoveries = 0;
 
   try {
     while (
@@ -179,7 +185,13 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
         events?.onAssistantMessageStart?.();
         const args: StreamArgs = {
           model,
-          max_tokens: 1024,
+          // 4096 gives the model room to think (a few hundred
+          // tokens of reasoning) AND emit a tool_use without
+          // truncating. Production run bbh-20260508-195541-f530f3
+          // hit the prior 1024 cap mid-monologue at turn 116 and
+          // ended the run prematurely. max_tokens is an UPPER
+          // bound, not a target — typical turns use 100-700.
+          max_tokens: 4096,
           system: [
             {
               type: "text",
@@ -263,12 +275,46 @@ export async function runConductor(deps: ConductorDeps): Promise<void> {
       );
 
       if (toolUses.length === 0) {
-        // Model emitted only text → graceful end.
+        // Two cases. (a) stop_reason === "max_tokens": model was
+        // mid-thought and got truncated before reaching a
+        // tool_use. Inject a corrective user message and continue;
+        // capped to prevent infinite loops. (b) stop_reason ===
+        // "end_turn": model genuinely decided to stop. Treat as a
+        // graceful end (typically only happens after a `quit` or
+        // similar tool call has already executed).
+        if (final.stop_reason === "max_tokens") {
+          if (consecutiveMaxTokensRecoveries >= 2) {
+            // Repeated truncation → likely a runaway monologue.
+            // Surface as a distinct end reason so it shows up in
+            // run.jsonl and the user knows to look at the prompt.
+            toolCtx.runState.gameOver = true;
+            toolCtx.runState.endReason = "max_tokens_recoveries_exhausted";
+            await persistMessages(messagesPath, messages);
+            break;
+          }
+          consecutiveMaxTokensRecoveries += 1;
+          runLog.append({
+            event: "max_tokens_recovery",
+            attempt: consecutiveMaxTokensRecoveries,
+          });
+          messages.push({
+            role: "user",
+            content: [
+              {
+                type: "text",
+                text: "Your previous response was truncated before you could call a tool. Be concise — at most 2-3 sentences of reasoning, then end with a tool call.",
+              },
+            ],
+          });
+          continue;
+        }
         toolCtx.runState.gameOver = true;
         toolCtx.runState.endReason = "model_stopped_without_tool_use";
         await persistMessages(messagesPath, messages);
         break;
       }
+      // Reset the recovery counter on any successful tool_use turn.
+      consecutiveMaxTokensRecoveries = 0;
 
       // Execute every tool_use. INVARIANT: every tool_use needs a matching
       // tool_result. If we abort or the game ends mid-batch, synthesize

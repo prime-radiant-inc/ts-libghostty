@@ -66,6 +66,15 @@ export interface RunEndEvent {
   totalCostUsd: number;
 }
 
+// Logged when the model stopped with stop_reason=max_tokens (i.e.
+// truncated mid-thought before reaching tool_use). The conductor
+// injects a "be concise" user message and retries; this event lets
+// post-hoc analysis see how often the runaway-monologue case fires.
+export interface MaxTokensRecoveryEvent {
+  event: "max_tokens_recovery";
+  attempt: number;
+}
+
 export type RunEvent =
   | RunStartEvent
   | TurnEvent
@@ -73,7 +82,8 @@ export type RunEvent =
   | RetryEvent
   | InterruptEvent
   | ErrorEvent
-  | RunEndEvent;
+  | RunEndEvent
+  | MaxTokensRecoveryEvent;
 
 export class RunLog {
   #fd: number | null;
