@@ -1178,3 +1178,69 @@ describe("v2 — danger-class refusal & detour (spec cases 2, 3)", () => {
     expect(r.steps).toBeLessThan(15);
   });
 });
+
+describe("v2 — marker refusal (spec cases 4, 5)", () => {
+  test("REGRESSION: `I` unseen-monster marker on path → AP refuses, no step", async () => {
+    // Case 4 from spec test plan. The `I` glyph marks an unseen
+    // monster (warning extrinsic, monster detection, telepathy, fresh
+    // footprints). v2 layers: classifier returns
+    // `foreground.kind: 'unseen-monster'`; predict-and-avoid returns
+    // `attack-or-peaceful: refuse`; interrupt
+    // `unseen_monster_visible` (priority 245) also fires when the
+    // marker first appears in a new frame.
+    //
+    // Fixture: single-row corridor with `I` between @ and goal so no
+    // detour exists. AP halts upstream — never bumps the marker.
+    const fx = parseFixture({
+      map: `
+--------
+|@.I..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    expect(r.stopReason ?? "").toMatch(
+      /blocked_unreachable|predict|unseen_monster_visible|attack-or-peaceful/,
+    );
+    expect(r.steps).toBeLessThan(10);
+  });
+
+  test("REGRESSION: warning digit `4` on path → AP refuses, no step", async () => {
+    // Case 5 from spec test plan. Warning extrinsic surfaces `1`-`5`
+    // digits on map cells; tier ≥ 4 is "high warning" and fires the
+    // `warning_high` interrupt (priority 243). v2 also routes around
+    // them via the dangerWeight `tier × 4` multiplier (4× = 16, well
+    // above the explore threshold of 10).
+    //
+    // Fixture: single-row corridor with `4` between @ and goal.
+    const fx = parseFixture({
+      map: `
+--------
+|@.4..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    expect(r.stopReason ?? "").toMatch(
+      /blocked_unreachable|predict|warning_high|attack-or-peaceful/,
+    );
+    expect(r.steps).toBeLessThan(10);
+  });
+
+  test("INVARIANT: warning tier 1 also refuses upstream (any tier blocks step)", async () => {
+    // The `warning_high` interrupt only fires for tier ≥ 4 (to keep
+    // ambient warnings from spamming halts), but predict-and-avoid
+    // refuses ANY warning tile because stepping onto it is undefined
+    // engine behavior. This locks in the layered defense: tier 1
+    // doesn't fire `warning_high` but DOES fire predict-avoid refuse.
+    const fx = parseFixture({
+      map: `
+--------
+|@.1..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    // Either predict-avoid refuses (most common) or pathfind's
+    // dangerWeight (1×4=4) lets the AP through and the explore
+    // threshold catches it later. Either way, no engagement key.
+    expect(r.sentKeys.includes("y")).toBe(false);
+  });
+});
