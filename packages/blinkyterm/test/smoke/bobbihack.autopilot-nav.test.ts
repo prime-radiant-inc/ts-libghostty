@@ -1456,3 +1456,52 @@ describe("v2 — floor-refusal table (spec case 14)", () => {
     }
   });
 });
+
+describe("v2 — engulfed false-positive regression (spec case 10)", () => {
+  test("REGRESSION: AP runs through corridor edges without firing `engulfed`", async () => {
+    // Spec case 10. The pre-`0b31893` engulfed detector matched any
+    // `@` adjacent to dash walls, false-firing on every player frame
+    // in a 1-row corridor (top/bottom dashes flanking @). The v0.3.0
+    // tightened heuristic requires all four `/`/`\` slashes — only
+    // the canonical engulfer rendering matches.
+    //
+    // This fixture exercises the *integration* path: the AP runs
+    // multiple steps through a tight corridor (player adjacent to
+    // top and bottom walls) and must NOT halt with `engulfed`.
+    // The unit detector is exercised by bobbihack.interrupts.test.ts
+    // (`engulfed > does NOT fire on plain dungeon walls`); this
+    // fixture catches a regression that re-loosens the heuristic
+    // upstream of the AP.
+    const fx = parseFixture({
+      map: `
+--------
+|@....*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    expect(r.stopReason).toBe("arrived");
+    // None of the per-step events report engulfed — the AP only
+    // sees `path` decisions.
+    expect(
+      r.stepEvents.every((e) => e.decision === "path"),
+    ).toBe(true);
+    // Tool result text never mentions engulfed.
+    expect(r.toolResult.toLowerCase()).not.toContain("engulfed");
+  });
+
+  test("REGRESSION: dense single-cell-tall corridor (top + bottom walls flanking @)", async () => {
+    // The most concentrated form of the pre-fix false-fire shape:
+    // `@` between two dash walls with corner cells also dash.
+    // `parseFixture` produces this with a 3-row map where rows 0
+    // and 2 are dashes and row 1 is `|@.....|`.
+    const fx = parseFixture({
+      map: `
+--------
+|@.....*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    expect(r.stopReason).toBe("arrived");
+    expect(r.toolResult.toLowerCase()).not.toContain("engulfed");
+  });
+});
