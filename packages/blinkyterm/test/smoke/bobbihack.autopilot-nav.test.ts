@@ -76,6 +76,16 @@ interface FixtureSpec {
    * though the fake engine doesn't model the underlying mechanics.
    */
   playerConditions?: string[];
+  /**
+   * Item glyphs at specific positions, given as `{ "x,y": glyph }`.
+   * The underlying buffer is rendered with `.` (floor) at these
+   * positions so GameMap classifies the tile as walkable; the
+   * per-frame snapshot's cellAt returns the item glyph so
+   * predict-and-avoid sees it as a `pickup-prompt` candidate.
+   * This mirrors production where items render on top of recorded
+   * terrain.
+   */
+  items?: Record<string, string>;
 }
 
 interface Fixture {
@@ -86,6 +96,9 @@ interface Fixture {
   petPositions: Set<string>;
   cellColors: Map<string, number>;
   playerConditions: string[];
+  /** Item glyphs by position key — rendered via the snapshot, not
+   *  the buffer (the buffer keeps `.` so GameMap records floor). */
+  items: Map<string, string>;
 }
 
 function parseFixture(spec: FixtureSpec): Fixture {
@@ -141,6 +154,20 @@ function parseFixture(spec: FixtureSpec): Fixture {
     cellColors.set(k, v);
   }
 
+  const items = new Map<string, string>();
+  for (const [k, glyph] of Object.entries(spec.items ?? {})) {
+    items.set(k, glyph);
+    // Replace the buffer cell with floor so GameMap records walkable
+    // terrain underneath. The item is overlaid via the snapshot.
+    const [xs, ys] = k.split(",");
+    const x = Number.parseInt(xs ?? "", 10);
+    const y = Number.parseInt(ys ?? "", 10);
+    if (Number.isFinite(x) && Number.isFinite(y) && y >= 0 && y < ROWS) {
+      const row = buf[y]!;
+      if (x >= 0 && x < row.length) row[x] = ".";
+    }
+  }
+
   return {
     rows: buf.map((r) => r.join("")),
     start,
@@ -149,6 +176,7 @@ function parseFixture(spec: FixtureSpec): Fixture {
     petPositions,
     cellColors,
     playerConditions: spec.playerConditions ?? [],
+    items,
   };
 }
 
@@ -250,14 +278,18 @@ function buildStubSnapshot(rows: string[], fixture: Fixture): FrameSnapshot {
       if (y < 0 || y >= rows.length) return null;
       const row = rows[y]!;
       if (x < 0 || x >= row.length) return null;
-      const ch = row[x]!;
       const k = `${x},${y}`;
+      const itemGlyph = fixture.items.get(k);
+      // Items overlay the buffer's floor cell; the buffer keeps `.`
+      // so GameMap records walkable terrain underneath, mirroring
+      // production where items are transient on top of recorded
+      // terrain.
+      const ch = itemGlyph ?? row[x]!;
       const isPet = fixture.petPositions.has(k);
       const colorOverride = fixture.cellColors.get(k);
-      // No style needed for plain terrain — return null to match the
-      // production fallback path. Only build a style when the fixture
-      // has an opinion (pet or explicit color).
-      if (!isPet && colorOverride === undefined) return null;
+      if (itemGlyph === undefined && !isPet && colorOverride === undefined) {
+        return null;
+      }
       const overrides: Partial<CellStyle> = {};
       if (isPet) overrides.inverse = true;
       if (colorOverride !== undefined) overrides.fg = { palette: colorOverride };
@@ -362,6 +394,17 @@ function step(state: EngineState, key: string): string {
     state.underPlayer = ".";
     setCell(state, nx, ny, "@");
     state.player = { x: nx, y: ny };
+    return "";
+  }
+
+  // Walking over an item with `m`-prefix (the harness stripped the
+  // `m` upstream): consume the item from the fixture's items map so
+  // the next frame's classified grid no longer reads it as a pickup
+  // candidate. Real NetHack would render a "You see here ..." line;
+  // we simulate the silent-skip case (m-prefix path).
+  if (state.fixture.items.has(targetKey)) {
+    state.fixture.items.delete(targetKey);
+    movePlayer(state, nx, ny, ".");
     return "";
   }
 
@@ -1242,5 +1285,101 @@ describe("v2 — marker refusal (spec cases 4, 5)", () => {
     // dangerWeight (1×4=4) lets the AP through and the explore
     // threshold catches it later. Either way, no engagement key.
     expect(r.sentKeys.includes("y")).toBe(false);
+  });
+});
+
+describe("v2 — modal prediction (spec cases 6, 7, 8)", () => {
+  test("INVARIANT: item `?` on path → AP sends m-prefix and arrives", async () => {
+    // Case 6 from spec test plan. An item glyph on the path triggers
+    // the pickup prompt unless the AP prefixes the move with `m`
+    // (NetHack's "move without picking up / fighting"). v2
+    // predict-and-avoid returns `pickup-prompt: m-prefix`; the AP
+    // sends `m` + direction as a single sequence.
+    //
+    // Fixture: `?` (scroll) on the cardinal-east path. The harness
+    // overlays the item via the snapshot but keeps `.` in the buffer
+    // so GameMap records walkable underneath (mirrors production
+    // where items render on top of recorded terrain).
+    const fx = parseFixture({
+      map: `
+--------
+|@....*|
+--------`,
+      items: { "3,1": "?" },
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    expect(r.stopReason).toBe("arrived");
+    // At least one keystroke is the `m`-prefixed pair `ml` / `mu` /
+    // `mh` / `mn` etc. (length 2, starts with 'm').
+    const mPrefixed = r.sentKeys.filter(
+      (k) => k.length === 2 && k.startsWith("m") && /^[hjklyubn]$/.test(k[1] ?? ""),
+    );
+    expect(mPrefixed.length).toBeGreaterThan(0);
+    // No predict-avoid refusal logged for the item tile.
+    const refusals = r.stepEvents.filter((e) =>
+      e.key === "predict-avoid:pickup-prompt",
+    );
+    expect(refusals.length).toBe(0);
+  });
+
+  test("REGRESSION: `^` known trap on path → AP refuses, never steps in", async () => {
+    // Case 7 from spec test plan. `^` is `trap_known` terrain;
+    // GameMap.pathfind already excludes it from the search via
+    // NON_WALKABLE_KINDS, so the AP can't plan a route through it in
+    // the first place. v2 predict-and-avoid is the layered defense
+    // for the case where a trap appears on the planned path
+    // mid-traversal.
+    //
+    // Fixture: trap directly between @ and goal in a single-row
+    // corridor. The AP must NOT step onto the trap; result is "no
+    // path" or arrival via no-path-after-replan, never engagement.
+    const fx = parseFixture({
+      map: `
+--------
+|@.^..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    // pathfind's NON_WALKABLE_KINDS filter rejects trap_known
+    // up-front, so the AP returns "no path" before sending any key.
+    expect(r.toolResult).toContain("no path");
+    expect(r.steps).toBe(0);
+    // Defense in depth: even if pathfind ever lets a trap through,
+    // the engine's "You see a trap." message would surface here.
+    expect(r.sentKeys.includes("l")).toBe(false);
+  });
+
+  test("TODO(v2.5): Conf status + closed door — currently halts on `confused` interrupt only", async () => {
+    // Case 8 from spec test plan: under Conf/Stun, NetHack disables
+    // closed-door autoopen, so stepping into a `+` should be refused
+    // *before* the step. Per spec rubric 2 ("Cues for no, refuse"),
+    // the AP should refuse via predict-and-avoid; per source today,
+    // no Conf-aware logic exists in modal-prediction.ts.
+    //
+    // What actually happens: the player's first frame has Conf in
+    // status, the prev frame did not, so the `confused` interrupt
+    // (priority 321) fires on the first step and the AP halts —
+    // BEFORE attempting any closed-door step. This is correct
+    // bystander behavior but doesn't exercise the real fix.
+    //
+    // Expected v2.5 behavior: `willStepFireModal` returns
+    // `'refuse'` when the target is `door_closed` AND
+    // `status.conditions` includes `Conf` or `Stun`, surfacing as
+    // `predict-avoid:autoopen-disabled` instead of a generic
+    // `confused` halt. Flip the assertion when v2.5 ships.
+    const fx = parseFixture({
+      map: `
+--------
+|@..+.*|
+--------`,
+      playerConditions: ["Conf"],
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    // Today's behavior: the `confused` interrupt fires on the first
+    // frame because Conf is freshly set; the AP halts before reaching
+    // the door at all.
+    expect(r.stopReason ?? "").toMatch(/confused|predict|blocked/);
+    // Bounded — no door bumping (which the real engine would emit).
+    expect(r.steps).toBeLessThan(10);
   });
 });
