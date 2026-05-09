@@ -29,6 +29,12 @@ import {
 } from "../interrupts";
 import { formatToolResult } from "../tool-result";
 import type { TileKind } from "../parsers";
+import type { ClassifiedCell } from "../cell-classifier";
+import { dangerWeight } from "../danger-classes";
+import {
+  willStepFireModal,
+  type ModalPrediction,
+} from "../modal-prediction";
 
 const DEFAULT_STEP_CAP = 50;
 
@@ -88,8 +94,18 @@ function formatInterruptSummary(r: InterruptResult): string {
 }
 
 // Refuse-floor predicate. Returns the reason string, or null if OK.
+//
+// v2 adds Quest and Castle to the refusal list per spec §"Layer 5"
+// rubric 6:
+//   - Quest: mechanics beyond the AP's planning model.
+//   - Castle: the drawbridge introduces dynamic terrain the AP can't
+//     yet reason about. Conservative refusal — bobbihack runs are not
+//     reaching Castle in practice; flip when one does and the
+//     drawbridge mechanic becomes load-bearing.
 function floorRefusalReason(floor: FloorMap): string | null {
   if (floor.id.includes("Sokoban")) return "sokoban floor — manual play required";
+  if (floor.id.includes("Quest")) return "quest floor — manual play required";
+  if (floor.id === "Castle") return "castle floor — manual play required";
   if (floor.isRogueLevel) return "rogue level — manual play required";
   if (floor.walkabilitySuspect) {
     return "walkability suspect (polymorph?) — manual play required";
@@ -161,8 +177,16 @@ export async function handleAutopilotTo(
 
   // Initial planning: refuses goals on `trap_known` tiles or any goal not
   // reachable through walkable tiles. (GameMap.pathfind already excludes
-  // trap_known tiles from the search.)
-  let path = map.pathfind(start, goal);
+  // trap_known tiles from the search.) The classified grid makes the
+  // planner danger-aware: paths around `D`/`L`/`V`/`W`/`&` cost ~20×
+  // per adjacency so detours up to ~28 steps are preferred over a
+  // direct route through.
+  let path = map.pathfind(
+    start,
+    goal,
+    undefined,
+    map.latestClassified ?? undefined,
+  );
   if (path === null) {
     return errJson("no path");
   }
@@ -202,7 +226,7 @@ export async function handleAutopilotTo(
 
     // If the path is empty or its first step doesn't begin from cur, replan.
     if (path === null || path.length === 0) {
-      path = map.pathfind(cur, goal, blockedTiles);
+      path = map.pathfind(cur, goal, blockedTiles, map.latestClassified ?? undefined);
       if (path === null || path.length === 0) {
         stopReason = withMessage("no_path_after_replan", lastBlockMessage);
         break;
@@ -224,7 +248,7 @@ export async function handleAutopilotTo(
     const key = deltaToViKey(dx, dy);
     if (key === null) {
       // Path step is non-adjacent → corruption; replan.
-      path = map.pathfind(cur, goal, blockedTiles);
+      path = map.pathfind(cur, goal, blockedTiles, map.latestClassified ?? undefined);
       if (path === null || path.length === 0) {
         stopReason = withMessage("no_path_after_replan", lastBlockMessage);
         break;
@@ -232,19 +256,70 @@ export async function handleAutopilotTo(
       continue;
     }
 
-    const result = await ctx.sendKeysAndWait(key);
+    // v2 predict-and-avoid: before sending the key, look up the target
+    // cell in the classified grid (cached on the map) and ask the
+    // modal-prediction module whether this step would fire a tile-
+    // induced modal. Three resolutions:
+    //   - 'refuse': mark target blocked, replan (same handler as the
+    //     post-step silent-no-move path; mirrors the
+    //     "engine refused — never enter" invariant from
+    //     §"silent-no-move-means-engine-refused").
+    //   - 'm-prefix': send `m` + direction. The m-prefix tells NetHack
+    //     "move without picking up / fighting"; it's a single
+    //     two-byte sequence consumed in one engine update cycle.
+    //   - 'step' / null: send the bare direction key.
+    const classifiedAtNext = map.latestClassified?.[next.y]?.[next.x] ?? null;
+    const prediction: ModalPrediction | null = willStepFireModal(classifiedAtNext);
+    if (prediction !== null && prediction.resolveWith === "refuse") {
+      // Mirror the post-step blocked-tile handler. We have not stepped
+      // and have not consumed a turn; the target tile is blocked for
+      // this run and the planner will detour.
+      const targetKey = `${next.x},${next.y}`;
+      blockedTiles.add(targetKey);
+      ctx.logAutopilotStep?.({
+        tool: "autopilot_to",
+        step: stepsTaken,
+        key: `predict-avoid:${prediction.kind}`,
+        dx,
+        dy,
+        fromXY: { x: cur.x, y: cur.y },
+        toXY: { x: cur.x, y: cur.y },
+        moved: false,
+        decision: "path",
+        message: `predict-and-avoid: ${prediction.kind} at (${next.x},${next.y})`,
+      });
+      path = map.pathfind(
+        cur,
+        goal,
+        blockedTiles,
+        map.latestClassified ?? undefined,
+      );
+      if (path === null) {
+        stopReason = withMessage("blocked_unreachable", `predict:${prediction.kind}`);
+        break;
+      }
+      continue;
+    }
+
+    const keysToSend =
+      prediction !== null && prediction.resolveWith === "m-prefix"
+        ? `m${key}`
+        : key;
+    const result = await ctx.sendKeysAndWait(keysToSend);
     lastResult = result;
     stepsTaken += 1;
     ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
 
-    // Per-step trace.
+    // Per-step trace. Record the actual keystroke sent (with `m`-
+    // prefix when applicable) so a stuck run can be diagnosed from
+    // run.jsonl alone.
     {
       const after = map.currentPlayerXY;
       const moved = after !== null && (after.x !== cur.x || after.y !== cur.y);
       ctx.logAutopilotStep?.({
         tool: "autopilot_to",
         step: stepsTaken,
-        key,
+        key: keysToSend,
         dx,
         dy,
         fromXY: { x: cur.x, y: cur.y },
@@ -316,7 +391,12 @@ export async function handleAutopilotTo(
       // viable route went through the blocked tile, pathfind returns
       // null and we surface no_path_after_replan with the engine's
       // message ("The door is locked.", etc.).
-      path = map.pathfind(playerNow ?? cur, goal, blockedTiles);
+      path = map.pathfind(
+        playerNow ?? cur,
+        goal,
+        blockedTiles,
+        map.latestClassified ?? undefined,
+      );
       if (path === null) {
         stopReason = withMessage("blocked_unreachable", lastBlockMessage);
         break;
@@ -438,6 +518,38 @@ function isPlayerWalkable(tile: Tile): boolean {
   return true;
 }
 
+// v2 multiplier threshold for the explorer. Cells with a danger weight
+// strictly greater than this are skipped by `pickAdjacentUnvisited`
+// and `bfsToFrontier`. The threshold catches:
+//   - danger-class hostiles (`D`/`L`/`V`/`W`/`&`) at 20×
+//   - warning tiers 3+ at 12× / 16× / 20×
+// while leaving generic hostiles (5×) and the unseen-monster marker
+// (10×) to the per-step `willStepFireModal` check (which refuses them
+// anyway, but lets pickAdjacentUnvisited surface them as last-resort
+// candidates if no other adjacent walkable exists).
+const EXPLORE_DANGER_MULTIPLIER_MAX = 10;
+
+function isExploreWalkable(
+  tile: Tile,
+  classified: ClassifiedCell | null | undefined,
+): boolean {
+  if (!isPlayerWalkable(tile)) return false;
+  if (classified !== null && classified !== undefined) {
+    const w = dangerWeight(classified);
+    if (w > EXPLORE_DANGER_MULTIPLIER_MAX) return false;
+  }
+  return true;
+}
+
+function classifiedAt(
+  classifiedGrid: ReadonlyArray<ReadonlyArray<ClassifiedCell>> | null | undefined,
+  x: number,
+  y: number,
+): ClassifiedCell | null {
+  if (classifiedGrid === null || classifiedGrid === undefined) return null;
+  return classifiedGrid[y]?.[x] ?? null;
+}
+
 // Diagonal-doorway / boulder rule, mirroring GameMap.pathfind. Used by
 // the exploration policy when picking adjacent steps and during BFS.
 function diagonalAllowed(
@@ -469,10 +581,20 @@ function diagonalAllowed(
 }
 
 // Is a tile a "frontier" — known walkable adjacent to an unknown tile?
-function isFrontier(floor: FloorMap, x: number, y: number): boolean {
+//
+// v2: when a classified grid is supplied, the frontier candidate must
+// also pass the danger-weight gate (multiplier ≤ 10×). A danger-class
+// monster standing on what was a frontier no longer is one — we
+// don't want to make it our exploration target.
+function isFrontier(
+  floor: FloorMap,
+  x: number,
+  y: number,
+  classifiedGrid: ReadonlyArray<ReadonlyArray<ClassifiedCell>> | null | undefined,
+): boolean {
   const t = floor.tiles.get(`${x},${y}`);
   if (t === undefined) return false;
-  if (!isPlayerWalkable(t)) return false;
+  if (!isExploreWalkable(t, classifiedAt(classifiedGrid, x, y))) return false;
   for (const [dx, dy] of DIAG_DIRS) {
     const nx = x + dx;
     const ny = y + dy;
@@ -502,6 +624,7 @@ function bfsToFrontier(
   sy: number,
   visited: Set<string>,
   blocked: Set<string>,
+  classifiedGrid: ReadonlyArray<ReadonlyArray<ClassifiedCell>> | null | undefined,
 ): readonly [number, number] | null {
   // BFS through walkable tiles. Expand 8-connectivity.
   type Node = { x: number; y: number; firstStep: readonly [number, number] | null };
@@ -518,7 +641,7 @@ function bfsToFrontier(
     const isStart = node.x === sx && node.y === sy;
     if (
       !isStart &&
-      isFrontier(floor, node.x, node.y) &&
+      isFrontier(floor, node.x, node.y, classifiedGrid) &&
       !visited.has(`${node.x},${node.y}`) &&
       !blocked.has(`${node.x},${node.y}`)
     ) {
@@ -533,7 +656,7 @@ function bfsToFrontier(
       if (blocked.has(key)) continue;
       const t = floor.tiles.get(key);
       if (t === undefined) continue;
-      if (!isPlayerWalkable(t)) continue;
+      if (!isExploreWalkable(t, classifiedAt(classifiedGrid, nx, ny))) continue;
       const isDiag = dx !== 0 && dy !== 0;
       if (isDiag && !diagonalAllowed(floor, node.x, node.y, nx, ny)) continue;
       seen.add(key);
@@ -565,6 +688,7 @@ function pickAdjacentUnvisited(
   py: number,
   visited: Set<string>,
   prevDir: readonly [number, number] | null,
+  classifiedGrid: ReadonlyArray<ReadonlyArray<ClassifiedCell>> | null | undefined,
 ): readonly [number, number] | null {
   type Cand = {
     dx: number;
@@ -578,7 +702,7 @@ function pickAdjacentUnvisited(
     const ny = py + dy;
     const t = floor.tiles.get(`${nx},${ny}`);
     if (t === undefined) continue;
-    if (!isPlayerWalkable(t)) continue;
+    if (!isExploreWalkable(t, classifiedAt(classifiedGrid, nx, ny))) continue;
     const isDiag = dx !== 0 && dy !== 0;
     if (isDiag && !diagonalAllowed(floor, px, py, nx, ny)) continue;
     if (visited.has(`${nx},${ny}`)) continue;
@@ -652,12 +776,20 @@ export async function handleAutopilotExplore(
       cur.y,
       visited,
       prevDir,
+      map.latestClassified,
     );
     let decision: "adjacent" | "bfs" = "adjacent";
 
     // Step 2 (BFS to nearest frontier) when no adjacent unvisited.
     if (stepDir === null) {
-      stepDir = bfsToFrontier(floor, cur.x, cur.y, visited, blockedTiles);
+      stepDir = bfsToFrontier(
+        floor,
+        cur.x,
+        cur.y,
+        visited,
+        blockedTiles,
+        map.latestClassified,
+      );
       decision = "bfs";
     }
 
@@ -681,19 +813,52 @@ export async function handleAutopilotExplore(
       break;
     }
 
-    const result = await ctx.sendKeysAndWait(key);
+    // v2 predict-and-avoid: see handleAutopilotTo for the rationale.
+    // For exploration the 'refuse' branch marks the target as visited
+    // AND blocked (mirroring the post-step silent-no-move handler) so
+    // pickAdjacentUnvisited and bfsToFrontier both skip it next iter.
+    const nextX = cur.x + dx;
+    const nextY = cur.y + dy;
+    const classifiedAtNext = map.latestClassified?.[nextY]?.[nextX] ?? null;
+    const prediction: ModalPrediction | null = willStepFireModal(classifiedAtNext);
+    if (prediction !== null && prediction.resolveWith === "refuse") {
+      const targetKey = `${nextX},${nextY}`;
+      visited.add(targetKey);
+      blockedTiles.add(targetKey);
+      ctx.logAutopilotStep?.({
+        tool: "autopilot_explore",
+        step: stepsTaken,
+        key: `predict-avoid:${prediction.kind}`,
+        dx,
+        dy,
+        fromXY: { x: cur.x, y: cur.y },
+        toXY: { x: cur.x, y: cur.y },
+        moved: false,
+        decision,
+        message: `predict-and-avoid: ${prediction.kind} at (${nextX},${nextY})`,
+      });
+      prevDir = null;
+      continue;
+    }
+
+    const keysToSend =
+      prediction !== null && prediction.resolveWith === "m-prefix"
+        ? `m${key}`
+        : key;
+    const result = await ctx.sendKeysAndWait(keysToSend);
     lastResult = result;
     stepsTaken += 1;
     ctx.reportProgress?.(`${stepsTaken}/${stepCap}`);
 
-    // Per-step trace.
+    // Per-step trace. Records the actual keystroke sent (with `m`-
+    // prefix when applicable).
     {
       const after = map.currentPlayerXY;
       const moved = after !== null && (after.x !== cur.x || after.y !== cur.y);
       ctx.logAutopilotStep?.({
         tool: "autopilot_explore",
         step: stepsTaken,
-        key,
+        key: keysToSend,
         dx,
         dy,
         fromXY: { x: cur.x, y: cur.y },
