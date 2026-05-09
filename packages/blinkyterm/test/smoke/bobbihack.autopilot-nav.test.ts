@@ -1111,7 +1111,7 @@ describe("v2 — pet displacement (spec case 1)", () => {
     // v2.5 fix should still arrive (via detour or refuse + replan)
     // but on the real engine the current AP would halt with
     // `blocked_unreachable` after the kitten-in-the-way message.
-    expect(["arrived"]).toContain(r.stopReason);
+    expect(r.stopReason).toBe("arrived");
   });
 });
 
