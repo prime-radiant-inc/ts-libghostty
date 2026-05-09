@@ -36,6 +36,9 @@ import {
 import { GameMap } from "../../examples/bobbihack/game-map";
 import type { StatusLine } from "../../examples/bobbihack/parsers";
 import type { ToolContext, FrameAwaitResult } from "../../examples/bobbihack/tool-context";
+import { buildClassifiedGrid } from "../../examples/bobbihack/cell-classifier";
+import type { CellInfo, CellStyle } from "libghostty-vt";
+import type { FrameSnapshot } from "../../src/types";
 
 // ---------------------------------------------------------------------------
 // Fixture parsing.
@@ -55,6 +58,24 @@ interface FixtureSpec {
   map: string;
   /** Doors at these (x,y) refuse to open; engine emits "The door is locked." */
   lockedDoors?: Array<readonly [number, number]>;
+  /**
+   * Coordinates of letter glyphs that should be classified as pets
+   * (inverse-styled in real NetHack with `hilite_pet`). Phase 4 v2:
+   * lets fixtures exercise pet-displacement without a real engine.
+   */
+  petPositions?: Array<readonly [number, number]>;
+  /**
+   * Per-cell foreground color overrides (palette index 0..15). Lets a
+   * fixture mark a `}` as red (lava) or blue (water), or color a `D`
+   * for future v3 species disambiguation. Keyed by `"x,y"`.
+   */
+  cellColors?: Record<string, number>;
+  /**
+   * Status conditions to set on every frame's StatusLine (e.g. "Conf",
+   * "Stun"). Lets fixtures exercise status-conditioned AP rules even
+   * though the fake engine doesn't model the underlying mechanics.
+   */
+  playerConditions?: string[];
 }
 
 interface Fixture {
@@ -62,6 +83,9 @@ interface Fixture {
   start: { x: number; y: number };
   goal: { x: number; y: number } | null;  // From '*' marker, if any.
   lockedDoors: Set<string>; // "x,y" coords.
+  petPositions: Set<string>;
+  cellColors: Map<string, number>;
+  playerConditions: string[];
 }
 
 function parseFixture(spec: FixtureSpec): Fixture {
@@ -107,11 +131,24 @@ function parseFixture(spec: FixtureSpec): Fixture {
     lockedDoors.add(`${x},${y}`);
   }
 
+  const petPositions = new Set<string>();
+  for (const [x, y] of spec.petPositions ?? []) {
+    petPositions.add(`${x},${y}`);
+  }
+
+  const cellColors = new Map<string, number>();
+  for (const [k, v] of Object.entries(spec.cellColors ?? {})) {
+    cellColors.set(k, v);
+  }
+
   return {
     rows: buf.map((r) => r.join("")),
     start,
     goal,
     lockedDoors,
+    petPositions,
+    cellColors,
+    playerConditions: spec.playerConditions ?? [],
   };
 }
 
@@ -128,7 +165,7 @@ const VI_KEY_TO_DELTA: Record<string, readonly [number, number]> = {
   b: [-1, 1], j: [0, 1], n: [1, 1],
 };
 
-function defaultStatus(turn = 1): StatusLine {
+function defaultStatus(turn = 1, conditions: string[] = []): StatusLine {
   return {
     name: "Hero",
     title: "the Stripling",
@@ -145,7 +182,7 @@ function defaultStatus(turn = 1): StatusLine {
     turn,
     gold: 0,
     hunger: "ok",
-    conditions: [],
+    conditions: [...conditions],
   };
 }
 
@@ -157,6 +194,76 @@ interface EngineState {
   // never starts the player on a non-walkable; we record floor).
   underPlayer: string;
   fixture: Fixture;
+}
+
+// ---------------------------------------------------------------------------
+// v2 classified-grid helpers (Phase 4 of the NetHack-aware autopilot v2).
+//
+// The autopilot's predict-and-avoid logic consumes
+// `map.latestClassified`, populated in production by the conductor in
+// `main.ts` from a real FrameSnapshot. The fake engine has no
+// FrameSnapshot, so the harness builds one cell at a time from the
+// fixture's pet/color hints and the current row buffer.
+
+function defaultStyle(overrides: Partial<CellStyle> = {}): CellStyle {
+  return {
+    bold: false,
+    faint: false,
+    italic: false,
+    underline: "none",
+    overline: false,
+    strikethrough: false,
+    blink: false,
+    inverse: false,
+    invisible: false,
+    ...overrides,
+  };
+}
+
+function makeCellInfo(text: string, style?: CellStyle): CellInfo {
+  const out: CellInfo = {
+    text,
+    wide: false,
+    isWideContinuation: false,
+    protected: false,
+    ...(style !== undefined ? { style } : {}),
+  };
+  return out;
+}
+
+// Build a per-frame stub `FrameSnapshot` whose `cellAt` returns a
+// `CellInfo` with the right style for pets and color-tagged cells.
+// Cells that the fixture didn't explicitly mark fall through to
+// `null`, and `buildClassifiedGrid` then falls back to plain row text
+// (no style).
+function buildStubSnapshot(rows: string[], fixture: Fixture): FrameSnapshot {
+  return {
+    text: "",
+    title: "",
+    cursor: { x: 0, y: 0, visible: true },
+    bellsSinceLast: 0,
+    titleChangesSinceLast: [],
+    toAnsi: () => rows.join("\n"),
+    toHtml: () => "",
+    toVt: () => "",
+    cellAt(x: number, y: number): CellInfo | null {
+      if (y < 0 || y >= rows.length) return null;
+      const row = rows[y]!;
+      if (x < 0 || x >= row.length) return null;
+      const ch = row[x]!;
+      const k = `${x},${y}`;
+      const isPet = fixture.petPositions.has(k);
+      const colorOverride = fixture.cellColors.get(k);
+      // No style needed for plain terrain — return null to match the
+      // production fallback path. Only build a style when the fixture
+      // has an opinion (pet or explicit color).
+      if (!isPet && colorOverride === undefined) return null;
+      const overrides: Partial<CellStyle> = {};
+      if (isPet) overrides.inverse = true;
+      if (colorOverride !== undefined) overrides.fg = { palette: colorOverride };
+      return makeCellInfo(ch, defaultStyle(overrides));
+    },
+  };
 }
 
 // Look up the cell glyph at (x,y) in the engine state.
@@ -233,6 +340,31 @@ function step(state: EngineState, key: string): string {
     return "You see a trap.";
   }
 
+  // Pet displacement: walking onto a pet glyph silently swaps. The
+  // pet ends up where the player came from. Real NetHack emits no
+  // message for this in cardinal directions.
+  const targetKey = `${nx},${ny}`;
+  if (state.fixture.petPositions.has(targetKey) && /^[a-zA-Z]$/.test(target)) {
+    // Move pet position state from (nx,ny) to (px,py) so the
+    // classified grid keeps reading "pet" at the swapped square.
+    state.fixture.petPositions.delete(targetKey);
+    state.fixture.petPositions.add(`${px},${py}`);
+    // Keep the color override too if present.
+    const color = state.fixture.cellColors.get(targetKey);
+    if (color !== undefined) {
+      state.fixture.cellColors.delete(targetKey);
+      state.fixture.cellColors.set(`${px},${py}`, color);
+    }
+    // Render the pet at the player's prior square. The player moves
+    // onto the pet's prior square; underPlayer becomes whatever the
+    // pet was standing on (assume floor for fixture simplicity).
+    setCell(state, px, py, target);
+    state.underPlayer = ".";
+    setCell(state, nx, ny, "@");
+    state.player = { x: nx, y: ny };
+    return "";
+  }
+
   // Walkable terrain.
   movePlayer(state, nx, ny, target);
   return "";
@@ -289,7 +421,14 @@ function makeContext(fixture: Fixture): {
     fixture,
   };
   // Seed the GameMap with the initial frame so pathfind sees terrain.
-  map.updateFromFrame(state.rows, defaultStatus(1), "");
+  map.updateFromFrame(state.rows, defaultStatus(1, fixture.playerConditions), "");
+  // v2: also seed the classified grid so the AP's first-step
+  // predict-and-avoid check has something to consult.
+  map.latestClassified = buildClassifiedGrid(
+    buildStubSnapshot(state.rows, fixture),
+    state.rows,
+    map.currentPlayerXY,
+  );
 
   let turnCount = 1;
   const ctx: ToolContext = {
@@ -300,13 +439,24 @@ function makeContext(fixture: Fixture): {
     logAutopilotStep: (ev) => steps.push(ev),
     sendKeysAndWait: async (keys: string): Promise<FrameAwaitResult> => {
       sentKeys.push(keys);
-      // Real autopilot only sends single vi-keys, but be defensive.
+      // Real autopilot sends bare vi-keys plus optional `m` prefix;
+      // strip the m so step() consumes only the direction.
+      const directionKeys = keys.startsWith("m") ? keys.slice(1) : keys;
       let lastMessage = "";
-      for (const key of keys) lastMessage = step(state, key);
+      for (const key of directionKeys) lastMessage = step(state, key);
       turnCount += 1;
-      const status = defaultStatus(turnCount);
+      const status = defaultStatus(turnCount, fixture.playerConditions);
       // GameMap re-parses the new rows.
       map.updateFromFrame(state.rows, status, lastMessage);
+      // v2: refresh the classified grid each frame, mirroring
+      // main.ts's per-frame call. Without this, predict-and-avoid
+      // would read a stale pet position after the first displacement.
+      const classified = buildClassifiedGrid(
+        buildStubSnapshot(state.rows, fixture),
+        state.rows,
+        map.currentPlayerXY,
+      );
+      map.latestClassified = classified;
       const screenAnsi = state.rows.join("\n");
       const glyphClass = state.rows.map(() => [] as undefined[]);
       return {
@@ -316,6 +466,7 @@ function makeContext(fixture: Fixture): {
         message: lastMessage,
         frameReason: "cellChange",
         screenAnsi,
+        classified,
       };
     },
   };
