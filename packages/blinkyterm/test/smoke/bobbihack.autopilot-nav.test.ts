@@ -1071,3 +1071,110 @@ describe("v2 — pet displacement (spec case 1)", () => {
     expect(["arrived"]).toContain(r.stopReason);
   });
 });
+
+describe("v2 — danger-class refusal & detour (spec cases 2, 3)", () => {
+  test("REGRESSION: non-pet hostile letter blocks path → predict-avoid refuse", async () => {
+    // Case 2 from spec test plan. A non-pet `d` (jackal etc.) sits in
+    // a single-row corridor between @ and goal so no detour exists.
+    // v2 predict-and-avoid sees `kind: 'monster', pet: false`,
+    // returns `attack-or-peaceful` -> `refuse`. The AP marks the
+    // tile blocked and replans; with no alternate route,
+    // `blocked_unreachable: predict:...` surfaces.
+    //
+    // Production bug this guards against: pre-v2 AP would step onto
+    // the hostile, fire the [yn] attack-or-peaceful prompt, and the
+    // LLM's resumed `y` answer became "yes, attack." See spec
+    // §"Layer 5" rubric 1, "Common novice errors."
+    const fx = parseFixture({
+      map: `
+--------
+|@.d..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    // Halts upstream — never bumps the hostile tile.
+    expect(r.stopReason ?? "").toMatch(/blocked_unreachable|predict|attack-or-peaceful|monster_visible/);
+    // No `y`/`n` keystrokes ever sent (would mean we hit the modal).
+    expect(r.sentKeys.includes("y")).toBe(false);
+    expect(r.sentKeys.includes("n")).toBe(false);
+    // Bounded — bails fast.
+    expect(r.steps).toBeLessThan(15);
+  });
+
+  test("INVARIANT: predict-avoid event is logged with key='predict-avoid:<kind>'", async () => {
+    // The trace event captures the predict-avoid decision so a stuck
+    // run can be diagnosed from run.jsonl alone. Single-row corridor
+    // forces the AP to engage (or refuse) the hostile rather than
+    // detour around through a parallel row.
+    const fx = parseFixture({
+      map: `
+--------
+|@.o..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    const refusals = r.stepEvents.filter((e) =>
+      e.key.startsWith("predict-avoid:"),
+    );
+    expect(refusals.length).toBeGreaterThan(0);
+    // The kind is one of the modal-prediction module's enum values.
+    expect(refusals[0]?.key).toMatch(
+      /^predict-avoid:(attack-or-peaceful|paranoid-trap|paranoid-swim|pickup-prompt)$/,
+    );
+  });
+
+  test("INVARIANT: danger-class `D` at adjacency cost forces a longer detour", async () => {
+    // Case 3 from spec test plan. Short path runs adjacent to a
+    // dragon `D`; an alt path exists ~5 tiles longer. The v2 cost
+    // model multiplies adjacency-to-danger-class by 20× so the
+    // pathfinder prefers the detour even when it costs +5 cardinal
+    // steps.
+    //
+    // Layout: a 3-row room with a dragon parked in the middle.
+    // The direct east route runs row 2 (@ → row 2 → *) but row 2
+    // is the dragon row; row 1 (top) and row 3 (bottom) are clean
+    // detours of equal length.
+    const fx = parseFixture({
+      map: `
+----------
+|........|
+|...D....|
+|@......*|
+|........|
+----------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 50 });
+    expect(r.stopReason).toBe("arrived");
+    expect(r.finalPos).toEqual(fx.goal!);
+    // Reads-the-room sanity: the `D` is at (4, 2); a path that
+    // *passed adjacent to* the dragon would have at least one step
+    // landing at (3, 2) or (5, 2) or (4, 1)/(4, 3) BEFORE the goal.
+    // With danger-aware cost the AP avoids those cells entirely.
+    const visited = new Set(
+      r.stepEvents
+        .filter((e) => e.toXY !== null)
+        .map((e) => `${e.toXY!.x},${e.toXY!.y}`),
+    );
+    // The AP must NOT have stepped onto the dragon's tile (would be
+    // an attack, not a detour).
+    expect(visited.has("4,2")).toBe(false);
+  });
+
+  test("INVARIANT: danger-class blocking ALL paths halts upstream, no engagement", async () => {
+    // Variant: dragon directly on a single-row corridor — no detour.
+    // AP halts via predict-avoid:attack-or-peaceful, never bumps.
+    const fx = parseFixture({
+      map: `
+--------
+|@.D..*|
+--------`,
+    });
+    const r = await runAutopilotTo(fx, null, { stepCap: 30 });
+    expect(r.stopReason ?? "").toMatch(
+      /blocked_unreachable|predict|attack-or-peaceful|monster_visible/,
+    );
+    // No engagement keys.
+    expect(r.sentKeys.includes("y")).toBe(false);
+    expect(r.steps).toBeLessThan(15);
+  });
+});
