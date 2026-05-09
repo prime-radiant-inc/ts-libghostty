@@ -40,9 +40,17 @@ export interface Interrupt {
 const MODAL_PATTERNS = [
   /--More--/,
   /\[yn[a-z]*\]/i,                    // [yn], [ynq], [ynaq]
+  // paranoid_confirmation:Confirm full-word mode renders prompts as
+  // `[yes/no]`, `[yes/no/all]`, `(yes)`, etc. Match either bracket
+  // containing `yes` or `no` as a whole word.
+  /\[(yes|no)\b/i,
+  /\byes\/no\b/i,
   /\[a-z[A-Z]*\b/i,                   // letter-selection menus  e.g. "[a-z A-Z]"
   /In what direction\?/i,
-  /What do you want to (eat|drink|read|wear|put on|take off|remove|wield|drop|throw|apply|zap)\?/i,
+  // Full `What do you want to <verb>?` set per spec §"Layer 4". Verbs cover
+  // every NetHack 5.0 prompt that uses this shape. The trailing `?` is
+  // the modal terminator.
+  /What do you want to (eat|drink|read|wear|put on|take off|remove|wield|drop|throw|apply|zap|name|adjust|sacrifice|use or apply)\?/i,
   /Pick (up|an? item)/i,
 ];
 
@@ -153,6 +161,82 @@ function detectEngulfed(curRows: string[]): boolean {
   return false;
 }
 
+// Detect the unseen-monster marker `I`. NetHack renders `I` for any
+// creature the player has detected (via warning, telepathy, monster
+// detection, or fresh footprints) but cannot SEE — the marker
+// persists at the last known position until disproven.
+//
+// Returns the FIRST `I` found in map rows, or `false` if none.
+// Restricted to map rows so the message line "I see..." doesn't
+// false-fire.
+//
+// `I` is a single character; it never appears as part of a word in
+// the dungeon view (the engine only renders one char per cell). We
+// reject the case where neighbors are letters as a paranoid extra:
+// the engine should never put `I` adjacent to other letters in the
+// map area, but if a future version does, the detector errs toward
+// "not a marker" — the visible `monster_visible` interrupt will fire
+// for the surrounding letters anyway.
+export function detectUnseenMonsterMarker(
+  rows: ReadonlyArray<string>,
+): { x: number; y: number } | false {
+  for (let y = 0; y < rows.length; y++) {
+    if (!isMapRow(y, rows.length)) continue;
+    const row = rows[y]!;
+    for (let x = 0; x < row.length; x++) {
+      if (row[x] !== "I") continue;
+      const left = x > 0 ? row[x - 1]! : " ";
+      const right = x + 1 < row.length ? row[x + 1]! : " ";
+      // Reject if surrounded by letters (would be word context, not a
+      // map marker). Single-char-cell guarantee on the map area means
+      // this almost never triggers; defensive against future renderer
+      // changes.
+      if (/[A-Za-z]/.test(left) && /[A-Za-z]/.test(right)) continue;
+      return { x, y };
+    }
+  }
+  return false;
+}
+
+// Detect a Warning digit `1`..`5` on the map. The Warning extrinsic
+// surfaces a single digit on a map cell; the digit's tier corresponds
+// to the danger of the detected (unseen) creature. Higher tiers =
+// nastier creatures.
+//
+// Returns the highest-tier digit found in this frame (so the
+// interrupt fires on the worst threat present), or `false` if none.
+//
+// Restricted to map rows so digits in the message line / status row
+// don't false-fire. We further reject digits that sit between two
+// other digits (e.g. the "12" inside "T:12345") as a defense — the
+// status rows are already excluded by `isMapRow`, but the message
+// line can occasionally bleed into the top of the map area in
+// non-standard layouts.
+export function detectWarningDigit(
+  rows: ReadonlyArray<string>,
+): { tier: number; x: number; y: number } | false {
+  let best: { tier: number; x: number; y: number } | null = null;
+  for (let y = 0; y < rows.length; y++) {
+    if (!isMapRow(y, rows.length)) continue;
+    const row = rows[y]!;
+    for (let x = 0; x < row.length; x++) {
+      const ch = row[x]!;
+      if (ch < "1" || ch > "5") continue;
+      const left = x > 0 ? row[x - 1]! : " ";
+      const right = x + 1 < row.length ? row[x + 1]! : " ";
+      // Reject when sandwiched between digits — that's word context,
+      // not a Warning marker. (Standard NetHack puts a single digit
+      // on a map cell; surrounded-by-spaces or terrain glyphs.)
+      if (/[0-9]/.test(left) && /[0-9]/.test(right)) continue;
+      const tier = ch.charCodeAt(0) - "0".charCodeAt(0);
+      if (best === null || tier > best.tier) {
+        best = { tier, x, y };
+      }
+    }
+  }
+  return best ?? false;
+}
+
 // Definitions -------------------------------------------------------
 
 export const INTERRUPTS: Interrupt[] = [
@@ -235,6 +319,50 @@ export const INTERRUPTS: Interrupt[] = [
     name: "monster_visible",
     priority: 240,
     detect: (c) => detectHostileAppeared(c.prev, c.cur),
+  },
+  {
+    // Fires when a Warning digit ≥ 4 (tier 4 or 5) appears in the
+    // current frame and was NOT present in the prev frame at that
+    // position. Tiers 1–3 are common ambient warnings (rats etc.) and
+    // would noisily halt the AP — the v2 spec gates the interrupt at
+    // tier ≥ 4.
+    name: "warning_high",
+    priority: 243,
+    detect: (c) => {
+      const cur = detectWarningDigit(c.cur.rows);
+      if (cur === false) return false;
+      if (cur.tier < 4) return false;
+      // Only fire on appearance — if the same digit was at the same
+      // position last frame, this is the AP "still seeing" it; not a
+      // new threat. (The autopilot already halted on the first
+      // appearance and the LLM resumed; treating it as fresh every
+      // frame would loop.)
+      if (c.prev !== undefined) {
+        const prevRow = c.prev.rows[cur.y];
+        if (prevRow !== undefined && prevRow[cur.x] === c.cur.rows[cur.y]?.[cur.x]) {
+          return false;
+        }
+      }
+      return `tier ${cur.tier} at (${cur.x},${cur.y})`;
+    },
+  },
+  {
+    // Fires when the unseen-monster marker `I` appears in the current
+    // frame at a position it didn't occupy in the prev frame. The
+    // marker persists across frames until disproven (see zettel
+    // `unseen-monster-marker-i-persists-until-disproven`); firing only
+    // on appearance avoids the loop-on-stable-marker pathology.
+    name: "unseen_monster_visible",
+    priority: 245,
+    detect: (c) => {
+      const cur = detectUnseenMonsterMarker(c.cur.rows);
+      if (cur === false) return false;
+      if (c.prev !== undefined) {
+        const prevRow = c.prev.rows[cur.y];
+        if (prevRow !== undefined && prevRow[cur.x] === "I") return false;
+      }
+      return `at (${cur.x},${cur.y})`;
+    },
   },
 
   // 300-399: status effect onsets

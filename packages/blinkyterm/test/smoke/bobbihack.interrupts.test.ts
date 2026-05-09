@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
+  detectUnseenMonsterMarker,
+  detectWarningDigit,
   INTERRUPTS,
   runInterruptChecks,
   type InterruptContext,
@@ -498,5 +500,221 @@ describe("engulfed", () => {
     const rows = Array.from({ length: 24 }, () => " ".repeat(80));
     rows[0] = "         @          ".padEnd(80, " ");
     expect(detect(ctx({ cur: { ...ctx().cur, rows } }))).toBe(false);
+  });
+});
+
+// Helper: build a full 24-row screen with `mapRowText` placed at row `y`
+// inside the map area. Row 0 (message), rows 22-23 (status) blank.
+function makeRowsWithMapLine(y: number, mapRowText: string): string[] {
+  const blank80 = " ".repeat(80);
+  const rows = Array.from({ length: 24 }, () => blank80);
+  rows[y] = mapRowText.padEnd(80, " ");
+  return rows;
+}
+
+describe("detectUnseenMonsterMarker", () => {
+  test("returns false when no I is present in map rows", () => {
+    const rows = makeRowsWithMapLine(5, "....@.....");
+    expect(detectUnseenMonsterMarker(rows)).toBe(false);
+  });
+
+  test("returns the position of the first map I", () => {
+    const rows = makeRowsWithMapLine(7, "....I....");
+    expect(detectUnseenMonsterMarker(rows)).toEqual({ x: 4, y: 7 });
+  });
+
+  test("ignores I in row 0 (message line)", () => {
+    const rows = makeRowsWithMapLine(0, "I see something here.");
+    expect(detectUnseenMonsterMarker(rows)).toBe(false);
+  });
+
+  test("ignores I in status row", () => {
+    const rows = Array.from({ length: 24 }, () => " ".repeat(80));
+    // Last two rows are status.
+    rows[22] = "Some I in status".padEnd(80, " ");
+    rows[23] = "Another I row".padEnd(80, " ");
+    expect(detectUnseenMonsterMarker(rows)).toBe(false);
+  });
+
+  test("rejects I sandwiched between letters (word context)", () => {
+    const rows = makeRowsWithMapLine(5, "..aIb..");
+    expect(detectUnseenMonsterMarker(rows)).toBe(false);
+  });
+});
+
+describe("detectWarningDigit", () => {
+  test("returns false when no warning digit is present", () => {
+    const rows = makeRowsWithMapLine(5, "....@.....");
+    expect(detectWarningDigit(rows)).toBe(false);
+  });
+
+  test("returns tier 4 for a single '4' on the map", () => {
+    const rows = makeRowsWithMapLine(7, ".....4....");
+    expect(detectWarningDigit(rows)).toEqual({ tier: 4, x: 5, y: 7 });
+  });
+
+  test("returns highest tier when multiple digits present", () => {
+    // Multi-row map: tier 2 at row 5, tier 5 at row 7. Should pick the 5.
+    const blank = " ".repeat(80);
+    const rows = Array.from({ length: 24 }, () => blank);
+    rows[5] = "..2.....".padEnd(80, " ");
+    rows[7] = "....5...".padEnd(80, " ");
+    const out = detectWarningDigit(rows);
+    expect(out).not.toBe(false);
+    if (out !== false) {
+      expect(out.tier).toBe(5);
+    }
+  });
+
+  test("ignores digits in message line", () => {
+    const rows = makeRowsWithMapLine(0, "T:1234 turns elapsed");
+    expect(detectWarningDigit(rows)).toBe(false);
+  });
+
+  test("rejects digit sandwiched between digits, returns highest non-sandwiched", () => {
+    // Pattern "..234.." — the middle '3' is sandwiched (left=2, right=4)
+    // and gets rejected. The '2' (left=., right=3) and '4' (left=3,
+    // right=.) qualify. Detector returns the highest tier — '4'.
+    const rows = makeRowsWithMapLine(5, "..234..");
+    const out = detectWarningDigit(rows);
+    expect(out).toEqual({ tier: 4, x: 4, y: 5 });
+  });
+
+  test("digit '0' is not a warning (out of 1..5 range)", () => {
+    const rows = makeRowsWithMapLine(5, ".0.");
+    expect(detectWarningDigit(rows)).toBe(false);
+  });
+
+  test("digit '6' or higher is not a warning", () => {
+    const rows = makeRowsWithMapLine(5, ".7.");
+    expect(detectWarningDigit(rows)).toBe(false);
+  });
+});
+
+describe("warning_high interrupt", () => {
+  const detect = INTERRUPTS.find((i) => i.name === "warning_high")!.detect;
+
+  test("fires when a tier-4 digit appears that wasn't present in prev frame", () => {
+    const prevRows = makeRowsWithMapLine(5, "....@.....");
+    const curRows = makeRowsWithMapLine(5, "....@4....");
+    const result = detect(
+      ctx({
+        prev: { rows: prevRows, status: status(), message: "" },
+        cur: { ...ctx().cur, rows: curRows },
+      }),
+    );
+    expect(result).toBeTruthy();
+  });
+
+  test("fires on tier-5 digit", () => {
+    const curRows = makeRowsWithMapLine(7, ".5.");
+    const result = detect(
+      ctx({
+        cur: { ...ctx().cur, rows: curRows },
+      }),
+    );
+    expect(result).toBeTruthy();
+  });
+
+  test("does NOT fire on tier-3 digit (gating threshold is 4)", () => {
+    const curRows = makeRowsWithMapLine(7, ".3.");
+    const result = detect(
+      ctx({
+        cur: { ...ctx().cur, rows: curRows },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+
+  test("does NOT fire when same tier-4 digit was at the same position last frame", () => {
+    const rows = makeRowsWithMapLine(7, ".4.");
+    const result = detect(
+      ctx({
+        prev: { rows, status: status(), message: "" },
+        cur: { ...ctx().cur, rows },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+});
+
+describe("unseen_monster_visible interrupt", () => {
+  const detect = INTERRUPTS.find((i) => i.name === "unseen_monster_visible")!.detect;
+
+  test("fires when an I appears that wasn't present in prev frame", () => {
+    const prevRows = makeRowsWithMapLine(5, "....@.....");
+    const curRows = makeRowsWithMapLine(5, "....@.I...");
+    const result = detect(
+      ctx({
+        prev: { rows: prevRows, status: status(), message: "" },
+        cur: { ...ctx().cur, rows: curRows },
+      }),
+    );
+    expect(result).toBeTruthy();
+  });
+
+  test("does NOT fire when same I was at same position last frame", () => {
+    const rows = makeRowsWithMapLine(7, ".I.");
+    const result = detect(
+      ctx({
+        prev: { rows, status: status(), message: "" },
+        cur: { ...ctx().cur, rows },
+      }),
+    );
+    expect(result).toBe(false);
+  });
+});
+
+describe("MODAL_PATTERNS extensions for v2", () => {
+  const detect = INTERRUPTS.find((i) => i.name === "modal_prompt")!.detect;
+
+  test("fires on `[yes]` paranoid-Confirm prompt", () => {
+    expect(
+      detect(
+        ctx({
+          cur: { ...ctx().cur, message: "Really attack? [yes/no] (no)" },
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
+  test("fires on `[no]` (lowercase no in confirmation)", () => {
+    expect(
+      detect(
+        ctx({
+          cur: { ...ctx().cur, message: "Sure? [no/yes]" },
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
+  test("fires on full What-do-you-want-to-eat? prompt", () => {
+    expect(
+      detect(
+        ctx({
+          cur: { ...ctx().cur, message: "What do you want to eat?" },
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
+  test("fires on What-do-you-want-to-name? prompt", () => {
+    expect(
+      detect(
+        ctx({
+          cur: { ...ctx().cur, message: "What do you want to name?" },
+        }),
+      ),
+    ).toBeTruthy();
+  });
+
+  test("fires on What-do-you-want-to-sacrifice? prompt", () => {
+    expect(
+      detect(
+        ctx({
+          cur: { ...ctx().cur, message: "What do you want to sacrifice?" },
+        }),
+      ),
+    ).toBeTruthy();
   });
 });
