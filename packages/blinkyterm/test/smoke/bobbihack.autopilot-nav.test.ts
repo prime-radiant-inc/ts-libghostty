@@ -988,3 +988,86 @@ describe("autopilot_explore navigation", () => {
     expect(r.finalPos.x).toBeGreaterThan(fx.start.x);
   });
 });
+
+// ===========================================================================
+// Phase 4 — v2 fixture coverage (NetHack-aware autopilot)
+//
+// Locks in the v2 behavior changes from
+// docs/superpowers/specs/2026-05-09-nethack-aware-autopilot.md:
+// danger-aware path costs, predict-and-avoid for tile-induced modals,
+// the rendering-quirk detectors. Each `describe` block below maps to
+// one of the seven fixture groups in plan §"Task 4.1".
+//
+// Assertion style: contracts, not literal step counts. Bound steps and
+// match stop-reason patterns so harmless v2.x tweaks don't break the
+// suite. Each fixture documents the failure mode it catches with a
+// `REGRESSION:` or `INVARIANT:` lead.
+// ===========================================================================
+
+describe("v2 — pet displacement (spec case 1)", () => {
+  test("INVARIANT: AP steps cardinally onto a pet, swaps, and arrives", async () => {
+    // Pet `d` on the cardinal-east path between @ and goal. The AP's
+    // predict-and-avoid classifies the inverse-styled `d` as
+    // `pet-displace`, sends a bare direction key (no `m` prefix, no
+    // refusal), the engine swaps positions silently, no
+    // `monster_visible` interrupt fires (pet glyph is in both prev
+    // and cur frames; detector only fires on newly-appeared
+    // letters).
+    const fx = parseFixture({
+      map: `
+--------
+|......|
+|@.d..*|
+--------`,
+      petPositions: [[3, 2]],
+    });
+    const r = await runAutopilotTo(fx, null);
+    expect(r.stopReason).toBe("arrived");
+    expect(r.finalPos).toEqual(fx.goal!);
+    // No predict-avoid refusal fired for the pet square.
+    const refusals = r.stepEvents.filter((e) =>
+      e.key.startsWith("predict-avoid:"),
+    );
+    expect(refusals.length).toBe(0);
+    // Bounded — 5 floor cells from @ to *, plus one for the swap.
+    expect(r.steps).toBeLessThan(10);
+  });
+
+  test("TODO(v2.5): diagonal pet-swap may produce 'kitten is in the way!'", async () => {
+    // Live run bbh-20260509-025250-b0fc34 observed:
+    //   sendKey 'u' (NE) into pet → engine emits "You stop. Your
+    //   kitten is in the way!"
+    // The AP currently predicts pet-displace and sends bare 'u'; the
+    // engine refuses. Cardinal directions work fine (see test above).
+    //
+    // This fixture exercises the diagonal case with a pet on the
+    // NE-of-@ tile. Today, the harness's fake engine does NOT
+    // reproduce the engine refusal (it silently swaps regardless of
+    // direction), so the fixture currently passes with `arrived` —
+    // but a future v2.5 fix should either:
+    //   (a) make predict-and-avoid mark diagonal-pet-swap as
+    //       `resolveWith: 'refuse'` so the AP detours, or
+    //   (b) detect the post-step "kitten is in the way" message and
+    //       blocked-tile the pet square.
+    //
+    // For now we assert the *current* behavior (succeeds) so the
+    // test stays green; flip to assert detour or refuse when v2.5
+    // ships the fix.
+    const fx = parseFixture({
+      map: `
+--------
+|....*.|
+|......|
+|.d....|
+|@.....|
+--------`,
+      petPositions: [[2, 3]],
+    });
+    const r = await runAutopilotTo(fx, null);
+    // Today: arrives because the harness's fake engine swaps.
+    // v2.5 fix should still arrive (via detour or refuse + replan)
+    // but on the real engine the current AP would halt with
+    // `blocked_unreachable` after the kitten-in-the-way message.
+    expect(["arrived"]).toContain(r.stopReason);
+  });
+});
