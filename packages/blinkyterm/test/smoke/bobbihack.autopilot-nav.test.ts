@@ -1383,3 +1383,76 @@ describe("v2 — modal prediction (spec cases 6, 7, 8)", () => {
     expect(r.steps).toBeLessThan(10);
   });
 });
+
+describe("v2 — floor-refusal table (spec case 14)", () => {
+  test("INVARIANT: Sokoban / Rogue / Quest / Castle / walkability-suspect refused; main dungeon + Mines accepted", async () => {
+    // Case 14 from spec test plan. Drives the AP against a stub
+    // GameMap whose `current` floor is set to each refused / accepted
+    // ID; asserts the AP's `floorRefusalReason` rejects refused
+    // floors before sending any key.
+    //
+    // We exercise this through `handleAutopilotTo` rather than
+    // pulling out the private function: the public surface is what
+    // production calls. A successful refusal returns an `error: ...`
+    // tool result string and never sends a keystroke.
+
+    // Helper: build a context with a custom floor id and isRogue /
+    // walkabilitySuspect flags. We don't need pet/items wiring —
+    // refusal happens before the AP looks at terrain.
+    const mkCtxWithFloor = (
+      floorId: string,
+      flags: { isRogueLevel?: boolean; walkabilitySuspect?: boolean } = {},
+    ): { ctx: ToolContext; sentKeys: string[] } => {
+      const fx = parseFixture({
+        map: `
+--------
+|@....*|
+--------`,
+      });
+      const { ctx, sentKeys } = makeContext(fx);
+      // Override floor id + flags on the now-seeded floor map.
+      const map = ctx.map;
+      const oldFloor = map.floors.get(map.current!)!;
+      const newFloor = {
+        ...oldFloor,
+        id: floorId,
+        isRogueLevel: flags.isRogueLevel ?? false,
+        walkabilitySuspect: flags.walkabilitySuspect ?? false,
+      };
+      map.floors.delete(map.current!);
+      map.floors.set(floorId, newFloor);
+      map.current = floorId;
+      return { ctx, sentKeys };
+    };
+
+    const refused: Array<[string, { isRogueLevel?: boolean; walkabilitySuspect?: boolean }, RegExp]> = [
+      ["Sokoban:1", {}, /sokoban/i],
+      ["Quest:Home", {}, /quest/i],
+      ["Castle", {}, /castle/i],
+      ["D5", { isRogueLevel: true }, /rogue/i],
+      ["D5", { walkabilitySuspect: true }, /walkability/i],
+    ];
+    for (const [floorId, flags, errRe] of refused) {
+      const { ctx, sentKeys } = mkCtxWithFloor(floorId, flags);
+      const result = await handleAutopilotTo(
+        { floor: floorId, x: 6, y: 1, stepCap: 5 },
+        ctx,
+      );
+      expect(result).toMatch(errRe);
+      expect(sentKeys.length).toBe(0);
+    }
+
+    // Accepted floors: main dungeon (D1, D5, D45) and Mines variants.
+    // We don't assert arrival (the fixture goal isn't on the renamed
+    // floor); we assert the tool didn't refuse with a floor error.
+    const accepted = ["D1", "D5", "D45", "Mines:5", "Mines:Town", "Bigroom", "Oracle"];
+    for (const floorId of accepted) {
+      const { ctx } = mkCtxWithFloor(floorId);
+      const result = await handleAutopilotTo(
+        { floor: floorId, x: 6, y: 1, stepCap: 5 },
+        ctx,
+      );
+      expect(result).not.toMatch(/sokoban|quest|castle|rogue|walkability/i);
+    }
+  });
+});
