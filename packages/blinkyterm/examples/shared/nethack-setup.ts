@@ -14,19 +14,48 @@ export function hasNethack(): boolean {
 }
 
 /**
- * Remove stale NetHack lock files. Tests that SIGTERM the runner mid-game
- * leave per-level lock files (`alock.0`, `block.0`, etc.) under NetHack's
- * data dir; ~18 of them and NetHack rejects new games with "Too many hacks
- * running now." which manifests as the runner producing only the initial
- * frame and then no more output.
+ * Files this regex matches are NetHack's per-game lock indicators.
+ * Deleting them between SIGTERMed test runs frees NetHack to start a
+ * new game (otherwise NetHack rejects new games with "Too many hacks
+ * running now.").
+ *
+ * IMPORTANT: this regex used to be `/lock/i`, which matched `block.N`
+ * as a substring. `block.N` is NetHack's per-level data file (where
+ * inactive levels page to disk), NOT a lock — deleting it orphans an
+ * in-progress game and triggers a "tricked death" on the next level
+ * transition. Live run bbh-20260511-202947-7d8afd hit this: the agent
+ * descended at turn 190, NetHack tried to read `block.0` for the
+ * starting level, got ENOENT ("Probably someone removed it."), and
+ * dropped into the end-of-game sequence. Most likely root cause: a
+ * concurrent test run called `cleanupNetHackLocks()` and nuked the
+ * live game's level data.
+ *
+ * Allowed patterns:
+ *   - `alock.<N>`  active-lock indicator for level N
+ *   - `lock.<N>`   legacy lock name
+ *   - `xlock`      game-process lock (single file)
+ *   - `nhlock.<N>` legacy
+ * Disallowed (NOT lock files):
+ *   - `block.<N>`  level data
+ *   - `logfile`, `paniclog`, `record`, `xlogfile`  game logs
+ *   - `save/`      save-game directory
+ *   - `perm`       shared permissions
+ */
+const LOCK_FILE_RE = /^(alock|nhlock|lock)\.\d+$|^xlock$/;
+
+/**
+ * Remove stale NetHack lock files left behind by SIGTERMed test runs.
  *
  * Returns the number of files removed. Silent failure if the data dir
  * isn't found — every install puts it somewhere different.
  *
- * **Side effect note:** this clears EVERY lock file in the data dir, not
- * just the ones from `name:agent`. If a human game is in progress against
- * the same install, calling this can corrupt it. Tests should call this;
- * production code should not.
+ * **Side effect note:** this clears EVERY lock file in the data dir,
+ * not just the ones from `name:agent`. If a game is in progress
+ * against the same install, calling this can prevent the game from
+ * making forward progress (NetHack will refuse to acquire a new lock
+ * for descent). It will NOT corrupt level data (see LOCK_FILE_RE
+ * above), but it WILL block a live game from advancing. Tests should
+ * call this between runs; production code should not.
  */
 export function cleanupNetHackLocks(): number {
   const candidates = [
@@ -49,7 +78,7 @@ export function cleanupNetHackLocks(): number {
       continue;
     }
     for (const name of entries) {
-      if (!/lock/i.test(name)) continue;
+      if (!LOCK_FILE_RE.test(name)) continue;
       try {
         unlinkSync(join(dir, name));
         removed += 1;
@@ -60,6 +89,13 @@ export function cleanupNetHackLocks(): number {
   }
   return removed;
 }
+
+/**
+ * Exported for unit testing — the regex that decides whether a file
+ * in the NetHack data dir is a lock (safe to delete between test
+ * runs) or NOT (game state we'd corrupt).
+ */
+export const _LOCK_FILE_RE_FOR_TEST = LOCK_FILE_RE;
 
 /**
  * Environment variables that bypass NetHack's character-creation prompts so
