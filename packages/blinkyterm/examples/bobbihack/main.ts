@@ -667,6 +667,9 @@ async function main(): Promise<void> {
       // pick it up without needing the FrameAwaitResult.
       const classified = buildClassifiedGrid(frame.snapshot, rows, map.currentPlayerXY);
       map.latestClassified = classified;
+      // Cache the parsed StatusLine for status-conditioned predict-and-
+      // avoid in v2.5 (Conf/Stun closed-door autoopen-disabled).
+      map.latestStatus = status;
       return { rows, glyphClass, classified, status, message, frameReason: frame.reason, screenAnsi };
     },
     logAutopilotStep: (ev) => {

@@ -47,14 +47,45 @@ export type ModalKind =
   | "paranoid-trap"
   | "paranoid-swim"
   | "pet-displace"
+  // Diagonal step INTO a pet tile. NetHack 5.0 refuses pet
+  // displacement in directions the pet itself can't move into (e.g.
+  // through a wall-corner squeeze); the engine emits "You stop.
+  // Your <pet> is in the way!" and the step is consumed without
+  // movement. Cardinal swaps work; only diagonal needs predict-
+  // refuse. Live-confirmed in run bbh-20260509-025250-b0fc34.
+  | "pet-displace-blocked"
   | "attack-or-peaceful"
-  | "pickup-prompt";
+  | "pickup-prompt"
+  // Closed door while player has Conf or Stun. NetHack disables
+  // door autoopen under these statuses, so the bump just bumps and
+  // the door stays shut. Refuse before stepping.
+  | "autoopen-disabled";
 
 export type ResolveWith = "m-prefix" | "step" | "refuse";
 
 export interface ModalPrediction {
   kind: ModalKind;
   resolveWith: ResolveWith;
+}
+
+// Optional per-call context for predicate checks that depend on more
+// than the destination cell itself.
+export interface PredictContext {
+  /**
+   * Step direction (target tile minus player tile). Used to detect
+   * diagonal-pet-swap, which NetHack refuses with a non-modal "is in
+   * the way" message — invisible to the modal-prompt interrupt but
+   * still a no-movement step.
+   */
+  delta?: { dx: number; dy: number };
+  /**
+   * Player's current status conditions (`Conf`, `Stun`, `Hallu`,
+   * etc.) extracted from the StatusLine. Used to detect autoopen-
+   * disabled and similar status-conditioned tile rules. Empty / not-
+   * provided falls back to v1 behavior (no status-conditioned
+   * predictions).
+   */
+  conditions?: readonly string[];
 }
 
 // Predict whether stepping ONTO `cell` will fire a tile-induced modal.
@@ -72,6 +103,7 @@ export interface ModalPrediction {
 export function willStepFireModal(
   cell: ClassifiedCell | null | undefined,
   options: ParanoidConfig = DEFAULT_PARANOID_CONFIG,
+  context: PredictContext = {},
 ): ModalPrediction | null {
   if (cell === null || cell === undefined) return null;
   const fg = cell.foreground;
@@ -80,7 +112,19 @@ export function willStepFireModal(
   // on the cell before it cares about the terrain underneath.
   if (fg !== null) {
     if (fg.kind === "monster" && fg.pet) {
-      // Pet displacement is silent and safe; no prompt fires.
+      // Pet displacement: cardinal swaps are silent and safe; diagonal
+      // swaps can fail with "Your <pet> is in the way!" when the
+      // engine refuses to displace through a corner the pet itself
+      // can't traverse. We can't tell from the destination cell alone
+      // whether the diagonal will succeed, so the conservative move is
+      // to refuse diagonal-pet-swap entirely and rely on the planner
+      // to detour (the long way around a pet is one extra step).
+      const delta = context.delta;
+      const isDiag =
+        delta !== undefined && delta.dx !== 0 && delta.dy !== 0;
+      if (isDiag) {
+        return { kind: "pet-displace-blocked", resolveWith: "refuse" };
+      }
       return { kind: "pet-displace", resolveWith: "step" };
     }
     if (fg.kind === "monster" && !fg.pet) {
@@ -129,6 +173,22 @@ export function willStepFireModal(
     options.paranoidSwim
   ) {
     return { kind: "paranoid-swim", resolveWith: "refuse" };
+  }
+
+  // Closed door + Conf/Stun: NetHack disables autoopen under these
+  // statuses, so a step into a `+` consumes a turn without opening
+  // anything. Without this predicate, AP bumps the door until the
+  // status wears off — wasted real turns and a confused-looking
+  // trace. (In practice today the `confused` interrupt halts AP on
+  // the first frame Conf appears, so this predicate is defense-in-
+  // depth: if Conf was already set when AP was invoked and somehow
+  // didn't trigger the interrupt, predict-and-avoid still catches
+  // the bump.)
+  if (cell.terrain === "door_closed") {
+    const conds = context.conditions ?? [];
+    if (conds.includes("Conf") || conds.includes("Stun")) {
+      return { kind: "autoopen-disabled", resolveWith: "refuse" };
+    }
   }
 
   return null;

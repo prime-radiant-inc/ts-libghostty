@@ -269,7 +269,14 @@ export async function handleAutopilotTo(
     //     two-byte sequence consumed in one engine update cycle.
     //   - 'step' / null: send the bare direction key.
     const classifiedAtNext = map.latestClassified?.[next.y]?.[next.x] ?? null;
-    const prediction: ModalPrediction | null = willStepFireModal(classifiedAtNext);
+    const prediction: ModalPrediction | null = willStepFireModal(
+      classifiedAtNext,
+      undefined,
+      {
+        delta: { dx, dy },
+        conditions: map.latestStatus?.conditions ?? [],
+      },
+    );
     if (prediction !== null && prediction.resolveWith === "refuse") {
       // Mirror the post-step blocked-tile handler. We have not stepped
       // and have not consumed a turn; the target tile is blocked for
@@ -820,7 +827,14 @@ export async function handleAutopilotExplore(
     const nextX = cur.x + dx;
     const nextY = cur.y + dy;
     const classifiedAtNext = map.latestClassified?.[nextY]?.[nextX] ?? null;
-    const prediction: ModalPrediction | null = willStepFireModal(classifiedAtNext);
+    const prediction: ModalPrediction | null = willStepFireModal(
+      classifiedAtNext,
+      undefined,
+      {
+        delta: { dx, dy },
+        conditions: map.latestStatus?.conditions ?? [],
+      },
+    );
     if (prediction !== null && prediction.resolveWith === "refuse") {
       const targetKey = `${nextX},${nextY}`;
       visited.add(targetKey);

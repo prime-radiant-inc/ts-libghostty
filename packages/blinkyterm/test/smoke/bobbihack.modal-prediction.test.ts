@@ -85,6 +85,52 @@ describe("willStepFireModal — pet displacement", () => {
     expect(p?.kind).toBe("pet-displace");
     expect(p?.resolveWith).toBe("step");
   });
+
+  test("v2.5: diagonal swap into pet is refused (NE)", () => {
+    const p = willStepFireModal(
+      monster({ letter: "d", klass: "dog", pet: true }),
+      undefined,
+      { delta: { dx: 1, dy: -1 } },
+    );
+    expect(p?.kind).toBe("pet-displace-blocked");
+    expect(p?.resolveWith).toBe("refuse");
+  });
+
+  test("v2.5: all four diagonals refused (y/u/b/n)", () => {
+    for (const [dx, dy] of [
+      [-1, -1], [1, -1], [-1, 1], [1, 1],
+    ] as Array<[number, number]>) {
+      const p = willStepFireModal(
+        monster({ letter: "f", klass: "feline", pet: true }),
+        undefined,
+        { delta: { dx, dy } },
+      );
+      expect(p?.resolveWith).toBe("refuse");
+    }
+  });
+
+  test("v2.5: cardinal swap into pet still returns step (h/j/k/l)", () => {
+    for (const [dx, dy] of [
+      [-1, 0], [1, 0], [0, -1], [0, 1],
+    ] as Array<[number, number]>) {
+      const p = willStepFireModal(
+        monster({ letter: "d", klass: "dog", pet: true }),
+        undefined,
+        { delta: { dx, dy } },
+      );
+      expect(p?.kind).toBe("pet-displace");
+      expect(p?.resolveWith).toBe("step");
+    }
+  });
+
+  test("v2.5: pet without delta context defaults to step (backward compat)", () => {
+    // No context = no diagonal info available = assume cardinal-safe.
+    // Matches the v1 / pre-context call sites.
+    const p = willStepFireModal(
+      monster({ letter: "d", klass: "dog", pet: true }),
+    );
+    expect(p?.resolveWith).toBe("step");
+  });
 });
 
 describe("willStepFireModal — hostile / peaceful refusal", () => {
@@ -162,6 +208,36 @@ describe("willStepFireModal — player foreground (defensive)", () => {
       foreground: { kind: "player" },
     };
     expect(willStepFireModal(cell)).toBeNull();
+  });
+});
+
+describe("willStepFireModal — autoopen-disabled (v2.5)", () => {
+  test("closed door + Conf returns refuse", () => {
+    const cell: ClassifiedCell = { terrain: "door_closed", foreground: null };
+    const p = willStepFireModal(cell, undefined, { conditions: ["Conf"] });
+    expect(p?.kind).toBe("autoopen-disabled");
+    expect(p?.resolveWith).toBe("refuse");
+  });
+
+  test("closed door + Stun returns refuse", () => {
+    const cell: ClassifiedCell = { terrain: "door_closed", foreground: null };
+    const p = willStepFireModal(cell, undefined, { conditions: ["Stun"] });
+    expect(p?.kind).toBe("autoopen-disabled");
+    expect(p?.resolveWith).toBe("refuse");
+  });
+
+  test("closed door without Conf/Stun returns null (normal autoopen)", () => {
+    const cell: ClassifiedCell = { terrain: "door_closed", foreground: null };
+    expect(willStepFireModal(cell)).toBeNull();
+    expect(willStepFireModal(cell, undefined, { conditions: [] })).toBeNull();
+    expect(
+      willStepFireModal(cell, undefined, { conditions: ["Hallu", "Blind"] }),
+    ).toBeNull();
+  });
+
+  test("floor + Conf returns null (only door_closed triggers this rule)", () => {
+    const cell: ClassifiedCell = { terrain: "floor", foreground: null };
+    expect(willStepFireModal(cell, undefined, { conditions: ["Conf"] })).toBeNull();
   });
 });
 

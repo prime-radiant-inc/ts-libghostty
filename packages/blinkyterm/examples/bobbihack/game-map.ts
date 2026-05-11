@@ -102,6 +102,14 @@ export class GameMap {
   // floor.tiles state.
   latestClassified: ReadonlyArray<ReadonlyArray<ClassifiedCell>> | null = null;
 
+  // Cache of the most-recent parsed StatusLine. Populated by main.ts
+  // after every `sendKeysAndWait` frame. Consumers (predict-and-
+  // avoid in autopilot v2.5) read `latestStatus?.conditions` to
+  // detect Conf/Stun and similar status-conditioned tile rules
+  // BEFORE attempting a step that would bump (e.g. closed door
+  // while confused — autoopen is disabled).
+  latestStatus: StatusLine | null = null;
+
   // Branch state — tracked across frames; messages override.
   #activeBranch: string | null = null;
 

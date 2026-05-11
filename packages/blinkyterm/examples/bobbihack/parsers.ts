@@ -238,7 +238,18 @@ const TERRAIN_GLYPHS: Record<string, TileKind> = {
   "|": "wall",
   "-": "wall",
   "+": "door_closed",
-  "'": "door_open",
+  // NetHack 5.0 — DO NOT add `'` here. The glyph maps to the GOLEM
+  // monster class in 5.0 (MONSYM 55 in `include/defsym.h`), not to
+  // an open door. NetHack 5.0 renders open doors as colored `-`/`|`
+  // (CLR_BROWN) per the PCHAR table; v2's `cell-classifier.ts`
+  // catches `'` as `monster:golem` via `LETTER_TO_CLASS`. Before
+  // this fix, `parsers.ts` mapped `'` to `door_open`, causing every
+  // golem on screen to be recorded as walkable terrain in
+  // `GameMap.floor.tiles` — autopilot would route through them.
+  // (The 3.6 → 5.0 renderer change moved `'` from open-door to
+  // golem; the binding was written against 3.6 conventions.)
+  // Open-door detection from colored `-`/`|` is a v3 follow-up;
+  // requires `updateFromFrame` to consume per-cell style.
   "<": "stairs_up",
   ">": "stairs_down",
   _: "altar",

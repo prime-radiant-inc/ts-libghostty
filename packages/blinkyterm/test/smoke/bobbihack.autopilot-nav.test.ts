@@ -93,7 +93,15 @@ interface Fixture {
   start: { x: number; y: number };
   goal: { x: number; y: number } | null;  // From '*' marker, if any.
   lockedDoors: Set<string>; // "x,y" coords.
-  petPositions: Set<string>;
+  /**
+   * Pet positions keyed by "x,y", mapped to the letter glyph the
+   * pet should render with (default `d`). The buffer cell is
+   * replaced with `.` so GameMap records walkable floor; the
+   * snapshot's `cellAt` then overlays the letter glyph with
+   * inverse=true so the v2 classifier marks the cell as
+   * monster:pet.
+   */
+  petPositions: Map<string, string>;
   cellColors: Map<string, number>;
   playerConditions: string[];
   /** Item glyphs by position key — rendered via the snapshot, not
@@ -144,9 +152,29 @@ function parseFixture(spec: FixtureSpec): Fixture {
     lockedDoors.add(`${x},${y}`);
   }
 
-  const petPositions = new Set<string>();
+  const petPositions = new Map<string, string>();
   for (const [x, y] of spec.petPositions ?? []) {
-    petPositions.add(`${x},${y}`);
+    // Capture whatever letter the source map drew at this position
+    // (default `d` if it wasn't a letter). The snapshot will overlay
+    // this glyph with inverse=true so the classifier marks the cell
+    // as monster:pet.
+    let letter = "d";
+    if (y >= 0 && y < ROWS) {
+      const row = buf[y]!;
+      if (x >= 0 && x < row.length) {
+        const ch = row[x]!;
+        if (/^[a-zA-Z]$/.test(ch)) letter = ch;
+        // Replace the buffer cell with floor so GameMap records the
+        // tile as walkable terrain (mirroring how production sees
+        // it: the player has walked over here at some point,
+        // leaving the floor recorded; the pet's letter glyph is a
+        // transient overlay). Without this, GameMap classifies the
+        // letter as `unknown` and pathfind detours around the pet
+        // without ever attempting a swap.
+        row[x] = ".";
+      }
+    }
+    petPositions.set(`${x},${y}`, letter);
   }
 
   const cellColors = new Map<string, number>();
@@ -280,12 +308,14 @@ function buildStubSnapshot(rows: string[], fixture: Fixture): FrameSnapshot {
       if (x < 0 || x >= row.length) return null;
       const k = `${x},${y}`;
       const itemGlyph = fixture.items.get(k);
-      // Items overlay the buffer's floor cell; the buffer keeps `.`
-      // so GameMap records walkable terrain underneath, mirroring
-      // production where items are transient on top of recorded
-      // terrain.
-      const ch = itemGlyph ?? row[x]!;
-      const isPet = fixture.petPositions.has(k);
+      const petLetter = fixture.petPositions.get(k);
+      // Items / pets overlay the buffer's floor cell; the buffer
+      // keeps `.` so GameMap records walkable terrain underneath,
+      // mirroring production where the player has walked here and
+      // recorded floor, and monsters / items render as transient
+      // overlays on top.
+      const ch = itemGlyph ?? petLetter ?? row[x]!;
+      const isPet = petLetter !== undefined;
       const colorOverride = fixture.cellColors.get(k);
       if (itemGlyph === undefined && !isPet && colorOverride === undefined) {
         return null;
@@ -379,8 +409,9 @@ function step(state: EngineState, key: string): string {
   if (state.fixture.petPositions.has(targetKey) && /^[a-zA-Z]$/.test(target)) {
     // Move pet position state from (nx,ny) to (px,py) so the
     // classified grid keeps reading "pet" at the swapped square.
+    const petLetter = state.fixture.petPositions.get(targetKey)!;
     state.fixture.petPositions.delete(targetKey);
-    state.fixture.petPositions.add(`${px},${py}`);
+    state.fixture.petPositions.set(`${px},${py}`, petLetter);
     // Keep the color override too if present.
     const color = state.fixture.cellColors.get(targetKey);
     if (color !== undefined) {
@@ -1076,42 +1107,42 @@ describe("v2 — pet displacement (spec case 1)", () => {
     expect(r.steps).toBeLessThan(10);
   });
 
-  test("TODO(v2.5): diagonal pet-swap may produce 'kitten is in the way!'", async () => {
-    // Live run bbh-20260509-025250-b0fc34 observed:
-    //   sendKey 'u' (NE) into pet → engine emits "You stop. Your
-    //   kitten is in the way!"
-    // The AP currently predicts pet-displace and sends bare 'u'; the
-    // engine refuses. Cardinal directions work fine (see test above).
+  test("REGRESSION (v2.5): diagonal pet-swap is refused via predict-and-avoid", async () => {
+    // Live run bbh-20260509-025250-b0fc34 observed: `u` (NE) into a
+    // pet emits "You stop. Your kitten is in the way!" and the step
+    // is consumed without movement. Cardinal swaps work fine.
     //
-    // This fixture exercises the diagonal case with a pet on the
-    // NE-of-@ tile. Today, the harness's fake engine does NOT
-    // reproduce the engine refusal (it silently swaps regardless of
-    // direction), so the fixture currently passes with `arrived` —
-    // but a future v2.5 fix should either:
-    //   (a) make predict-and-avoid mark diagonal-pet-swap as
-    //       `resolveWith: 'refuse'` so the AP detours, or
-    //   (b) detect the post-step "kitten is in the way" message and
-    //       blocked-tile the pet square.
+    // v2.5 fix (modal-prediction.ts): `willStepFireModal` now takes
+    // a `delta` context arg; when the step is diagonal AND the
+    // target is a pet, it returns `{kind: 'pet-displace-blocked',
+    // resolveWith: 'refuse'}`. The AP marks the pet tile blocked
+    // and detours. Total step count stays bounded.
     //
-    // For now we assert the *current* behavior (succeeds) so the
-    // test stays green; flip to assert detour or refuse when v2.5
-    // ships the fix.
+    // The fixture places the pet directly NE of the player AND the
+    // goal directly NE of the pet, so A*'s shortest path is the
+    // two-diagonal route through the pet. Without the v2.5 fix the
+    // AP would diagonal into the pet (engine refuses) and burn the
+    // step cap; with the fix the AP refuses pre-step, marks the pet
+    // tile blocked, and detours via cardinals.
     const fx = parseFixture({
       map: `
---------
-|....*.|
-|......|
-|.d....|
-|@.....|
---------`,
-      petPositions: [[2, 3]],
+-------
+|.....|
+|.....|
+|..*..|
+|.d...|
+|@....|
+-------`,
+      petPositions: [[2, 4]],
     });
     const r = await runAutopilotTo(fx, null);
-    // Today: arrives because the harness's fake engine swaps.
-    // v2.5 fix should still arrive (via detour or refuse + replan)
-    // but on the real engine the current AP would halt with
-    // `blocked_unreachable` after the kitten-in-the-way message.
     expect(r.stopReason).toBe("arrived");
+    const blocked = r.stepEvents.filter((e) =>
+      e.key === "predict-avoid:pet-displace-blocked",
+    );
+    expect(blocked.length).toBeGreaterThanOrEqual(1);
+    // Bounded — refusal + cardinal detour is at most ~4 movements.
+    expect(r.steps).toBeLessThan(10);
   });
 });
 
@@ -1349,24 +1380,25 @@ describe("v2 — modal prediction (spec cases 6, 7, 8)", () => {
     expect(r.sentKeys.includes("l")).toBe(false);
   });
 
-  test("TODO(v2.5): Conf status + closed door — currently halts on `confused` interrupt only", async () => {
-    // Case 8 from spec test plan: under Conf/Stun, NetHack disables
-    // closed-door autoopen, so stepping into a `+` should be refused
-    // *before* the step. Per spec rubric 2 ("Cues for no, refuse"),
-    // the AP should refuse via predict-and-avoid; per source today,
-    // no Conf-aware logic exists in modal-prediction.ts.
+  test("REGRESSION (v2.5): Conf + closed door — `confused` interrupt still wins (defense-in-depth predicate added)", async () => {
+    // Case 8 from spec test plan. Under Conf/Stun, NetHack disables
+    // closed-door autoopen, so a step into `+` consumes a turn
+    // without opening anything.
     //
-    // What actually happens: the player's first frame has Conf in
-    // status, the prev frame did not, so the `confused` interrupt
-    // (priority 321) fires on the first step and the AP halts —
-    // BEFORE attempting any closed-door step. This is correct
-    // bystander behavior but doesn't exercise the real fix.
+    // In production, two layers defend against this:
+    //  (1) `confused` interrupt fires the first frame Conf appears
+    //      (priority 321) — halts AP before any bumping.
+    //  (2) v2.5 predict-and-avoid `autoopen-disabled` predicate in
+    //      `willStepFireModal` — defense in depth for the case
+    //      where Conf was already set when AP was invoked AND
+    //      `confused` did not fire for whatever reason.
     //
-    // Expected v2.5 behavior: `willStepFireModal` returns
-    // `'refuse'` when the target is `door_closed` AND
-    // `status.conditions` includes `Conf` or `Stun`, surfacing as
-    // `predict-avoid:autoopen-disabled` instead of a generic
-    // `confused` halt. Flip the assertion when v2.5 ships.
+    // This fixture sets `Conf` on every frame the harness produces.
+    // The first sendKeysAndWait result has Conf with prev=undefined,
+    // so the `confused` interrupt fires and the AP halts. Predict-
+    // and-avoid would also catch it on iter-2 if the interrupt
+    // didn't — both layers are tested separately, so here we
+    // assert the v1 layer still wins (no regression).
     const fx = parseFixture({
       map: `
 --------
@@ -1375,11 +1407,7 @@ describe("v2 — modal prediction (spec cases 6, 7, 8)", () => {
       playerConditions: ["Conf"],
     });
     const r = await runAutopilotTo(fx, null, { stepCap: 30 });
-    // Today's behavior: the `confused` interrupt fires on the first
-    // frame because Conf is freshly set; the AP halts before reaching
-    // the door at all.
     expect(r.stopReason ?? "").toMatch(/confused|predict|blocked/);
-    // Bounded — no door bumping (which the real engine would emit).
     expect(r.steps).toBeLessThan(10);
   });
 });

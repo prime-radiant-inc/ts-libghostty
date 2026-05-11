@@ -144,7 +144,20 @@ describe("classifyGlyph", () => {
 
   test("classifies doors", () => {
     expect(classifyGlyph("+")).toBe("door_closed");
-    expect(classifyGlyph("'")).toBe("door_open");
+  });
+
+  test("REGRESSION: `'` is NOT terrain in NetHack 5.0 — it's the golem class", () => {
+    // Stale 3.6-era mapping had `'` → door_open. NetHack 5.0
+    // reassigned `'` to MONSYM 55 (GOLEM). Open doors in 5.0 render
+    // as colored `-`/`|` (CLR_BROWN per include/defsym.h PCHAR
+    // table). Before this fix, every golem on screen was recorded
+    // as walkable terrain in GameMap.floor.tiles — autopilot would
+    // route through golems.
+    //
+    // The v2 cell-classifier (cell-classifier.ts:LETTER_TO_CLASS)
+    // correctly maps `'` → monster:golem; this regression asserts
+    // the v1 terrain-only classifier no longer also maps it.
+    expect(classifyGlyph("'")).toBeNull();
   });
 
   test("classifies stairs", () => {
