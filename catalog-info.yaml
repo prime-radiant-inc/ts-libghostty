@@ -1,0 +1,14 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: ts-libghostty
+  description: "Bun-workspaces monorepo of TypeScript bindings around Ghostty's VT state machine (libghostty-vt + blinkyterm)."
+  annotations:
+    backstage.io/techdocs-ref: dir:.
+    prime-radiant.com/repo-map-rev: "9c993cf2b51e2df562933e4b02d84fbb23e2086f"
+  tags: [typescript, bun, terminal, ghostty, bindings]
+spec:
+  type: library
+  lifecycle: production
+  owner: user:mhat
+  system: dev-tools
