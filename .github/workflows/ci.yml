@@ -23,7 +23,7 @@ jobs:
             targets: aarch64-linux-gnu,aarch64-linux-musl
     runs-on: ${{ matrix.runner }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Install Zig
         uses: mlugg/setup-zig@v2

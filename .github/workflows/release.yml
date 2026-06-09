@@ -27,7 +27,7 @@ jobs:
       actions: read
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
       - name: Verify tag matches package.json version
         working-directory: packages/libghostty-vt
