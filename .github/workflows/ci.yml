@@ -101,7 +101,7 @@ jobs:
         run: bun run test
 
       - name: Upload prebuilds
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: prebuilds-${{ matrix.platform }}
           path: packages/libghostty-vt/prebuilds/
